@@ -45,18 +45,18 @@ installRoundRect();
  * light=上端に当たる光 / base=素の色 / dark=下端の翳り / shadow=盤面に落ちる影
  */
 export const PALETTE = [
-  { name: '赤', base: '#e0483d', light: '#f0705f', dark: '#a82b26', shadow: '120,26,24' },
-  { name: '橙', base: '#ee8a2c', light: '#faa951', dark: '#b45f14', shadow: '130,60,12' },
-  { name: '黄', base: '#efb62a', light: '#fbd056', dark: '#b78310', shadow: '130,88,10' },
-  { name: '緑', base: '#46bd3c', light: '#6fd85f', dark: '#2b8b26', shadow: '28,88,24' },
-  { name: '青', base: '#3d95dc', light: '#63b4ee', dark: '#2168a8', shadow: '20,70,120' },
-  { name: '紫', base: '#a94ccd', light: '#c473e2', dark: '#7c2f9c', shadow: '80,28,104' },
+  { name: '赤', base: '#d9453b', light: '#e8695c', dark: '#a52a25', shadow: '120,26,22' },
+  { name: '橙', base: '#e07b2c', light: '#ee9b4c', dark: '#a95315', shadow: '122,52,12' },
+  { name: '黄', base: '#e9b02b', light: '#f6c94f', dark: '#b07f12', shadow: '126,88,10' },
+  { name: '緑', base: '#3ebe33', light: '#63d456', dark: '#268c1e', shadow: '26,88,20' },
+  { name: '青', base: '#4c7fd6', light: '#6f9de6', dark: '#2f5aa6', shadow: '26,58,116' },
+  { name: '紫', base: '#b44bd1', light: '#c972e0', dark: '#8a2ea3', shadow: '84,24,104' },
 ];
 
-/** 盤面（毛糸を並べる台）の色 */
+/** 盤面（タイルを並べる台）。糸の色が立つように暗くする */
 const TRAY = {
-  light: { frame: '#2c3757', hole: '#39466c', edge: 'rgba(0,0,0,.35)' },
-  dark: { frame: '#171d31', hole: '#232c48', edge: 'rgba(0,0,0,.5)' },
+  light: { frame: '#1e2740', hole: '#36406a', ring: '#9aa6cc' },
+  dark: { frame: '#0f1424', hole: '#232c4a', ring: '#3d4666' },
 };
 
 /** 色覚サポート用の記号 */
@@ -73,8 +73,8 @@ const easeOutBack = (t) => 1 + 2.4 * Math.pow(t - 1, 3) + 1.6 * Math.pow(t - 1, 
  * 「明るい糸／暗い糸」として乗る。糸の間隔はマスの大きさに比例させる。
  */
 function makeWeave(cellPx) {
-  const spacing = Math.max(3, Math.round(cellPx / 8));
-  const size = spacing * 8; // 45度の縞が継ぎ目なく繰り返せるよう間隔の倍数にする
+  const spacing = Math.max(2, Math.round(cellPx / 14));
+  const size = spacing * 10; // 45度の縞が継ぎ目なく繰り返せるよう間隔の倍数にする
   const c = document.createElement('canvas');
   c.width = size;
   c.height = size;
@@ -160,7 +160,7 @@ export class Renderer {
     this.viewH = h;
 
     // 盤面は正方形。影がはみ出せるよう外周に余白を取る
-    const cell = Math.floor((Math.min(w, h) - 24) / this.size);
+    const cell = Math.floor((Math.min(w, h) - 30) / this.size);
     this.cell = Math.max(8, cell);
     const boardPx = this.cell * this.size;
     this.ox = Math.floor((w - boardPx) / 2);
@@ -168,11 +168,86 @@ export class Renderer {
     this.buildWeave();
   }
 
-  /** マスの大きさが変わったら織物の目も作り直す */
+  /** マスの大きさが変わったら、織物の目とタイルの絵を作り直す */
   buildWeave() {
-    if (this.weaveFor === this.cell && this.weavePattern) return;
-    this.weaveFor = this.cell;
-    this.weavePattern = this.ctx.createPattern(makeWeave(this.cell), 'repeat');
+    const key = `${this.cell}:${this.dpr}`;
+    if (this.weaveFor === key && this.weavePattern) return;
+    this.weaveFor = key;
+    this.weaveCanvas = makeWeave(this.cell);
+    this.weavePattern = this.ctx.createPattern(this.weaveCanvas, 'repeat');
+    this.buildTiles();
+  }
+
+  /** タイルの実寸。マスからすき間を除いた大きさ */
+  get tileGap() { return Math.max(1, Math.round(this.cell * 0.025)); }
+  get tileSize() { return this.cell - this.tileGap * 2; }
+  get tileRadius() { return Math.max(2, this.tileSize * 0.11); }
+
+  /**
+   * 色ごとに 1 枚だけタイルを描いておき、盤面では貼るだけにする。
+   * 毎フレーム 100 枚以上をグラデーション＋クリップで描くと重いため。
+   */
+  buildTiles() {
+    const size = this.tileSize;
+    const r = this.tileRadius;
+    const px = Math.max(4, Math.round(size * this.dpr));
+
+    this.tiles = PALETTE.map((c) => {
+      const cv = document.createElement('canvas');
+      cv.width = px;
+      cv.height = px;
+      const g = cv.getContext('2d');
+      g.scale(px / size, px / size); // 以降は CSS ピクセルで考える
+
+      const path = new Path2D();
+      path.roundRect(0, 0, size, size, r);
+
+      // 面。上端が明るく、下端が翳る
+      const grad = g.createLinearGradient(0, 0, 0, size);
+      grad.addColorStop(0, c.light);
+      grad.addColorStop(0.16, c.base);
+      grad.addColorStop(0.82, c.base);
+      grad.addColorStop(1, c.dark);
+      g.fillStyle = grad;
+      g.fill(path);
+
+      g.save();
+      g.clip(path);
+
+      // 織物の目
+      const pat = g.createPattern(this.weaveCanvas, 'repeat');
+      if (pat) {
+        g.globalAlpha = 0.34;
+        g.globalCompositeOperation = 'overlay';
+        g.fillStyle = pat;
+        g.fillRect(0, 0, size, size);
+        g.globalCompositeOperation = 'source-over';
+        g.globalAlpha = 1;
+      }
+
+      // 縁の立ち上がり。輪郭をずらして描き、クリップで内側半分だけ残す
+      const bevel = Math.max(1, Math.min(size * 0.075, 7));
+      g.lineWidth = bevel * 2;
+      g.save();
+      g.translate(0, bevel);
+      g.strokeStyle = 'rgba(255,255,255,.34)';
+      g.stroke(path);
+      g.restore();
+      g.save();
+      g.translate(0, -bevel);
+      g.strokeStyle = `rgba(${c.shadow},.5)`;
+      g.stroke(path);
+      g.restore();
+
+      g.restore();
+
+      // ふちの締め
+      g.lineWidth = Math.max(1, size * 0.025);
+      g.strokeStyle = 'rgba(10,14,28,.32)';
+      g.stroke(path);
+
+      return cv;
+    });
   }
 
   /** 画面座標 -> 盤面セル */
@@ -296,43 +371,43 @@ export class Renderer {
     const w = cell * n;
     const x0 = this.ox;
     const y0 = this.oy;
-    const pad = Math.max(6, cell * 0.16);
+    const pad = Math.max(3, cell * 0.07);
     const dark = this.dark;
 
-    // 盤面は毛糸を並べる台。暗い枠にすると糸の色がはっきり立つ
+    // 台。外周に明るいふちを回し、内側は濃紺。写真と同じ額縁の作り
     const t = dark ? TRAY.dark : TRAY.light;
+    const ring = Math.max(3, cell * 0.09);
+    const radius = Math.max(10, cell * 0.3);
+
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, Math.max(14, cell * 0.42));
-    ctx.fillStyle = t.frame;
-    ctx.shadowColor = dark ? 'rgba(0,0,0,.7)' : 'rgba(28,34,60,.28)';
-    ctx.shadowBlur = cell * 0.9;
-    ctx.shadowOffsetY = cell * 0.22;
+    ctx.roundRect(x0 - pad - ring, y0 - pad - ring, w + (pad + ring) * 2, w + (pad + ring) * 2, radius + ring);
+    ctx.fillStyle = t.ring;
+    ctx.shadowColor = dark ? 'rgba(0,0,0,.7)' : 'rgba(28,34,60,.26)';
+    ctx.shadowBlur = cell * 0.8;
+    ctx.shadowOffsetY = cell * 0.2;
     ctx.fill();
     ctx.restore();
 
-    // 空きマス（＝通路）。枠より少し明るくして、通れる場所が読めるようにする
     ctx.save();
-    const r = Math.max(2, cell * 0.2);
+    ctx.beginPath();
+    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
+    ctx.fillStyle = t.frame;
+    ctx.fill();
+    ctx.restore();
+
+    // 空きマス（＝通路）。台よりわずかに明るくして、通れる場所が読めるようにする
+    const gap = this.tileGap;
+    const size = this.tileSize;
+    const tr = this.tileRadius;
+    ctx.save();
+    ctx.fillStyle = t.hole;
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         if (board && board.at(x, y) !== -1) continue;
-        const px = x0 + x * cell + cell * 0.05;
-        const py = y0 + y * cell + cell * 0.05;
-        const s = cell - cell * 0.1;
         ctx.beginPath();
-        ctx.roundRect(px, py, s, s, r);
-        ctx.fillStyle = t.hole;
+        ctx.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
         ctx.fill();
-        // 上のふちに影を落として、へこんで見せる
-        ctx.beginPath();
-        ctx.roundRect(px, py - Math.max(1, cell * 0.05), s, s, r);
-        ctx.strokeStyle = t.edge;
-        ctx.lineWidth = Math.max(1, cell * 0.05);
-        ctx.save();
-        ctx.clip((() => { const q = new Path2D(); q.roundRect(px, py, s, s, r); return q; })());
-        ctx.stroke();
-        ctx.restore();
       }
     }
     ctx.restore();
@@ -387,9 +462,9 @@ export class Renderer {
       for (const [cx, cy] of piece.cells) {
         ctx.beginPath();
         ctx.roundRect(
-          this.ox + cx * cell + dx + cell * 0.08,
-          this.oy + cy * cell + dy + cell * 0.08,
-          cell * 0.84, cell * 0.84, cell * 0.3,
+          this.ox + cx * cell + dx + this.tileGap,
+          this.oy + cy * cell + dy + this.tileGap,
+          this.tileSize, this.tileSize, this.tileRadius,
         );
         ctx.fill();
       }
@@ -402,8 +477,8 @@ export class Renderer {
     const cell = this.cell;
     const own = new Set(piece.cells.map(([x, y]) => `${x},${y}`));
     const has = (x, y) => own.has(`${x},${y}`);
-    const pad = Math.max(1, cell * 0.055);
-    const r = Math.max(2.5, cell * 0.22);
+    const pad = this.tileGap;
+    const r = this.tileRadius;
 
     const out = [];
     for (const [x, y] of piece.cells) {
@@ -456,7 +531,8 @@ export class Renderer {
   drawPiece(piece, dx = 0, dy = 0, alpha = 1, squash = 0, selected = false, mode = 'solid', axis = null) {
     const ctx = this.ctx;
     const cell = this.cell;
-    const c = PALETTE[piece.color];
+    const gap = this.tileGap;
+    const size = this.tileSize;
     const rects = this.cellRects(piece, dx, dy);
     const box = this.bboxOf(rects);
 
@@ -472,73 +548,30 @@ export class Renderer {
       ctx.translate(-cx, -cy);
     }
 
-    const path = this.pathOf(rects);
-    const outline = this.outlineOf(rects, Math.max(2.5, cell * 0.22));
+    const outline = this.outlineOf(rects, this.tileRadius);
 
     if (mode === 'outline') {
       ctx.lineWidth = Math.max(2, cell * 0.09);
-      ctx.strokeStyle = c.base;
+      ctx.strokeStyle = PALETTE[piece.color].light;
       ctx.setLineDash([cell * 0.26, cell * 0.2]);
       ctx.lineCap = 'round';
-      ctx.stroke(this.outlineOf(rects, Math.max(2.5, cell * 0.22)));
+      ctx.stroke(outline);
       ctx.setLineDash([]);
       ctx.restore();
       return;
     }
 
-    // 1) 盤面に落ちる影
-    ctx.save();
-    ctx.shadowColor = `rgba(${c.shadow},${this.dark ? 0.6 : 0.5})`;
-    ctx.shadowBlur = cell * 0.3;
-    ctx.shadowOffsetY = cell * 0.12;
-    ctx.fillStyle = c.dark;
-    ctx.fill(path);
-    ctx.restore();
-
-    // 2) 本体。上が明るく下が翳る、糸の束のような面
-    const grad = ctx.createLinearGradient(0, box.y0, 0, box.y1);
-    grad.addColorStop(0, c.light);
-    grad.addColorStop(0.5, c.base);
-    grad.addColorStop(1, c.dark);
-    ctx.fillStyle = grad;
-    ctx.fill(path);
-
-    ctx.save();
-    ctx.clip(path);
-
-    // 3) 織物の目。斜め45度の糸を overlay で乗せる
-    if (this.weavePattern && cell > 10) {
-      ctx.globalAlpha = alpha * 0.3;
-      ctx.globalCompositeOperation = 'overlay';
-      ctx.fillStyle = this.weavePattern;
-      ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = alpha;
+    // 1マス＝1枚の刺繍タイルを貼っていく。
+    // 同色は隣接しないという不変条件があるので、隣り合う同じ色のタイルは
+    // 必ず同じブロック ―― タイルを分けて描いても「どこまでが一緒に動くか」は色で読める。
+    const tile = this.tiles && this.tiles[piece.color];
+    if (tile) {
+      for (const [x, y] of piece.cells) {
+        ctx.drawImage(tile, this.ox + x * cell + gap + dx, this.oy + y * cell + gap + dy, size, size);
+      }
     }
 
-    // 4) 縁の立ち上がり。輪郭をずらして描き、クリップで内側半分だけ残す
-    //    下へずらした明るい線＝上のふちが光り、上へずらした暗い線＝下のふちが翳る
-    const bevel = Math.max(1.4, Math.min(cell * 0.09, 9));
-    ctx.lineWidth = bevel * 2;
-
-    ctx.save();
-    ctx.translate(0, bevel);
-    ctx.strokeStyle = 'rgba(255,255,255,.34)';
-    ctx.stroke(outline);
-    ctx.restore();
-
-    ctx.save();
-    ctx.translate(0, -bevel);
-    ctx.strokeStyle = `rgba(${c.shadow},.58)`;
-    ctx.stroke(outline);
-    ctx.restore();
-
-    ctx.restore();
-
-    // 5) マスの継ぎ目。1マスずつ縫い合わせたように見せる
-    this.drawCellSeams(piece, rects, dx, dy, alpha, c);
-
-    // 6) 色記号（色覚サポート）
+    // 色記号（色覚サポート）
     if (this.options.symbols && cell > 16) {
       const [ax, ay] = piece.cells[Math.floor(piece.cells.length / 2)];
       ctx.save();
@@ -551,15 +584,15 @@ export class Renderer {
       ctx.restore();
     }
 
-    // 7) 選択中はやわらかい白い光をまとう
+    // 選択中はブロック全体を白い光で囲む（動く単位を示す）
     if (selected) {
       const pulse = 0.5 + 0.5 * Math.sin(this.time * 6.5);
       ctx.save();
-      ctx.globalAlpha = alpha * (0.45 + 0.4 * pulse);
-      ctx.lineWidth = Math.max(2, cell * 0.075);
+      ctx.globalAlpha = alpha * (0.5 + 0.4 * pulse);
+      ctx.lineWidth = Math.max(2, cell * 0.07);
       ctx.strokeStyle = '#ffffff';
       ctx.shadowColor = 'rgba(255,255,255,.9)';
-      ctx.shadowBlur = cell * (0.35 + 0.3 * pulse);
+      ctx.shadowBlur = cell * (0.3 + 0.3 * pulse);
       ctx.stroke(outline);
       ctx.restore();
     }
@@ -595,87 +628,6 @@ export class Renderer {
       if (rBL) { ctx.moveTo(px + rBL, y1); ctx.arc(px + rBL, y1 - rBL, rBL, HALF_PI, Math.PI); }
     }
     return ctx;
-  }
-
-  /**
-   * ブロック内部の継ぎ目。
-   * すべてのマス境界に細い溝を彫って「1マスずつ縫い合わせた布」に見せる。
-   * 連結ピース（テトロミノ2〜3個つなぎ）の境目だけは溝を強くして、
-   * 何個つなぎのブロックなのかが読めるようにしている。
-   */
-  drawCellSeams(piece, rects, dx, dy, alpha, color) {
-    const ctx = this.ctx;
-    const cell = this.cell;
-    const parts = piece.parts;
-    const partOf = new Map();
-    for (let i = 0; i < piece.cells.length; i++) {
-      partOf.set(`${piece.cells[i][0]},${piece.cells[i][1]}`, parts ? parts[i] : 0);
-    }
-
-    const edges = [];
-    for (const p of rects) {
-      const px = this.ox + p.x * cell + dx;
-      const py = this.oy + p.y * cell + dy;
-      const mine = partOf.get(`${p.x},${p.y}`);
-      if (p.right) {
-        const other = partOf.get(`${p.x + 1},${p.y}`);
-        edges.push({ x0: px + cell, y0: py, x1: px + cell, y1: py + cell, strong: other !== mine });
-      }
-      if (p.down) {
-        const other = partOf.get(`${p.x},${p.y + 1}`);
-        edges.push({ x0: px, y0: py + cell, x1: px + cell, y1: py + cell, strong: other !== mine });
-      }
-    }
-    if (edges.length === 0) return;
-
-    const inset = cell * 0.1;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.lineCap = 'round';
-
-    const seamW = Math.max(1, Math.min(cell * 0.045, 3.4));
-    const liftW = Math.max(0.8, Math.min(cell * 0.03, 2.4));
-    for (const pass of [
-      { color: `rgba(${color.shadow},.5)`, off: 0, w: seamW },
-      { color: 'rgba(255,255,255,.16)', off: liftW, w: liftW },
-    ]) {
-      ctx.beginPath();
-      for (const e of edges) {
-        const horiz = e.y0 === e.y1;
-        const s = e.strong ? inset * 0.5 : inset;
-        if (horiz) {
-          ctx.moveTo(e.x0 + s, e.y0 + pass.off);
-          ctx.lineTo(e.x1 - s, e.y1 + pass.off);
-        } else {
-          ctx.moveTo(e.x0 + pass.off, e.y0 + s);
-          ctx.lineTo(e.x1 + pass.off, e.y1 - s);
-        }
-      }
-      ctx.strokeStyle = pass.color;
-      ctx.lineWidth = pass.w;
-      ctx.stroke();
-
-      // 連結ピースの境目だけ、もう一度なぞって濃くする
-      ctx.beginPath();
-      let any = false;
-      for (const e of edges) {
-        if (!e.strong) continue;
-        any = true;
-        const horiz = e.y0 === e.y1;
-        if (horiz) {
-          ctx.moveTo(e.x0 + inset * 0.5, e.y0 + pass.off);
-          ctx.lineTo(e.x1 - inset * 0.5, e.y1 + pass.off);
-        } else {
-          ctx.moveTo(e.x0 + pass.off, e.y0 + inset * 0.5);
-          ctx.lineTo(e.x1 + pass.off, e.y1 - inset * 0.5);
-        }
-      }
-      if (any) {
-        ctx.lineWidth = pass.w * 1.6;
-        ctx.stroke();
-      }
-    }
-    ctx.restore();
   }
 
   /** 着地予測ゴースト + 矢印 */
@@ -731,7 +683,7 @@ export class Renderer {
         const p = view.board.pieces.get(id);
         if (!p || p.id === piece.id) continue;
         const r2 = this.cellRects(p, 0, 0);
-        ctx.stroke(this.outlineOf(r2, Math.max(2.5, cell * 0.22)));
+        ctx.stroke(this.outlineOf(r2, this.tileRadius));
       }
     }
     ctx.restore();
@@ -752,7 +704,7 @@ export class Renderer {
     ctx.lineWidth = Math.max(2.5, cell * 0.1);
     ctx.shadowColor = 'rgba(255,214,10,.9)';
     ctx.shadowBlur = cell * 0.6;
-    ctx.stroke(this.outlineOf(this.cellRects(piece, 0, 0), Math.max(2.5, cell * 0.22)));
+    ctx.stroke(this.outlineOf(this.cellRects(piece, 0, 0), this.tileRadius));
     ctx.restore();
 
     const d = DIRS[hint.dir];
