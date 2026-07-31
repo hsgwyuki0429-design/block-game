@@ -3,90 +3,100 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#0a0e1a">
+<meta name="theme-color" content="#eef0fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0b0f" media="(prefers-color-scheme: dark)">
 <meta name="description" content="SLIDE POP! ― 凍った盤面を滑らせて、同色をぶつけて、盤面を空にする空間推理パズル。">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>SLIDE POP!</title>
-<link rel="stylesheet" href="styles.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a0e1a'/><rect x='5' y='6' width='9' height='9' rx='2' fill='%23ff4d6d'/><rect x='18' y='6' width='9' height='9' rx='2' fill='%23ff4d6d'/><rect x='5' y='19' width='22' height='7' rx='2' fill='%234d9dff'/></svg>">
+<link rel="stylesheet" href="styles.css?v=ea487bb61f">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef0fb'/><rect x='4' y='5' width='11' height='11' rx='4' fill='%236bb6f7'/><rect x='17' y='5' width='11' height='11' rx='4' fill='%23ff7b8a'/><rect x='4' y='18' width='24' height='9' rx='4' fill='%23b49bf0'/></svg>">
 </head>
 <body>
 
 <div id="app">
-  <header class="topbar">
-    <h1 class="logo">SLIDE<span class="logo-pop">POP!</span></h1>
-    <div class="topbar-right">
-      <button class="icon-btn" id="btn-rules" type="button" title="ルール">ルール</button>
-      <button class="icon-btn" id="btn-settings" type="button" title="設定">設定</button>
+
+  <!-- ナビゲーション（現在地） -->
+  <header class="nav">
+    <div class="nav-title">
+      <p class="eyebrow">SLIDE POP!</p>
+      <h1 class="title">レベル <span id="stat-level">1</span></h1>
+    </div>
+    <div class="nav-actions">
+      <button class="glass-btn" id="btn-rules" type="button" aria-label="ルール">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.3 2.4c-.6.2-.9.7-.9 1.3v.6"/><circle cx="12" cy="17" r="1.05" class="dot"/></svg>
+      </button>
+      <button class="glass-btn" id="btn-settings" type="button" aria-label="設定">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2M12 18.5v2M20.5 12h-2M5.5 12h-2M18 6l-1.4 1.4M7.4 16.6 6 18M18 18l-1.4-1.4M7.4 7.4 6 6"/></svg>
+      </button>
     </div>
   </header>
 
-  <div class="stats" id="stats">
-    <div class="stat stat-level">
-      <span class="stat-label">レベル</span>
-      <span class="stat-value" id="stat-level">1</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">手数</span>
-      <span class="stat-value" id="stat-moves">0</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">PAR</span>
-      <span class="stat-value" id="stat-par">-</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">残りブロック</span>
-      <span class="stat-value" id="stat-left">-</span>
-    </div>
+  <!-- 状況（手数・PAR・残り） -->
+  <div class="hud">
+    <div class="hud-item" id="hud-moves"><span class="k">手数</span><span class="v" id="stat-moves">0</span></div>
+    <div class="hud-sep"></div>
+    <div class="hud-item"><span class="k">PAR</span><span class="v" id="stat-par">–</span></div>
+    <div class="hud-sep"></div>
+    <div class="hud-item"><span class="k">残り</span><span class="v" id="stat-left">–</span></div>
   </div>
 
-  <p class="level-info" id="level-info">&nbsp;</p>
+  <div class="progress"><i id="progress-bar"></i></div>
 
-  <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
-
-  <!-- 色ごとの残りブロック数。同色ペアを「見つける」ための補助 -->
+  <!-- 色ごとの残りブロック数（同色ペアを見つけるための補助） -->
   <div class="legend" id="legend" aria-label="色ごとの残りブロック数"></div>
 
+  <!-- コンテンツ（主役） -->
   <main class="board-wrap">
     <canvas id="board" aria-label="ゲーム盤面"></canvas>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <div class="overlay" id="overlay" hidden>
-      <div class="overlay-card" id="overlay-card">
+      <div class="overlay-card">
         <div class="overlay-badge" id="overlay-badge"></div>
         <h2 id="overlay-title"></h2>
         <p id="overlay-text"></p>
+        <div class="overlay-extra" id="overlay-extra"></div>
         <div class="overlay-stats" id="overlay-stats"></div>
         <div class="overlay-actions" id="overlay-actions"></div>
       </div>
     </div>
   </main>
 
-  <nav class="controls">
-    <button class="ctl" id="btn-undo" type="button">
-      <span class="ctl-icon">↶</span><span class="ctl-label">戻す</span>
+  <p class="level-info" id="level-info">&nbsp;</p>
+
+  <!-- ツールバー（次のアクション） -->
+  <nav class="toolbar">
+    <button class="tool" id="btn-undo" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h10.5a4.5 4.5 0 0 1 0 9H9"/><path d="M7.5 5.5 4 9l3.5 3.5"/></svg>
+      <span>戻す</span>
     </button>
-    <button class="ctl" id="btn-hint" type="button">
-      <span class="ctl-icon">💡</span><span class="ctl-label">ヒント</span>
+    <button class="tool" id="btn-hint" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.2 16.5a5.5 5.5 0 1 1 5.6 0v1.2a1.6 1.6 0 0 1-1.6 1.6h-2.4a1.6 1.6 0 0 1-1.6-1.6z"/><path d="M10.4 21.2h3.2"/></svg>
+      <span>ヒント</span>
     </button>
-    <button class="ctl" id="btn-restart" type="button">
-      <span class="ctl-icon">⟳</span><span class="ctl-label">やり直す</span>
+    <button class="tool" id="btn-restart" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.4-5.3"/><path d="M19.2 4.6V9h-4.4"/></svg>
+      <span>やり直す</span>
     </button>
-    <button class="ctl ctl-primary" id="btn-levels" type="button">
-      <span class="ctl-icon">✦</span><span class="ctl-label">レベル</span>
+    <button class="tool tool-accent" id="btn-levels" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="2.2"/><rect x="13" y="4" width="7" height="7" rx="2.2"/><rect x="4" y="13" width="7" height="7" rx="2.2"/><rect x="13" y="13" width="7" height="7" rx="2.2"/></svg>
+      <span>レベル</span>
     </button>
   </nav>
 
-  <p class="hint-line" id="hint-line">ブロックをスワイプ（またはクリックして矢印キー）で滑らせる。</p>
 </div>
 
 <!-- ルール -->
-<div class="modal" id="modal-rules" hidden>
-  <div class="modal-card">
-    <button class="modal-close" data-close type="button" aria-label="閉じる">×</button>
+<div class="sheet" id="modal-rules" hidden>
+  <div class="sheet-card">
+    <div class="grabber"></div>
+    <button class="sheet-close" data-close type="button" aria-label="閉じる">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+    </button>
     <h2>ルールは3つだけ</h2>
 
     <section class="rule">
-      <div class="rule-num">①</div>
+      <div class="rule-num">1</div>
       <div>
         <h3>スライド ― 距離は選べない</h3>
         <p>できるのは<b>「どのブロックを、どの方向に押すか」</b>だけ。押されたブロックは壁か他のブロックにぶつかるまで滑り続けます。1マスで止めることはできません。</p>
@@ -94,7 +104,7 @@
     </section>
 
     <section class="rule">
-      <div class="rule-num">②</div>
+      <div class="rule-num">2</div>
       <div>
         <h3>同色接触消去 ― 触れた瞬間、全部消える</h3>
         <p>滑り終えた直後、上下左右で<b>同じ色のブロックが触れていれば、繋がったグループ全体が消えます</b>。列を揃える必要はありません。<br>
@@ -103,35 +113,35 @@
     </section>
 
     <section class="rule">
-      <div class="rule-num">③</div>
+      <div class="rule-num">3</div>
       <div>
         <h3>重力なし ― 空きマスは、あなたが稼ぐ</h3>
         <p>消えても他のブロックは落ちません。<b>空きマスは消去でしか生まれない</b>。そして生まれた空きマスが、次のスライドの「通路」になります。</p>
       </div>
     </section>
 
-    <div class="rule-tip">
+    <div class="card">
       <h3>最大の快感 ―「橋渡し」</h3>
       <p>離れた2つの同色グループの<b>あいだにブロックを滑り込ませ、3つ以上を一度に繋いで消す</b>手。消えるグループは必ず「動かしたブロック」を経由して繋がります（動かしていない同色同士は決して隣接しないため）。動くブロックは常にハブ ―― この星型構造が見えた瞬間、盤面の見え方が変わります。</p>
     </div>
 
-    <div class="rule-tip">
+    <div class="card">
       <h3>レベル ― 1 から無限に</h3>
       <p>レベル1は <b>4×4 にテトロミノ2個、1手</b>。上がるほど盤面が広がり（<b>最大 12×12</b>）、ブロックは
       <b>テトロミノ → 2個つなぎ → 3個つなぎ</b> と複雑になっていきます。<br>
       <span class="muted">同じレベルなら、どの端末でも必ず同じ盤面です。</span></p>
     </div>
 
-    <div class="rule-tip">
+    <div class="card">
       <h3>勝敗</h3>
       <p><b>勝利</b>：盤面のブロックを全て消す。<br>
       <b>詰み</b>：どう動かしても同色接触を作れない状態。運ではなく手順の帰結なので、<b>戻す</b>はいつでもフェアです。</p>
       <p class="muted">すべてのレベルは「解の逆順構築」で作られており、<b>必ず全消しできること</b>が構造的に保証されています。PAR は保証された解の手数です。</p>
     </div>
 
-    <div class="rule-tip">
+    <div class="card">
       <h3>操作</h3>
-      <p>スワイプ、またはクリックで選んで<b>矢印キー</b>。<br>
+      <p>ブロックをスワイプ。またはタップで選んで<b>矢印キー</b>。<br>
       ドラッグ中は<b>着地予測ゴースト</b>が停止位置を教えてくれます。<br>
       <span class="muted">Z=戻す / H=ヒント / R=やり直す / L=レベル選択</span></p>
     </div>
@@ -139,61 +149,72 @@
 </div>
 
 <!-- 設定 -->
-<div class="modal" id="modal-settings" hidden>
-  <div class="modal-card modal-narrow">
-    <button class="modal-close" data-close type="button" aria-label="閉じる">×</button>
+<div class="sheet" id="modal-settings" hidden>
+  <div class="sheet-card sheet-narrow">
+    <div class="grabber"></div>
+    <button class="sheet-close" data-close type="button" aria-label="閉じる">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+    </button>
     <h2>設定</h2>
 
-    <label class="row-toggle">
-      <span><b>色に記号を付ける</b><br><span class="muted">色の見分けが難しいときに</span></span>
-      <input type="checkbox" id="opt-symbols">
-    </label>
-
-    <label class="row-toggle">
-      <span><b>着地ゴースト</b><br><span class="muted">ドラッグ中に停止位置を表示</span></span>
-      <input type="checkbox" id="opt-ghost" checked>
-    </label>
-
-    <label class="row-toggle">
-      <span><b>エフェクトを控えめに</b><br><span class="muted">画面の揺れと粒子を減らす</span></span>
-      <input type="checkbox" id="opt-calm">
-    </label>
-
-    <div class="seed-row" style="margin-top:16px">
-      <button class="ctl" id="btn-share" type="button">このレベルのリンクをコピー</button>
+    <div class="list">
+      <label class="row">
+        <span class="row-label"><b>サウンド</b><span class="muted">効果音を鳴らす</span></span>
+        <input type="checkbox" id="opt-sound" class="switch" checked>
+      </label>
+      <label class="row">
+        <span class="row-label"><b>バイブレーション</b><span class="muted">対応端末のみ</span></span>
+        <input type="checkbox" id="opt-haptics" class="switch" checked>
+      </label>
+      <label class="row">
+        <span class="row-label"><b>色に記号を付ける</b><span class="muted">色の見分けが難しいときに</span></span>
+        <input type="checkbox" id="opt-symbols" class="switch">
+      </label>
+      <label class="row">
+        <span class="row-label"><b>着地ゴースト</b><span class="muted">ドラッグ中に停止位置を表示</span></span>
+        <input type="checkbox" id="opt-ghost" class="switch" checked>
+      </label>
+      <label class="row">
+        <span class="row-label"><b>エフェクトを控えめに</b><span class="muted">画面の揺れと粒子を減らす</span></span>
+        <input type="checkbox" id="opt-calm" class="switch">
+      </label>
     </div>
-    <p class="muted">同じレベルなら、どの端末でも必ず同じ盤面になります。</p>
+
+    <button class="btn btn-plain" id="btn-share" type="button">このレベルのリンクをコピー</button>
+    <p class="muted center">同じレベルなら、どの端末でも必ず同じ盤面になります。</p>
   </div>
 </div>
 
 <!-- レベル選択 -->
-<div class="modal" id="modal-levels" hidden>
-  <div class="modal-card modal-narrow">
-    <button class="modal-close" data-close type="button" aria-label="閉じる">×</button>
+<div class="sheet" id="modal-levels" hidden>
+  <div class="sheet-card sheet-narrow">
+    <div class="grabber"></div>
+    <button class="sheet-close" data-close type="button" aria-label="閉じる">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+    </button>
     <h2>レベル</h2>
 
     <div class="level-pick">
-      <button class="level-step" id="btn-level-prev" type="button" aria-label="前のレベル">−</button>
-      <input type="number" id="level-input" min="1" step="1" value="1" inputmode="numeric">
-      <button class="level-step" id="btn-level-next" type="button" aria-label="次のレベル">＋</button>
+      <button class="stepper" id="btn-level-prev" type="button" aria-label="前のレベル">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg>
+      </button>
+      <input type="number" id="level-input" min="1" step="1" value="1" inputmode="numeric" aria-label="レベル番号">
+      <button class="stepper" id="btn-level-next" type="button" aria-label="次のレベル">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12"/></svg>
+      </button>
     </div>
     <p class="level-preview" id="level-preview">&nbsp;</p>
 
-    <div class="seed-row">
-      <button class="ctl ctl-primary" id="btn-level-go" type="button">このレベルで遊ぶ</button>
-    </div>
-    <div class="seed-row">
-      <button class="ctl" id="btn-level-best" type="button">最高到達レベルへ</button>
-    </div>
+    <button class="btn btn-primary" id="btn-level-go" type="button">このレベルで遊ぶ</button>
+    <button class="btn btn-plain" id="btn-level-best" type="button">最高到達レベルへ</button>
 
-    <p class="muted">
+    <p class="muted center">
       レベルは無限に続きます。上がるほど盤面が広がり（最大 12×12）、ブロックは
-      テトロミノ → 2個つなぎ → 3個つなぎ と複雑になっていきます。<br>
-      どのレベルも「必ず全消しできること」は生成の仕組みで保証されています。
+      テトロミノ → 2個つなぎ → 3個つなぎ と複雑になっていきます。
     </p>
   </div>
 </div>
 
-<script type="module" src="src/main.js"></script>
+<script defer src="app.js?v=ea487bb61f"></script>
 </body>
 </html>

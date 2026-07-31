@@ -6,12 +6,17 @@ import { generateLevelAsync } from './generator.js';
 import { levelConfig, normalizeLevel, levelFlavor } from './levels.js';
 import { Renderer, PALETTE } from './render.js';
 import { attachInput } from './input.js';
+import { Sound } from './audio.js';
 
-/** 大量消去の段階評価（セル数） */
+/**
+ * 大量消去の段階評価（セル数）。
+ * 色はライト／ダークどちらの背景でも読めるよう中間の明度に寄せてある
+ * （縁取りは背景と反対色を敷くので、これで両方に耐える）。
+ */
 const TIERS = [
-  { cells: 20, label: 'ミラクル!!!', color: '#ff7ad9' },
-  { cells: 16, label: 'ファンタスティック!!', color: '#ffd93d' },
-  { cells: 12, label: 'グレイト!', color: '#7fe7a3' },
+  { cells: 20, label: 'ミラクル!!!', color: '#e0388f' },
+  { cells: 16, label: 'ファンタスティック!!', color: '#e08a00' },
+  { cells: 12, label: 'グレイト!', color: '#0f9d63' },
 ];
 
 const STORE_KEY = 'slidepop.v2';
@@ -62,9 +67,10 @@ export class Game {
     this.board = new Board();
     this.store = loadStore();
     this.settings = Object.assign(
-      { symbols: false, ghost: true, calm: false },
+      { sound: true, haptics: true, symbols: false, ghost: true, calm: false },
       this.store.settings || {},
     );
+    this.sound = new Sound();
 
     this.puzzle = null;
     this.solutionMap = new Map();
@@ -86,6 +92,8 @@ export class Game {
     this.newRecord = false;
     this.initialCells = 0;
     this.activeColors = [];
+    /** 連続で消せた回数。増えるほど消去音の音程が上がる */
+    this.combo = 0;
 
     this.applySettings();
     this.bindUi();
@@ -142,6 +150,7 @@ export class Game {
     this.history = [];
     this.moves = 0;
     this.hintsUsed = 0;
+    this.combo = 0;
     this.status = 'playing';
 
     this.store.lastLevel = lv;
@@ -201,6 +210,7 @@ export class Game {
     this.history = [];
     this.moves = 0;
     this.hintsUsed = 0;
+    this.combo = 0;
     this.status = 'playing';
     this.selected = null;
     this.ghost = null;
@@ -230,6 +240,7 @@ export class Game {
       // 無効手はブロックを小刻みに揺らして拒否。手数には数えない
       this.invalid = { pieceId, dir, t: 0 };
       this.ghost = null;
+      this.sound.invalid();
       return;
     }
 
@@ -254,14 +265,31 @@ export class Game {
   }
 
   onSlideEnd(a) {
+    this.sound.land(a.steps);
     const group = this.board.colorGroup(a.pieceId);
+
     if (group.length < 2) {
-      // 何も消えない手。着地の沈み込みだけ見せる
+      // 何も消えない手。連鎖は途切れ、着地の沈み込みだけ見せる
+      this.combo = 0;
       this.anim = { phase: 'land', pieceId: a.pieceId, dir: a.dir, steps: a.steps, t: 0, duration: 0.17 };
       return;
     }
 
-    const pieces = group.map((id) => this.board.pieces.get(id));
+    // 大きい消去の直前だけ一瞬止める。「タメ」があると解放が強く感じられる
+    if (group.length >= 3 && !this.settings.calm) {
+      this.anim = { phase: 'hold', pieceId: a.pieceId, dir: a.dir, steps: a.steps, t: 0, duration: 0.1, group };
+      return;
+    }
+    this.doClear(group);
+  }
+
+  /** 消去の演出と実行 */
+  doClear(group) {
+    const pieces = group.map((id) => this.board.pieces.get(id)).filter(Boolean);
+    if (pieces.length < 2) { this.anim = null; this.afterMove(); return; }
+
+    this.combo++;
+
     let cells = 0;
     let sx = 0;
     let sy = 0;
@@ -275,17 +303,17 @@ export class Game {
     }
     const center = this.renderer.cellCenter(sx / cells - 0.5, sy / cells - 0.5);
     const color = pieces[0].color;
-    this.renderer.ring(center.x, center.y, color, group.length);
-    this.renderer.addShake(2.5 + cells * 0.55);
+    this.renderer.ring(center.x, center.y, color, pieces.length);
+    this.renderer.flash(center.x, center.y, pieces.length / 2);
+    this.renderer.addShake(2.5 + cells * 0.5);
+    this.sound.pop(this.combo - 1, pieces.length);
 
     const tier = tierOf(cells);
-    this.renderer.floatText(
-      center.x,
-      center.y,
-      `${cells}個消し！`,
-      tier ? tier.label : null,
-      tier ? tier.color : '#ffffff',
-    );
+    let sub = tier ? tier.label : null;
+    if (this.combo >= 2) sub = sub ? `${sub}  ${this.combo}コンボ` : `${this.combo}コンボ!`;
+    // 段階評価が無いときは、消えた粘土の色そのままで祝う
+    const textColor = tier ? tier.color : PALETTE[color].dark;
+    this.renderer.floatText(center.x, center.y, `${cells}個消し！`, sub, textColor);
 
     for (const id of group) this.board.removePiece(id);
     this.selected = null;
@@ -298,11 +326,13 @@ export class Game {
     if (this.board.isEmpty) {
       this.status = 'won';
       this.recordResult();
-      setTimeout(() => this.showWin(), 620);
+      this.sound.win();
+      setTimeout(() => this.showWin(), 640);
       return;
     }
     if (this.board.isDeadlock()) {
       this.status = 'dead';
+      this.sound.dead();
       setTimeout(() => this.showDead(), 380);
     }
   }
@@ -313,6 +343,8 @@ export class Game {
     this.board.restore(h.snap);
     this.moves = h.moves;
     this.status = 'playing';
+    this.combo = 0;
+    this.sound.undo();
     this.selected = null;
     this.ghost = null;
     this.hint = null;
@@ -354,9 +386,13 @@ export class Game {
         return id >= 0 ? id : null;
       },
       onTap: (id) => {
+        this.sound.unlock();
         this.selected = id;
         this.ghost = null;
-        if (id != null) this.hint = null;
+        if (id != null) {
+          this.hint = null;
+          this.sound.tap();
+        }
       },
       onPreview: (id, dir) => this.setGhost(id, dir),
       onCommit: (id, dir) => this.tryMove(id, dir),
@@ -412,24 +448,31 @@ export class Game {
 
     for (const modal of [d.modalRules, d.modalSettings, d.modalLevels]) {
       modal.addEventListener('click', (e) => {
-        if (e.target === modal || e.target.hasAttribute('data-close')) this.closeModals();
+        // 閉じるボタンの中身（SVG）が押されることもあるので closest で辿る
+        if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) {
+          this.closeModals();
+        }
       });
     }
 
-    d.optSymbols.checked = this.settings.symbols;
-    d.optGhost.checked = this.settings.ghost;
-    d.optCalm.checked = this.settings.calm;
-    const sync = () => {
-      this.settings.symbols = d.optSymbols.checked;
-      this.settings.ghost = d.optGhost.checked;
-      this.settings.calm = d.optCalm.checked;
-      this.applySettings();
-      this.store.settings = this.settings;
-      saveStore(this.store);
+    const toggles = {
+      sound: d.optSound,
+      haptics: d.optHaptics,
+      symbols: d.optSymbols,
+      ghost: d.optGhost,
+      calm: d.optCalm,
     };
-    d.optSymbols.addEventListener('change', sync);
-    d.optGhost.addEventListener('change', sync);
-    d.optCalm.addEventListener('change', sync);
+    for (const [key, el] of Object.entries(toggles)) {
+      if (!el) continue;
+      el.checked = !!this.settings[key];
+      el.addEventListener('change', () => {
+        this.settings[key] = el.checked;
+        this.applySettings();
+        this.store.settings = this.settings;
+        saveStore(this.store);
+        if (key === 'sound' && el.checked) { this.sound.unlock(); this.sound.tap(); }
+      });
+    }
 
     const stepLevel = (delta) => {
       const v = Math.max(1, (parseInt(d.levelInput.value, 10) || 1) + delta);
@@ -470,6 +513,8 @@ export class Game {
 
   applySettings() {
     this.renderer.options = { ...this.settings };
+    this.sound.enabled = this.settings.sound;
+    this.sound.haptics = this.settings.haptics;
   }
 
   openModal(el) {
@@ -550,7 +595,13 @@ export class Game {
     d.progressBar.style.width = `${Math.round(done * 100)}%`;
 
     d.btnUndo.disabled = this.history.length === 0 || this.busy;
-    d.statMovesBox.classList.toggle('over', this.puzzle ? this.moves > this.puzzle.par : false);
+    d.hudMoves.classList.toggle('over', this.puzzle ? this.moves > this.puzzle.par : false);
+    if (this.moves !== this.shownMoves) {
+      this.shownMoves = this.moves;
+      d.hudMoves.classList.remove('bump');
+      void d.hudMoves.offsetWidth; // アニメーションを確実に再生させる
+      d.hudMoves.classList.add('bump');
+    }
     this.updateLegend();
   }
 
@@ -594,7 +645,7 @@ export class Game {
     this.showOverlay({
       badge: rank.badge,
       title: `レベル ${this.level} クリア！`,
-      titleClass: rank.gold ? 'rank-gold' : '',
+      titleClass: rank.gold ? 'gold' : '',
       text,
       stats: [
         { k: 'あなた', n: this.moves },
@@ -603,8 +654,8 @@ export class Game {
         ...(this.hintsUsed > 0 ? [{ k: '使ったヒント', n: this.hintsUsed }] : []),
       ],
       actions: [
-        { label: 'もう一度', onClick: () => this.restart() },
         { label: `レベル ${this.level + 1} へ`, primary: true, onClick: () => this.nextLevel() },
+        { label: 'もう一度あそぶ', onClick: () => this.restart() },
       ],
       extra: rank.label + (this.newRecord ? '  ／ 自己ベスト更新!' : ''),
     });
@@ -635,25 +686,21 @@ export class Game {
     d.overlayTitle.className = cfg.titleClass || '';
     d.overlayText.textContent = cfg.text || '';
 
+    d.overlayExtra.textContent = cfg.extra || '';
+
     d.overlayStats.innerHTML = '';
     for (const s of cfg.stats || []) {
       const div = document.createElement('div');
       div.innerHTML = `<span class="n">${s.n}</span><span class="k">${s.k}</span>`;
       d.overlayStats.appendChild(div);
     }
-    if (cfg.extra) {
-      const p = document.createElement('div');
-      p.style.cssText = 'flex-basis:100%;font-size:12px;letter-spacing:.12em;color:#ffd93d;font-weight:800;';
-      p.textContent = cfg.extra;
-      d.overlayStats.appendChild(p);
-    }
 
     d.overlayActions.innerHTML = '';
     for (const a of cfg.actions || []) {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'ctl' + (a.primary ? ' ctl-primary' : '');
-      btn.innerHTML = `<span class="ctl-label">${a.label}</span>`;
+      btn.className = 'btn ' + (a.primary ? 'btn-primary' : 'btn-plain');
+      btn.textContent = a.label;
       btn.addEventListener('click', a.onClick);
       d.overlayActions.appendChild(btn);
     }
@@ -676,6 +723,7 @@ export class Game {
         const a = this.anim;
         this.anim = null;
         if (a.phase === 'slide') this.onSlideEnd(a);
+        else if (a.phase === 'hold') this.doClear(a.group);
         else this.afterMove();
         this.updateHud();
       }

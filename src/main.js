@@ -10,7 +10,7 @@ const dom = {
 
   statLevel: $('stat-level'),
   statMoves: $('stat-moves'),
-  statMovesBox: $('stat-moves').parentElement,
+  hudMoves: $('hud-moves'),
   statPar: $('stat-par'),
   statLeft: $('stat-left'),
   levelInfo: $('level-info'),
@@ -21,6 +21,7 @@ const dom = {
   overlayBadge: $('overlay-badge'),
   overlayTitle: $('overlay-title'),
   overlayText: $('overlay-text'),
+  overlayExtra: $('overlay-extra'),
   overlayStats: $('overlay-stats'),
   overlayActions: $('overlay-actions'),
 
@@ -34,6 +35,8 @@ const dom = {
   modalRules: $('modal-rules'),
   modalSettings: $('modal-settings'),
   modalLevels: $('modal-levels'),
+  optSound: $('opt-sound'),
+  optHaptics: $('opt-haptics'),
   optSymbols: $('opt-symbols'),
   optGhost: $('opt-ghost'),
   optCalm: $('opt-calm'),
