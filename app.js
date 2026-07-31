@@ -1580,42 +1580,30 @@ class Renderer {
     const pad = Math.max(6, cell * 0.16);
     const dark = this.dark;
 
+    // 盤面はコンテンツのカード。無彩色で、色を持つのは粘土だけ
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, Math.max(16, cell * 0.5));
-    const g = ctx.createLinearGradient(x0, y0 - pad, x0, y0 + w + pad);
-    if (dark) {
-      g.addColorStop(0, 'rgba(255,255,255,.06)');
-      g.addColorStop(1, 'rgba(255,255,255,.02)');
-    } else {
-      g.addColorStop(0, 'rgba(255,255,255,.6)');
-      g.addColorStop(1, 'rgba(255,255,255,.3)');
-    }
-    ctx.fillStyle = g;
-    ctx.shadowColor = dark ? 'rgba(0,0,0,.5)' : 'rgba(70,80,150,.16)';
-    ctx.shadowBlur = cell * 0.7;
-    ctx.shadowOffsetY = cell * 0.16;
+    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, Math.max(18, cell * 0.52));
+    ctx.fillStyle = dark ? '#1c1c1e' : '#efeff3';
+    ctx.shadowColor = dark ? 'rgba(0,0,0,.6)' : 'rgba(0,0,0,.07)';
+    ctx.shadowBlur = cell * 0.8;
+    ctx.shadowOffsetY = cell * 0.2;
     ctx.fill();
     ctx.restore();
 
-    // 空きマス（＝通路）。少しくぼんで見えるように上に影、下に光
+    // 空きマス（＝通路）。カードよりわずかに沈ませる
     ctx.save();
-    const r = Math.max(3, cell * 0.26);
+    const r = Math.max(3, cell * 0.28);
+    ctx.fillStyle = dark ? '#111113' : '#e3e3ea';
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         if (board && board.at(x, y) !== -1) continue;
-        const px = x0 + x * cell + cell * 0.09;
-        const py = y0 + y * cell + cell * 0.09;
-        const s = cell - cell * 0.18;
+        const px = x0 + x * cell + cell * 0.08;
+        const py = y0 + y * cell + cell * 0.08;
+        const s = cell - cell * 0.16;
         ctx.beginPath();
         ctx.roundRect(px, py, s, s, r);
-        ctx.fillStyle = dark ? 'rgba(0,0,0,.3)' : 'rgba(112,124,190,.11)';
         ctx.fill();
-        ctx.beginPath();
-        ctx.roundRect(px, py + Math.max(1, cell * 0.035), s, s, r);
-        ctx.strokeStyle = dark ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.5)';
-        ctx.lineWidth = Math.max(1, cell * 0.035);
-        ctx.stroke();
       }
     }
     ctx.restore();
@@ -1781,7 +1769,7 @@ class Renderer {
     // 2) 本体（斜めのグラデーションで塊に見せる）
     const grad = ctx.createLinearGradient(box.x0, box.y0, box.x1, box.y1);
     grad.addColorStop(0, c.light);
-    grad.addColorStop(0.42, c.base);
+    grad.addColorStop(0.36, c.base);
     grad.addColorStop(1, c.dark);
     ctx.fillStyle = grad;
     ctx.fill(path);
@@ -1794,7 +1782,7 @@ class Renderer {
       box.x0 + box.w * 0.16, box.y0 + box.h * 0.14, 0,
       box.x0 + box.w * 0.16, box.y0 + box.h * 0.14, Math.max(box.w, box.h) * 0.92,
     );
-    rTL.addColorStop(0, 'rgba(255,255,255,.24)');
+    rTL.addColorStop(0, 'rgba(255,255,255,.17)');
     rTL.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = rTL;
     ctx.fillRect(box.x0, box.y0, box.w, box.h);
@@ -1819,11 +1807,11 @@ class Renderer {
 
     // 外周のふちに光をひとすじ。クリップしているので内側半分だけ残る
     ctx.lineWidth = Math.max(1.5, cell * 0.12);
-    ctx.strokeStyle = 'rgba(255,255,255,.34)';
+    ctx.strokeStyle = 'rgba(255,255,255,.3)';
     ctx.stroke(outline);
 
     // てっぺんの平らな面のツヤ（横一続きごとに 1 本）
-    ctx.globalAlpha = alpha * 0.26;
+    ctx.globalAlpha = alpha * 0.22;
     ctx.fillStyle = '#ffffff';
     for (const run of topRuns(rects)) {
       const w = run.x1 - run.x0;
@@ -1962,7 +1950,7 @@ class Renderer {
     const cys = piece.cells.reduce((s, c) => s + c[1], 0) / piece.cells.length;
     const from = this.cellCenter(cxs, cys);
     const to = { x: from.x + dx, y: from.y + dy };
-    const col = ghost.willClear ? '#ffb340' : (this.dark ? 'rgba(255,255,255,.8)' : 'rgba(40,44,80,.55)');
+    const col = ghost.willClear ? '#ff9f0a' : (this.dark ? 'rgba(255,255,255,.72)' : 'rgba(60,60,67,.5)');
 
     ctx.save();
     ctx.strokeStyle = col;
@@ -1989,9 +1977,9 @@ class Renderer {
     // 消える予定の相手を光らせる ―― 「あと1手で消える」予感を可視化する
     if (ghost.willClear && ghost.clearIds) {
       ctx.globalAlpha = 0.55 + 0.4 * Math.sin(this.time * 9);
-      ctx.strokeStyle = '#ffb340';
+      ctx.strokeStyle = '#ff9f0a';
       ctx.lineWidth = Math.max(2, cell * 0.08);
-      ctx.shadowColor = 'rgba(255,179,64,.8)';
+      ctx.shadowColor = 'rgba(255,159,10,.85)';
       ctx.shadowBlur = cell * 0.4;
       for (const id of ghost.clearIds) {
         const p = view.board.pieces.get(id);
@@ -2014,9 +2002,9 @@ class Renderer {
 
     ctx.save();
     ctx.globalAlpha = 0.45 + 0.5 * pulse;
-    ctx.strokeStyle = '#ffb340';
+    ctx.strokeStyle = '#ff9f0a';
     ctx.lineWidth = Math.max(2.5, cell * 0.1);
-    ctx.shadowColor = 'rgba(255,179,64,.9)';
+    ctx.shadowColor = 'rgba(255,159,10,.9)';
     ctx.shadowBlur = cell * 0.6;
     ctx.stroke(this.outlineOf(this.cellRects(piece, 0, 0), Math.max(3, cell * 0.34)));
     ctx.restore();
@@ -2032,8 +2020,8 @@ class Renderer {
 
     ctx.save();
     ctx.globalAlpha = 0.75 + 0.25 * pulse;
-    ctx.fillStyle = '#ffb340';
-    ctx.shadowColor = 'rgba(255,179,64,.9)';
+    ctx.fillStyle = '#ff9f0a';
+    ctx.shadowColor = 'rgba(255,159,10,.9)';
     ctx.shadowBlur = cell * 0.5;
     ctx.beginPath();
     ctx.moveTo(ax + d.x * s, ay + d.y * s);
@@ -2140,7 +2128,7 @@ class Renderer {
       ctx.textBaseline = 'middle';
       ctx.lineJoin = 'round';
       ctx.lineWidth = Math.max(4, this.cell * 0.22);
-      ctx.strokeStyle = this.dark ? 'rgba(0,0,0,.72)' : 'rgba(255,255,255,.94)';
+      ctx.strokeStyle = this.dark ? 'rgba(0,0,0,.8)' : 'rgba(255,255,255,.96)';
       ctx.font = `800 ${Math.floor(this.cell * 0.82)}px ${UI_FONT}`;
       ctx.strokeText(t.text, 0, 0);
       ctx.fillStyle = t.color;
@@ -2148,7 +2136,7 @@ class Renderer {
       if (t.sub) {
         ctx.font = `800 ${Math.floor(this.cell * 0.52)}px ${UI_FONT}`;
         ctx.strokeText(t.sub, 0, this.cell * 0.8);
-        ctx.fillStyle = this.dark ? '#ffc453' : '#d9821a';
+        ctx.fillStyle = this.dark ? '#ffd60a' : '#c77800';
         ctx.fillText(t.sub, 0, this.cell * 0.8);
       }
       ctx.restore();
