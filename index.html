@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0a0e1a">
+<meta name="description" content="SLIDE POP! ― 凍った盤面を滑らせて、同色をぶつけて、盤面を空にする空間推理パズル。">
+<title>SLIDE POP!</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a0e1a'/><rect x='5' y='6' width='9' height='9' rx='2' fill='%23ff4d6d'/><rect x='18' y='6' width='9' height='9' rx='2' fill='%23ff4d6d'/><rect x='5' y='19' width='22' height='7' rx='2' fill='%234d9dff'/></svg>">
+</head>
+<body>
+
+<div id="app">
+  <header class="topbar">
+    <h1 class="logo">SLIDE<span class="logo-pop">POP!</span></h1>
+    <div class="topbar-right">
+      <button class="icon-btn" id="btn-rules" type="button" title="ルール">ルール</button>
+      <button class="icon-btn" id="btn-settings" type="button" title="設定">設定</button>
+    </div>
+  </header>
+
+  <div class="stats" id="stats">
+    <div class="stat">
+      <span class="stat-label">手数</span>
+      <span class="stat-value" id="stat-moves">0</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">PAR</span>
+      <span class="stat-value" id="stat-par">-</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">残りブロック</span>
+      <span class="stat-value" id="stat-left">-</span>
+    </div>
+    <div class="stat stat-seed">
+      <span class="stat-label" id="stat-mode-label">SEED</span>
+      <span class="stat-value" id="stat-seed">------</span>
+    </div>
+  </div>
+
+  <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+
+  <!-- 色ごとの残りブロック数。同色ペアを「見つける」ための補助 -->
+  <div class="legend" id="legend" aria-label="色ごとの残りブロック数"></div>
+
+  <main class="board-wrap">
+    <canvas id="board" aria-label="ゲーム盤面"></canvas>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <div class="overlay" id="overlay" hidden>
+      <div class="overlay-card" id="overlay-card">
+        <div class="overlay-badge" id="overlay-badge"></div>
+        <h2 id="overlay-title"></h2>
+        <p id="overlay-text"></p>
+        <div class="overlay-stats" id="overlay-stats"></div>
+        <div class="overlay-actions" id="overlay-actions"></div>
+      </div>
+    </div>
+  </main>
+
+  <nav class="controls">
+    <button class="ctl" id="btn-undo" type="button">
+      <span class="ctl-icon">↶</span><span class="ctl-label">戻す</span>
+    </button>
+    <button class="ctl" id="btn-hint" type="button">
+      <span class="ctl-icon">💡</span><span class="ctl-label">ヒント</span>
+    </button>
+    <button class="ctl" id="btn-restart" type="button">
+      <span class="ctl-icon">⟳</span><span class="ctl-label">やり直す</span>
+    </button>
+    <button class="ctl ctl-primary" id="btn-new" type="button">
+      <span class="ctl-icon">✦</span><span class="ctl-label">新しい問題</span>
+    </button>
+  </nav>
+
+  <p class="hint-line" id="hint-line">ブロックをスワイプ（またはクリックして矢印キー）で滑らせる。</p>
+</div>
+
+<!-- ルール -->
+<div class="modal" id="modal-rules" hidden>
+  <div class="modal-card">
+    <button class="modal-close" data-close type="button" aria-label="閉じる">×</button>
+    <h2>ルールは3つだけ</h2>
+
+    <section class="rule">
+      <div class="rule-num">①</div>
+      <div>
+        <h3>スライド ― 距離は選べない</h3>
+        <p>できるのは<b>「どのブロックを、どの方向に押すか」</b>だけ。押されたブロックは壁か他のブロックにぶつかるまで滑り続けます。1マスで止めることはできません。</p>
+      </div>
+    </section>
+
+    <section class="rule">
+      <div class="rule-num">②</div>
+      <div>
+        <h3>同色接触消去 ― 触れた瞬間、全部消える</h3>
+        <p>滑り終えた直後、上下左右で<b>同じ色のブロックが触れていれば、繋がったグループ全体が消えます</b>。列を揃える必要はありません。<br>
+        消える単位は「ブロック」。1個のブロックは自分だけでは消えません（＝必ず2個以上）。</p>
+      </div>
+    </section>
+
+    <section class="rule">
+      <div class="rule-num">③</div>
+      <div>
+        <h3>重力なし ― 空きマスは、あなたが稼ぐ</h3>
+        <p>消えても他のブロックは落ちません。<b>空きマスは消去でしか生まれない</b>。そして生まれた空きマスが、次のスライドの「通路」になります。</p>
+      </div>
+    </section>
+
+    <div class="rule-tip">
+      <h3>最大の快感 ―「橋渡し」</h3>
+      <p>離れた2つの同色グループの<b>あいだにブロックを滑り込ませ、3つ以上を一度に繋いで消す</b>手。消えるグループは必ず「動かしたブロック」を経由して繋がります（動かしていない同色同士は決して隣接しないため）。動くブロックは常にハブ ―― この星型構造が見えた瞬間、盤面の見え方が変わります。</p>
+    </div>
+
+    <div class="rule-tip">
+      <h3>勝敗</h3>
+      <p><b>勝利</b>：盤面のブロックを全て消す。<br>
+      <b>詰み</b>：どう動かしても同色接触を作れない状態。運ではなく手順の帰結なので、<b>戻す</b>はいつでもフェアです。</p>
+      <p class="muted">すべての問題は「解の逆順構築」で作られており、<b>必ず全消しできること</b>が構造的に保証されています。PAR は保証された解の手数です。</p>
+    </div>
+
+    <div class="rule-tip">
+      <h3>操作</h3>
+      <p>スワイプ、またはクリックで選んで<b>矢印キー</b>。<br>
+      ドラッグ中は<b>着地予測ゴースト</b>が停止位置を教えてくれます。<br>
+      <span class="muted">Z=戻す / H=ヒント / R=やり直す / N=新しい問題</span></p>
+    </div>
+  </div>
+</div>
+
+<!-- 設定 -->
+<div class="modal" id="modal-settings" hidden>
+  <div class="modal-card modal-narrow">
+    <button class="modal-close" data-close type="button" aria-label="閉じる">×</button>
+    <h2>設定</h2>
+
+    <label class="row-toggle">
+      <span><b>色に記号を付ける</b><br><span class="muted">色の見分けが難しいときに</span></span>
+      <input type="checkbox" id="opt-symbols">
+    </label>
+
+    <label class="row-toggle">
+      <span><b>着地ゴースト</b><br><span class="muted">ドラッグ中に停止位置を表示</span></span>
+      <input type="checkbox" id="opt-ghost" checked>
+    </label>
+
+    <label class="row-toggle">
+      <span><b>エフェクトを控えめに</b><br><span class="muted">画面の揺れと粒子を減らす</span></span>
+      <input type="checkbox" id="opt-calm">
+    </label>
+
+    <h3 class="settings-head">問題を選ぶ</h3>
+    <div class="seed-row">
+      <input type="text" id="seed-input" placeholder="シード（例: 3K7Q2P）" maxlength="12" autocomplete="off" spellcheck="false">
+      <button class="ctl ctl-primary" id="btn-seed-go" type="button">この問題で遊ぶ</button>
+    </div>
+    <div class="seed-row">
+      <button class="ctl" id="btn-daily" type="button">今日のデイリー</button>
+      <button class="ctl" id="btn-share" type="button">この問題のリンクをコピー</button>
+    </div>
+    <p class="muted" id="settings-note">同じシードなら誰がやっても同じ盤面になります。</p>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
