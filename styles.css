@@ -121,7 +121,8 @@ body {
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
 }
-.stat-seed .stat-value { font-size: 14px; padding-top: 4px; letter-spacing: .04em; }
+.stat-level .stat-value { color: var(--gold); }
+.stat-level { border-color: rgba(255, 217, 61, .3); background: rgba(255, 217, 61, .07); }
 .stat.flash { animation: statFlash .5s ease; }
 @keyframes statFlash {
   0% { background: rgba(255, 217, 61, .35); }
@@ -141,6 +142,15 @@ body {
   border-radius: 99px;
   background: linear-gradient(90deg, #4d9dff, #37d67a 60%, #ffd93d);
   transition: width .45s cubic-bezier(.2,.8,.2,1);
+}
+
+.level-info {
+  margin: 0;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .04em;
+  min-height: 15px;
 }
 
 /* ---------- 色ごとの残り数 ---------- */
@@ -393,19 +403,56 @@ body {
 .seed-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .seed-row .ctl { flex: 1; flex-direction: row; padding: 10px; }
 .seed-row .ctl .ctl-label { color: var(--text); font-size: 12px; }
-#seed-input {
+/* ---------- レベル選択 ---------- */
+
+.level-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 8px;
+}
+.level-step {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--panel-line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .15s, transform .1s;
+}
+.level-step:hover { background: rgba(255,255,255,.11); }
+.level-step:active { transform: scale(.92); }
+
+#level-input {
   flex: 1;
   min-width: 0;
   background: rgba(0,0,0,.3);
   border: 1px solid var(--panel-line);
   border-radius: var(--radius);
-  color: var(--text);
+  color: var(--gold);
   font: inherit;
-  font-size: 14px;
-  padding: 10px 12px;
-  text-transform: uppercase;
+  font-size: 26px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  padding: 8px 6px;
+  -moz-appearance: textfield;
 }
-#seed-input:focus { outline: none; border-color: var(--accent); }
+#level-input::-webkit-outer-spin-button,
+#level-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+#level-input:focus { outline: none; border-color: var(--accent); }
+
+.level-preview {
+  margin: 0 0 14px !important;
+  text-align: center;
+  font-size: 12px !important;
+  color: var(--muted) !important;
+  min-height: 18px;
+}
 
 /* ---------- 横長画面 ---------- */
 

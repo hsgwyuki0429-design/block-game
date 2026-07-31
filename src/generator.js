@@ -19,18 +19,25 @@
 // 結果として PAR（保証解の手数）と完全な解答手順が副産物として手に入る。
 
 import { Board, BOARD_SIZE, COLOR_COUNT } from './board.js';
-import { DIRS, DIR_KEYS, TETROMINOES, SMALL_PIECES } from './shapes.js';
+import { DIRS, DIR_KEYS, TETROMINOES } from './shapes.js';
 import { makeRng, shuffle, weightedIndex } from './rng.js';
+import { levelConfig, levelSeed, buildLevelClasses } from './levels.js';
 
 export const DEFAULT_OPTIONS = {
   size: BOARD_SIZE,
   colors: COLOR_COUNT,
+  /** 使用するブロックのクラス（形状集合と配合比）。レベルごとに差し替える */
+  classes: [{ kind: 'single', parts: 1, weight: 1, shapes: TETROMINOES }],
   /** 目標の埋め率（セル数）。盤面の約 80% */
   targetCells: 120,
   /** これを下回る盤面は生成失敗として作り直す */
   minCells: 100,
+  /** 目標にこれだけ届いていれば「十分良い」として打ち切る */
+  acceptSlack: 4,
   /** 手数（PAR）の上限 */
   maxSteps: 16,
+  /** これ未満の手数しかない盤面は物足りないので作り直す */
+  minPar: 4,
   /** 1 ステップの相棒ブロック数（= 1手で消えるブロック数 - 1）の重み */
   partnerWeights: [0.45, 0.4, 0.15],
   /** 滑走距離の偏り。1 未満で「長い滑走」寄り、1 より大きいと短い滑走寄り */
@@ -41,8 +48,6 @@ export const DEFAULT_OPTIONS = {
   budget: 26000,
   /** 生成全体のリトライ回数 */
   attempts: 24,
-  /** 小型ピース（1〜3セル）の使用を許可するか */
-  allowSmallPieces: false,
 };
 
 /** [x,y] 配列を「格子 index の Set」に */
@@ -150,17 +155,56 @@ function contactScore(board, cells) {
 }
 
 /**
- * 逆順構築の 1 ステップ。成功したら盤面にブロックを追加し、手を返す。
+ * 逆順構築の 1 ステップ。
+ *
+ * まずブロックのクラス（テトロミノ / 2個つなぎ / 3個つなぎ）を配合比で抽選し、
+ * そのクラスだけで 1 ステップを組む。1 ステップ分のブロックはまとめて消える
+ * 仲間なので、同じクラスで揃えると見た目のまとまりも良くなる。
+ * 抽選したクラスで置けなければ、残りのクラスへ順に落としていく。
+ */
+function buildStep(board, rng, opts) {
+  const order = weightedOrder(rng, opts.classes);
+  for (let i = 0; i < order.length; i++) {
+    const cls = order[i];
+    // 第1候補には満額、フォールバックには控えめな探索予算を与える
+    const budget = i === 0 ? opts.budget : Math.round(opts.budget * 0.35);
+    const step = buildStepWithShapes(board, rng, opts, cls.shapes, budget);
+    if (step) return { ...step, kind: cls.kind };
+  }
+  return null;
+}
+
+/** 重みつきの並べ替え（重みが大きいクラスほど前に来やすい） */
+function weightedOrder(rng, classes) {
+  const pool = classes.slice();
+  const out = [];
+  while (pool.length > 0) {
+    let total = 0;
+    for (const c of pool) total += Math.max(1e-6, c.weight);
+    let r = rng() * total;
+    let idx = pool.length - 1;
+    for (let i = 0; i < pool.length; i++) {
+      r -= Math.max(1e-6, pool[i].weight);
+      if (r < 0) { idx = i; break; }
+    }
+    out.push(pool[idx]);
+    pool.splice(idx, 1);
+  }
+  return out;
+}
+
+/**
+ * 指定した形状集合だけで 1 ステップ組む。
  *
  * 探索は「開始点 A」から始める。A に置いたブロックが盤面に残るので、
  * A を詰まった場所から順に試すと空きマスが断片化しにくい。
  */
-function buildStep(board, rng, opts, shapes) {
+function buildStepWithShapes(board, rng, opts, shapes, budgetLimit) {
   const size = board.size;
   const placements = emptyPlacements(board, shapes);
   for (const p of placements) p.score = contactScore(board, p.cells) + rng() * opts.packingJitter;
   placements.sort((a, b) => b.score - a.score);
-  let budget = opts.budget;
+  let budget = budgetLimit;
 
   const used = new Array(opts.colors).fill(0);
   for (const p of board.pieces.values()) used[p.color]++;
@@ -253,8 +297,12 @@ function buildStep(board, rng, opts, shapes) {
         if (partners.length === 0) continue;
 
         // ---- 確定。盤面に追加する ----
-        const moving = board.addPiece(color, acells, placement.shape.name);
-        for (const q of partners) board.addPiece(color, q.cells, q.shape.name);
+        const moving = board.addPiece(color, acells, placement.shape.name, placement.shape.parts);
+        let cells = placement.shape.size;
+        for (const q of partners) {
+          board.addPiece(color, q.cells, q.shape.name, q.shape.parts);
+          cells += q.shape.size;
+        }
 
         return {
           pieceId: moving.id,
@@ -262,7 +310,7 @@ function buildStep(board, rng, opts, shapes) {
           distance: t,
           color,
           cleared: partners.length + 1,
-          cells: (partners.length + 1) * placement.shape.size,
+          cells,
         };
       }
     }
@@ -274,12 +322,11 @@ function buildStep(board, rng, opts, shapes) {
 function attemptBuild(seed, opts) {
   const rng = makeRng(seed);
   const board = new Board(opts.size);
-  const shapes = opts.allowSmallPieces ? TETROMINOES.concat(SMALL_PIECES) : TETROMINOES;
   const solution = [];
   let misses = 0;
 
   while (solution.length < opts.maxSteps && board.filledCells < opts.targetCells) {
-    const step = buildStep(board, rng, opts, shapes);
+    const step = buildStep(board, rng, opts);
     if (!step) {
       misses++;
       if (misses >= 2) break;
@@ -301,31 +348,102 @@ export function generatePuzzle(seed, options = {}) {
   let best = null;
 
   for (let attempt = 0; attempt < opts.attempts; attempt++) {
-    // 試行ごとにシードを派生させる（同じ seed なら常に同じ結果）
-    const derived = (seed + attempt * 0x9e3779b1) >>> 0;
-    const { board, solution } = attemptBuild(derived, opts);
-    if (solution.length === 0) continue;
-
-    const snapshot = board.snapshot();
-    const check = verifySolution(snapshot, solution, opts.size);
-    if (!check.ok) continue;
-
-    const result = {
-      seed: seed >>> 0,
-      snapshot,
-      solution,
-      par: solution.length,
-      cells: board.filledCells,
-      pieces: board.pieceCount,
-      size: opts.size,
-      colors: opts.colors,
-    };
+    const result = runAttempt(seed, opts, attempt);
+    if (!result) continue;
     if (!best || result.cells > best.cells) best = result;
-    if (result.cells >= opts.targetCells - 4 && result.par >= 9) break;
+    if (goodEnough(result, opts)) break;
   }
 
   if (!best) throw new Error('パズルを生成できませんでした');
   return best;
+}
+
+/**
+ * generatePuzzle と同じものを、試行の合間にイベントループへ制御を返しながら作る。
+ * 大きな連結ピースの盤面は生成に数百ミリ秒かかることがあるので、
+ * UI 側はこちらを使って「生成中」を出しつつ画面を固めない。
+ */
+export async function generatePuzzleAsync(seed, options = {}, onProgress = null) {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  let best = null;
+
+  for (let attempt = 0; attempt < opts.attempts; attempt++) {
+    const result = runAttempt(seed, opts, attempt);
+    if (result && (!best || result.cells > best.cells)) best = result;
+    if (result && goodEnough(result, opts)) break;
+    if (onProgress) onProgress((attempt + 1) / opts.attempts);
+    // 2 試行ごとに 1 フレーム譲る
+    if (attempt % 2 === 1) await new Promise((r) => setTimeout(r, 0));
+  }
+
+  if (!best) throw new Error('パズルを生成できませんでした');
+  return best;
+}
+
+/** 1 回分の試行を回して、検証を通った結果だけ返す */
+function runAttempt(seed, opts, attempt) {
+  // 試行ごとにシードを派生させる（同じ seed なら常に同じ結果）
+  const derived = (seed + attempt * 0x9e3779b1) >>> 0;
+  const { board, solution } = attemptBuild(derived, opts);
+  if (solution.length === 0) return null;
+
+  const snapshot = board.snapshot();
+  if (!verifySolution(snapshot, solution, opts.size).ok) return null;
+
+  return {
+    seed: seed >>> 0,
+    snapshot,
+    solution,
+    par: solution.length,
+    cells: board.filledCells,
+    pieces: board.pieceCount,
+    size: opts.size,
+    colors: opts.colors,
+  };
+}
+
+function goodEnough(result, opts) {
+  return result.cells >= opts.targetCells - opts.acceptSlack && result.par >= opts.minPar;
+}
+
+/**
+ * レベル番号からパズルを作る。
+ * レベル -> シード -> 決定論的な生成、という一本道なので、
+ * 同じレベルなら、どの端末でも必ず同じ譜面になる。
+ */
+export function generateLevel(level, overrides = {}) {
+  const config = levelConfig(level);
+  const classes = buildLevelClasses(config);
+  const puzzle = generatePuzzle(levelSeed(config.level), levelOptions(config, classes, overrides));
+  return { ...puzzle, level: config.level, config };
+}
+
+/** generateLevel の非同期版（画面を固めずに生成する） */
+export async function generateLevelAsync(level, overrides = {}, onProgress = null) {
+  const config = levelConfig(level);
+  const classes = buildLevelClasses(config);
+  const puzzle = await generatePuzzleAsync(
+    levelSeed(config.level),
+    levelOptions(config, classes, overrides),
+    onProgress,
+  );
+  return { ...puzzle, level: config.level, config };
+}
+
+function levelOptions(config, classes, overrides) {
+  return {
+    size: config.size,
+    colors: config.colors,
+    classes,
+    targetCells: config.targetCells,
+    minCells: config.minCells,
+    acceptSlack: config.acceptSlack,
+    maxSteps: config.maxSteps,
+    minPar: config.minPar,
+    partnerWeights: config.partnerWeights,
+    attempts: config.attempts,
+    ...overrides,
+  };
 }
 
 /**

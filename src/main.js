@@ -1,7 +1,6 @@
 // 起動。DOM を集めて Game に渡し、URL のハッシュから最初の問題を決める。
 
 import { Game } from './game.js';
-import { codeToSeed, hashSeed } from './rng.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -9,12 +8,12 @@ const dom = {
   canvas: $('board'),
   toast: $('toast'),
 
+  statLevel: $('stat-level'),
   statMoves: $('stat-moves'),
   statMovesBox: $('stat-moves').parentElement,
   statPar: $('stat-par'),
   statLeft: $('stat-left'),
-  statSeed: $('stat-seed'),
-  statModeLabel: $('stat-mode-label'),
+  levelInfo: $('level-info'),
   progressBar: $('progress-bar'),
   legend: $('legend'),
 
@@ -28,40 +27,42 @@ const dom = {
   btnUndo: $('btn-undo'),
   btnHint: $('btn-hint'),
   btnRestart: $('btn-restart'),
-  btnNew: $('btn-new'),
+  btnLevels: $('btn-levels'),
   btnRules: $('btn-rules'),
   btnSettings: $('btn-settings'),
 
   modalRules: $('modal-rules'),
   modalSettings: $('modal-settings'),
+  modalLevels: $('modal-levels'),
   optSymbols: $('opt-symbols'),
   optGhost: $('opt-ghost'),
   optCalm: $('opt-calm'),
-  seedInput: $('seed-input'),
-  btnSeedGo: $('btn-seed-go'),
-  btnDaily: $('btn-daily'),
+  levelInput: $('level-input'),
+  levelPreview: $('level-preview'),
+  btnLevelPrev: $('btn-level-prev'),
+  btnLevelNext: $('btn-level-next'),
+  btnLevelGo: $('btn-level-go'),
+  btnLevelBest: $('btn-level-best'),
   btnShare: $('btn-share'),
 };
 
 const game = new Game(dom);
 
-function seedFromHash() {
+/** URL のハッシュ（#L12 / #12）からレベルを読む */
+function levelFromHash() {
   const raw = decodeURIComponent(location.hash.replace(/^#/, '')).trim();
-  if (!raw) return null;
-  if (/^daily$/i.test(raw)) {
-    const d = new Date();
-    const p = (n) => String(n).padStart(2, '0');
-    return { seed: hashSeed(`daily-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`), mode: 'daily' };
-  }
-  return { seed: codeToSeed(raw), mode: 'free' };
+  const m = /^L?(\d+)$/i.exec(raw);
+  if (!m) return null;
+  return Math.max(1, parseInt(m[1], 10));
 }
 
-const start = seedFromHash();
-if (start) {
-  game.load(start.seed, start.mode);
-} else {
-  game.load((Math.random() * 0xffffffff) >>> 0, 'free');
-}
+// 優先順位: URL のレベル > 前回遊んでいたレベル > レベル1
+game.load(levelFromHash() || game.store.lastLevel || 1);
+
+window.addEventListener('hashchange', () => {
+  const lv = levelFromHash();
+  if (lv && lv !== game.level) game.load(lv);
+});
 
 // 初回だけルールを開く
 try {
