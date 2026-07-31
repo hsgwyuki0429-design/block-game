@@ -79,13 +79,15 @@ export class Board {
     return false;
   }
 
-  addPiece(color, cells, shape = '') {
+  addPiece(color, cells, shape = '', parts = null) {
     const id = this.nextId++;
     const piece = {
       id,
       color,
       cells: cells.map(([x, y]) => [x, y]),
       shape,
+      // cells と並びを揃えた「何番目のテトロミノ由来か」。連結ピースの継ぎ目描画に使う
+      parts: parts ? parts.slice() : cells.map(() => 0),
     };
     this.pieces.set(id, piece);
     for (const [x, y] of piece.cells) this.grid[y * this.size + x] = id;
@@ -304,6 +306,7 @@ export class Board {
         id: p.id,
         color: p.color,
         shape: p.shape,
+        parts: p.parts ? p.parts.slice() : null,
         cells: p.cells.map(([x, y]) => [x, y]),
       })),
     };
@@ -314,7 +317,13 @@ export class Board {
     this.pieces.clear();
     this.nextId = snap.nextId;
     for (const p of snap.pieces) {
-      const piece = { id: p.id, color: p.color, shape: p.shape, cells: p.cells.map(([x, y]) => [x, y]) };
+      const piece = {
+        id: p.id,
+        color: p.color,
+        shape: p.shape,
+        parts: p.parts ? p.parts.slice() : p.cells.map(() => 0),
+        cells: p.cells.map(([x, y]) => [x, y]),
+      };
       this.pieces.set(piece.id, piece);
       for (const [x, y] of piece.cells) this.grid[y * this.size + x] = piece.id;
     }

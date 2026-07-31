@@ -15,6 +15,23 @@ export const PALETTE = [
 /** 色覚サポート用の記号 */
 const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚'];
 
+/** 上端が外側になっているセルを、横につながった並びごとにまとめる */
+function topRuns(paths) {
+  const tops = paths.filter((p) => !p.up).sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  const runs = [];
+  let cur = null;
+  for (const p of tops) {
+    if (cur && cur.row === p.y && cur.lastX === p.x - 1) {
+      cur.x1 = p.px + p.pw;
+      cur.lastX = p.x;
+      continue;
+    }
+    cur = { row: p.y, y: p.py, x0: p.px, x1: p.px + p.pw, lastX: p.x };
+    runs.push(cur);
+  }
+  return runs;
+}
+
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 const easeOutBack = (t) => 1 + 2.2 * Math.pow(t - 1, 3) + 1.4 * Math.pow(t - 1, 2);
 
@@ -310,6 +327,8 @@ export class Renderer {
     const pad = Math.max(1.2, cell * 0.055);
     const r = Math.max(2, cell * 0.26);
 
+    // セルごとの矩形。同じブロックの隣がある側はセル境界ぴったりまで伸ばし、
+    // 外側の角だけ丸める。こうすると塗りが継ぎ目なく融合する。
     const paths = [];
     for (const [x, y] of piece.cells) {
       const up = has(x, y - 1);
@@ -317,30 +336,27 @@ export class Renderer {
       const left = has(x - 1, y);
       const right = has(x + 1, y);
 
-      const px = this.ox + x * cell + dx + (left ? -pad : pad);
-      const py = this.oy + y * cell + dy + (up ? -pad : pad);
-      const pw = cell - (left ? -pad : pad) - (right ? -pad : pad);
-      const ph = cell - (up ? -pad : pad) - (down ? -pad : pad);
+      const px = this.ox + x * cell + dx + (left ? 0 : pad);
+      const py = this.oy + y * cell + dy + (up ? 0 : pad);
+      const pw = cell - (left ? 0 : pad) - (right ? 0 : pad);
+      const ph = cell - (up ? 0 : pad) - (down ? 0 : pad);
 
-      // 外側の角だけ丸める
       const radii = [
         (!up && !left) ? r : 0,
         (!up && !right) ? r : 0,
         (!down && !right) ? r : 0,
         (!down && !left) ? r : 0,
       ];
-      paths.push({ px, py, pw, ph, radii, up });
+      paths.push({ px, py, pw, ph, radii, up, down, left, right, x, y });
     }
 
     if (outlineOnly) {
       ctx.lineWidth = Math.max(1.5, cell * 0.08);
       ctx.strokeStyle = c.base;
       ctx.setLineDash([cell * 0.24, cell * 0.18]);
-      for (const p of paths) {
-        ctx.beginPath();
-        ctx.roundRect(p.px, p.py, p.pw, p.ph, p.radii);
-        ctx.stroke();
-      }
+      ctx.beginPath();
+      this.traceOutline(paths, r);
+      ctx.stroke();
       ctx.setLineDash([]);
       ctx.restore();
       return;
@@ -370,26 +386,30 @@ export class Renderer {
       ctx.fill();
     }
 
-    // 上面のツヤ（各セルの上端が外側のときだけ）
+    // 上面のツヤ。上端が外側になっている「横一続きの並び」ごとに 1 本だけ引く
+    // （セルごとに引くと大きいブロックで縞模様に見えてしまう）
     ctx.save();
     ctx.globalAlpha = alpha * 0.55;
     ctx.fillStyle = 'rgba(255,255,255,.45)';
-    for (const p of paths) {
-      if (p.up) continue;
+    for (const run of topRuns(paths)) {
+      const w = run.x1 - run.x0;
+      if (w <= cell * 0.4) continue;
       ctx.beginPath();
-      ctx.roundRect(p.px + cell * 0.14, p.py + cell * 0.1, p.pw - cell * 0.28, cell * 0.12, cell * 0.06);
+      ctx.roundRect(run.x0 + cell * 0.14, run.y + cell * 0.1, w - cell * 0.28, cell * 0.12, cell * 0.06);
       ctx.fill();
     }
     ctx.restore();
 
-    // 輪郭
+    // 輪郭はブロックの外周だけ。内部のセル境界には線を引かない
     ctx.lineWidth = Math.max(1, cell * 0.035);
-    ctx.strokeStyle = 'rgba(0,0,0,.30)';
-    for (const p of paths) {
-      ctx.beginPath();
-      ctx.roundRect(p.px, p.py, p.pw, p.ph, p.radii);
-      ctx.stroke();
-    }
+    ctx.strokeStyle = 'rgba(0,0,0,.32)';
+    ctx.beginPath();
+    this.traceOutline(paths, r);
+    ctx.stroke();
+
+    // 連結ピースの継ぎ目。元のテトロミノ同士の境目に薄い線を入れて
+    //「テトロミノが2個/3個くっついた形」だと読めるようにする
+    this.drawSeams(piece, dx, dy, alpha);
 
     // 色記号（色覚サポート）
     if (this.options.symbols && cell > 16) {
@@ -421,6 +441,76 @@ export class Renderer {
       ctx.restore();
     }
 
+    ctx.restore();
+  }
+
+  /**
+   * ブロックの外周だけをなぞる（内部のセル境界は引かない）。
+   * 各セルの「同じブロックの隣がない側」の辺と、外側の角の円弧だけを集める。
+   */
+  traceOutline(paths, r) {
+    const ctx = this.ctx;
+    const HALF_PI = Math.PI / 2;
+    for (const p of paths) {
+      const { px, py, pw, ph, up, down, left, right } = p;
+      const x1 = px + pw;
+      const y1 = py + ph;
+      const rTL = (!up && !left) ? r : 0;
+      const rTR = (!up && !right) ? r : 0;
+      const rBR = (!down && !right) ? r : 0;
+      const rBL = (!down && !left) ? r : 0;
+
+      if (!up) { ctx.moveTo(px + rTL, py); ctx.lineTo(x1 - rTR, py); }
+      if (!right) { ctx.moveTo(x1, py + rTR); ctx.lineTo(x1, y1 - rBR); }
+      if (!down) { ctx.moveTo(x1 - rBR, y1); ctx.lineTo(px + rBL, y1); }
+      if (!left) { ctx.moveTo(px, y1 - rBL); ctx.lineTo(px, py + rTL); }
+
+      if (rTL) { ctx.moveTo(px, py + rTL); ctx.arc(px + rTL, py + rTL, rTL, Math.PI, Math.PI * 1.5); }
+      if (rTR) { ctx.moveTo(x1 - rTR, py); ctx.arc(x1 - rTR, py + rTR, rTR, Math.PI * 1.5, 0); }
+      if (rBR) { ctx.moveTo(x1, y1 - rBR); ctx.arc(x1 - rBR, y1 - rBR, rBR, 0, HALF_PI); }
+      if (rBL) { ctx.moveTo(px + rBL, y1); ctx.arc(px + rBL, y1 - rBL, rBL, HALF_PI, Math.PI); }
+    }
+  }
+
+  /** 連結ピースの内部境界（元のテトロミノ同士の境目）を描く */
+  drawSeams(piece, dx, dy, alpha) {
+    const parts = piece.parts;
+    if (!parts) return;
+    let multi = false;
+    for (let i = 1; i < parts.length; i++) {
+      if (parts[i] !== parts[0]) { multi = true; break; }
+    }
+    if (!multi) return;
+
+    const ctx = this.ctx;
+    const cell = this.cell;
+    const index = new Map();
+    for (let i = 0; i < piece.cells.length; i++) {
+      index.set(`${piece.cells[i][0]},${piece.cells[i][1]}`, parts[i]);
+    }
+
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.5;
+    ctx.strokeStyle = 'rgba(0,0,0,.55)';
+    ctx.lineWidth = Math.max(1, cell * 0.05);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < piece.cells.length; i++) {
+      const [x, y] = piece.cells[i];
+      const px = this.ox + x * cell + dx;
+      const py = this.oy + y * cell + dy;
+      const inset = cell * 0.16;
+      // 右隣と下隣だけ見れば、各境界を一度ずつ描ける
+      if (index.get(`${x + 1},${y}`) !== undefined && index.get(`${x + 1},${y}`) !== parts[i]) {
+        ctx.moveTo(px + cell, py + inset);
+        ctx.lineTo(px + cell, py + cell - inset);
+      }
+      if (index.get(`${x},${y + 1}`) !== undefined && index.get(`${x},${y + 1}`) !== parts[i]) {
+        ctx.moveTo(px + inset, py + cell);
+        ctx.lineTo(px + cell - inset, py + cell);
+      }
+    }
+    ctx.stroke();
     ctx.restore();
   }
 
