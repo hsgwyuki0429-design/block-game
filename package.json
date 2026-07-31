@@ -1,0 +1,13 @@
+{
+  "name": "slide-pop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SLIDE POP! - 決定論的スライド × 同色接触消去 × 重力なしの空間推理パズル",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "verify": "node tools/verify.mjs 200"
+  },
+  "license": "MIT"
+}
