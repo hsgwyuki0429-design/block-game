@@ -4,29 +4,41 @@
 // （レベル番号 -> シード -> 決定論的な生成、という一本道になっている）。
 //
 // 盤面には「同じ色のブロックがちょうど2個ずつ」置かれる。
-// 1手で消えるのは必ずその2個なので、
+// 消えるのは必ずその2個なので「消去は色数ぶん」だけ起きる。
+// ただし ―― ここがこのゲームの核 ――
 //
-//     最短手数 = 色数
+//     ペアは、いきなりぶつけられる場所には置かれない。
 //
-// が構造的に決まる。レベルが上がると色数が増え、それに合わせて盤面も広がる。
-// さらに上のレベルでは
-//   ・仕込み手（それ自体では何も消えないが、通さないと解けない手）
-//   ・一本道（どの局面でも「消せる手」が実質1通りしかない）
-// が加わる。
+// どのペアも「何手か滑らせて、やっと隣り合う」ところに置かれる。この
+// 「追い込み手（kind:'chain'）」があるおかげで、最短手数は
+//
+//     PAR = 色数 + 追い込み手 + 仕込み手
+//
+// になる。初期盤面では、どのブロックを動かしても何も消えない ―― まず通路を
+// 読み、どの順で追い込むかを頭の中で組み立てないと1個も消せない盤面を狙う。
+//
+// レベルが上がると
+//   ・色数（＝消すペアの数）が増える
+//   ・追い込みが深くなる（1組を消すまでに重ねるスライドが増える）
+//   ・仕込み手（一見関係ないブロックを先に退かす手）が混ざる
+// という順で難しくなる。
 
 import { hashSeed } from './rng.js';
 
-export const MIN_SIZE = 4;
+export const MIN_SIZE = 6;
 export const MAX_SIZE = 12;
 /**
- * 色数の上限。最大盤面 12×12 に「11色 × 2個 × 4マス = 88マス」を敷いても
- * 埋め率は 61% ―― 逆順構築が滑走路を確保できる密度に収まる。
- * これ以上増やすと盤面が詰まりすぎて生成が破綻する。
+ * 色数の上限。最大盤面 12×12 に「9色 × 2個 × 4マス = 72マス」で埋め率 50%。
+ * 追い込み手はブロックが滑る「滑走路」を必要とするので、以前より空きを多めに残す。
  */
-export const MAX_COLORS = 11;
+export const MAX_COLORS = 9;
+/** 追い込み手の総数の上限。これ以上増やしても手順が長いだけで頭は使わない */
+export const MAX_CHAIN_MOVES = 14;
+/** 1組を消すまでに重ねるスライドの上限（追い込み手の深さ） */
+export const MAX_CHAIN_DEPTH = 3;
 
 /** 目標の埋め率。これを基準に色数から盤面サイズを決める */
-const FILL = 0.62;
+const FILL = 0.5;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -36,10 +48,10 @@ export function normalizeLevel(level) {
   return Number.isFinite(n) && n >= 1 ? n : 1;
 }
 
-/** レベル -> 色数（＝ブロックのペア数＝最短手数） */
+/** レベル -> 色数（＝ブロックのペア数＝消去の回数） */
 export function colorsForLevel(level) {
   const lv = normalizeLevel(level);
-  return clamp(1 + Math.floor((lv - 1) / 2), 1, MAX_COLORS);
+  return clamp(2 + Math.floor((lv - 1) / 3), 2, MAX_COLORS);
 }
 
 /** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
@@ -54,17 +66,33 @@ export function boardSizeForLevel(level) {
 }
 
 /**
+ * レベル -> 追い込みの深さ。
+ * 「1組を消すまでに、そのブロックを平均で何手ぶん滑らせる必要があるか」。
+ * 1 でも「置いてすぐぶつけられる」状態ではなくなる（必ず1手は寄り道が要る）。
+ */
+export function chainDepthForLevel(level) {
+  const lv = normalizeLevel(level);
+  return clamp(1 + Math.floor((lv - 1) / 4), 1, MAX_CHAIN_DEPTH);
+}
+
+/**
+ * レベル -> 追い込み手の総数。
+ * 色数 × 深さ。ただし長すぎる手順は「難しい」ではなく「だるい」だけなので頭打ちにする。
+ */
+export function chainMovesForLevel(level) {
+  const lv = normalizeLevel(level);
+  const colors = colorsForLevel(lv);
+  return clamp(colors * chainDepthForLevel(lv), colors, MAX_CHAIN_MOVES);
+}
+
+/**
  * レベル -> 仕込み手の数。
- * 「一見関係ないところを動かさないと解けない」手を何手ぶん混ぜるか。
+ * 追い込みが「消したいブロック自身を動かす手」なのに対して、仕込み手は
+ * 「まったく別のブロックを先に退かす手」。盤面全体を見る必要が生まれる。
  */
 export function setupMovesForLevel(level) {
   const lv = normalizeLevel(level);
-  return clamp(Math.floor((lv - 8) / 5), 0, 4);
-}
-
-/** レベル -> 一本道（解が実質1通り）を要求するか */
-export function requiresForcedLine(level) {
-  return normalizeLevel(level) >= 16;
+  return clamp(Math.floor((lv - 4) / 5), 0, 4);
 }
 
 /** レベル -> 生成シード。この一本道が「どの端末でも同じ譜面」を担保する */
@@ -72,31 +100,77 @@ export function levelSeed(level) {
   return hashSeed(`slidepop/level/${normalizeLevel(level)}`);
 }
 
+/**
+ * 星の時間しきい値（秒）。
+ *
+ * 星は手数ではなく「解けるまでの時間」で決まる。手数で測ると、詰まったときに
+ * 戻して試すのが罰になってしまう ―― このゲームで時間がかかるのは指が遅いからでは
+ * なく、盤面を読んでいるからなので、時間のほうが素直に「読み切れたか」を表す。
+ *
+ * しきい値は実際の手数（PAR）と色数から決まる。手順が長いほど読む量も増えるため。
+ *   ★★★ gold 以内 ／ ★★ silver 以内 ／ ★ クリア
+ */
+export function targetTimes(par, colors) {
+  const gold = Math.round(20 + Math.max(1, par) * 9 + Math.max(1, colors) * 4);
+  return { gold, silver: gold * 2 };
+}
+
+/** 解けるまでの秒数 -> 星（3/2/1） */
+export function starsForTime(seconds, times) {
+  if (seconds <= times.gold) return 3;
+  if (seconds <= times.silver) return 2;
+  return 1;
+}
+
+/** 秒 -> "M:SS"（1時間を超えたら "H:MM:SS"） */
+export function formatTime(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const s = total % 60;
+  const m = Math.floor(total / 60) % 60;
+  const h = Math.floor(total / 3600);
+  const pad = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
 /** レベルの各種パラメータ */
 export function levelConfig(level) {
   const lv = normalizeLevel(level);
   const colors = colorsForLevel(lv);
   const size = boardSizeForColors(colors);
+  const chainMoves = chainMovesForLevel(lv);
   const setupMoves = setupMovesForLevel(lv);
   return {
     level: lv,
     colors,
     size,
+    chainMoves,
+    chainDepth: chainDepthForLevel(lv),
     setupMoves,
-    forced: requiresForcedLine(lv),
+    forced: false,
     /** ブロック数（色数×2） */
     pieces: colors * 2,
-    /** 最短手数＝色数＋仕込み手 */
-    par: colors + setupMoves,
+    /**
+     * 手数の見込み（色数＋追い込み手＋仕込み手）。
+     * 実際の手数は生成してみないと決まらない（巻き戻せる場所が尽きれば浅く、
+     * 初手を塞ぐために足りなければ深くなる）ので、あくまで一覧に出す目安。
+     */
+    par: colors + chainMoves + setupMoves,
     /** 生成の試行回数 */
-    attempts: 60,
+    attempts: 48,
   };
 }
 
-/** レベルの内容を一言で（見出しの下に出す補足） */
+/** レベルの内容を一言で（見出しの下に出す補足）。遊ぶ前でも出せる */
 export function levelSummary(config) {
   const parts = [`${config.size}×${config.size}`, `${config.colors}色`];
+  parts.push(`追い込み${config.chainDepth}手`);
   if (config.setupMoves > 0) parts.push(`仕込み${config.setupMoves}手`);
-  if (config.forced) parts.push('一本道');
+  return parts.join('・');
+}
+
+/** 実際に生成できたパズルの要約（ゲーム画面の見出し下に出す） */
+export function puzzleSummary(puzzle) {
+  const parts = [`${puzzle.size}×${puzzle.size}`, `${puzzle.colors}色`, `PAR ${puzzle.par}手`];
+  if (puzzle.setupMoves > 0) parts.push(`仕込み${puzzle.setupMoves}手`);
   return parts.join('・');
 }

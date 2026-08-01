@@ -413,6 +413,14 @@ svg .fill { fill: currentColor; stroke: none; }
   min-height: 10px;
 }
 .level-cell .stars.none { color: var(--label-3); }
+/* 自己ベストの時間。星と同じ行に収まるよう、うんと小さく */
+.level-cell .cell-time {
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--label-2);
+}
 
 /* まだ開いていないレベル */
 .level-cell.locked {
@@ -431,9 +439,11 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 .level-cell.current .stars { color: rgba(255, 255, 255, 0.92); }
 .level-cell.current .stars.none { color: rgba(255, 255, 255, 0.55); }
+.level-cell.current .cell-time { color: rgba(255, 255, 255, 0.8); }
 
 /* クリア済み */
 .level-cell.done { background: var(--accent-fill); color: var(--accent); }
+.level-cell.done .cell-time { color: var(--accent); opacity: 0.75; }
 
 .levels-note { margin: 0; flex: none; }
 
@@ -468,7 +478,9 @@ svg .fill { fill: currentColor; stroke: none; }
   letter-spacing: -0.02em;
   transition: color 0.3s;
 }
-#hud-moves.over .v { color: var(--warn); }
+/* 時計は「いま星いくつぶんか」を色で伝える。★★★ を過ぎたら黄、★★ も過ぎたら赤 */
+#hud-time.warm .v { color: var(--gold); }
+#hud-time.late .v { color: var(--warn); }
 #hud-moves.bump .v { animation: bump 0.4s var(--spring); }
 @keyframes bump {
   0% { transform: scale(1); }
@@ -711,6 +723,7 @@ svg .fill { fill: currentColor; stroke: none; }
 .overlay-stats { display: flex; justify-content: center; gap: 8px; margin-bottom: 18px; }
 .overlay-stats div {
   flex: 1;
+  min-width: 0;
   padding: 9px 2px;
   border-radius: 16px;
   background: var(--fill);
@@ -722,7 +735,17 @@ svg .fill { fill: currentColor; stroke: none; }
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
 }
-.overlay-stats .k { display: block; font-size: 10px; font-weight: 600; color: var(--label-2); margin-top: 1px; }
+.overlay-stats .k {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--label-2);
+  margin-top: 1px;
+  /* 「手数 / PAR 27」のような長いラベルでも折り返さず、はみ出さない */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .overlay-actions { display: flex; flex-direction: column; gap: 8px; }
 
