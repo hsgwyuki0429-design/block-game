@@ -6,9 +6,17 @@
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta name="description" content="SLIDE POP! ― 盤面を滑らせて、同色をぶつけて、盤面を空にする空間推理パズル。">
-<meta name="apple-mobile-web-app-capable" content="yes">
 <title>SLIDE POP!</title>
-<link rel="stylesheet" href="styles.css?v=47b7312081">
+
+<!-- ホーム画面に追加したときの見え方 -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="application-name" content="SLIDE POP!">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SLIDE POP!">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="styles.css?v=8b1fae0dbb">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
@@ -33,6 +41,11 @@
         <small id="btn-start-sub">レベル 1</small>
       </button>
       <button class="btn btn-plain" id="btn-open-levels" type="button">レベル一覧</button>
+      <!-- インストールできる環境でだけ出す（すでに追加済みなら出さない） -->
+      <button class="btn btn-plain btn-install" id="btn-install" type="button" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.8v10.4"/><path d="m8.2 10.4 3.8 3.8 3.8-3.8"/><path d="M4.8 16.2v2.2a1.8 1.8 0 0 0 1.8 1.8h10.8a1.8 1.8 0 0 0 1.8-1.8v-2.2"/></svg>
+        <span>ホーム画面に追加</span>
+      </button>
     </div>
 
     <div class="home-links">
@@ -203,6 +216,46 @@
   </div>
 </div>
 
+<!-- ============================================================ ホーム画面に追加（iOS 手順） -->
+<div class="sheet" id="modal-install" hidden>
+  <div class="sheet-card sheet-narrow">
+    <div class="grabber"></div>
+    <button class="sheet-close" data-close type="button" aria-label="閉じる">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+    </button>
+    <h2>ホーム画面に追加</h2>
+    <p>追加すると<b>全画面で起動</b>し、<b>通信が無くても遊べます</b>。進行状況もそのまま残ります。</p>
+
+    <section class="rule">
+      <div class="rule-num">1</div>
+      <div>
+        <h3>共有ボタンをタップ</h3>
+        <p>画面下（横向きのときは右上）の
+          <svg class="inline-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.6v11"/><path d="m8.4 7.2 3.6-3.6 3.6 3.6"/><path d="M6 12.4v6.2a1.8 1.8 0 0 0 1.8 1.8h8.4a1.8 1.8 0 0 0 1.8-1.8v-6.2"/></svg>
+          を押します。</p>
+      </div>
+    </section>
+
+    <section class="rule">
+      <div class="rule-num">2</div>
+      <div>
+        <h3>「ホーム画面に追加」を選ぶ</h3>
+        <p>メニューを下にたどると出てきます。</p>
+      </div>
+    </section>
+
+    <section class="rule">
+      <div class="rule-num">3</div>
+      <div>
+        <h3>右上の「追加」をタップ</h3>
+        <p>ホーム画面に SLIDE POP! のアイコンが並びます。</p>
+      </div>
+    </section>
+
+    <p class="muted center">Safari で開いているときだけ追加できます。</p>
+  </div>
+</div>
+
 <!-- ============================================================ 設定 -->
 <div class="sheet" id="modal-settings" hidden>
   <div class="sheet-card sheet-narrow">
@@ -240,6 +293,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=47b7312081"></script>
+<script defer src="app.js?v=8b1fae0dbb"></script>
 </body>
 </html>

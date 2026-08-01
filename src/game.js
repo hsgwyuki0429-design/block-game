@@ -71,6 +71,8 @@ export class Game {
     this.screen = 'home';
     /** レベル一覧のページ（0 始まり） */
     this.page = 0;
+    /** Android/Chrome が渡してくるインストールの入口。iOS では常に null */
+    this.installPrompt = null;
 
     this.anim = null;
     this.invalid = null;
@@ -483,6 +485,8 @@ export class Game {
     // ホーム
     d.btnStart.addEventListener('click', () => this.load(this.startLevel));
     d.btnOpenLevels.addEventListener('click', () => this.showLevels());
+    d.btnInstall.addEventListener('click', () => this.install());
+    this.bindInstall();
 
     // レベル一覧
     d.btnLevelsBack.addEventListener('click', () => this.showHome());
@@ -502,7 +506,7 @@ export class Game {
       if (el) el.addEventListener('click', () => this.openModal(d.modalSettings));
     }
 
-    for (const modal of [d.modalRules, d.modalSettings]) {
+    for (const modal of [d.modalRules, d.modalSettings, d.modalInstall]) {
       modal.addEventListener('click', (e) => {
         // 閉じるボタンの中身（SVG）が押されることもあるので closest で辿る
         if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) {
@@ -531,6 +535,67 @@ export class Game {
     }
 
     d.btnShare.addEventListener('click', () => this.share());
+  }
+
+  // ------------------------------------------------------------ ホーム画面に追加
+
+  /**
+   * すでにホーム画面から起動しているか。
+   * Android/Chrome は display-mode、iOS Safari は navigator.standalone で分かる。
+   */
+  get installed() {
+    if (typeof navigator !== 'undefined' && navigator.standalone) return true;
+    return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  }
+
+  /** iOS（iPadOS も含む）。ここだけはインストールの API が無く、手順を案内するしかない */
+  get isIos() {
+    const ua = navigator.userAgent || '';
+    if (/iPhone|iPad|iPod/.test(ua)) return true;
+    // iPadOS 13 以降は Mac を名乗る。タッチできる Mac は実質 iPad
+    return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  }
+
+  bindInstall() {
+    // Chrome 系は「入れられる」と分かった時点で合図をくれる。既定の
+    // バナーは出さずに預かっておき、ホーム画面のボタンから使う
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      this.installPrompt = e;
+      this.updateInstallButton();
+    });
+    window.addEventListener('appinstalled', () => {
+      this.installPrompt = null;
+      this.updateInstallButton();
+      this.toast('ホーム画面に追加しました');
+    });
+    this.updateInstallButton();
+  }
+
+  /**
+   * ボタンを出すのは「まだ追加しておらず、追加する手段がある」ときだけ。
+   * 追加済みの端末に出しても押せないボタンが増えるだけなので隠す。
+   */
+  updateInstallButton() {
+    const btn = this.dom.btnInstall;
+    if (!btn) return;
+    btn.hidden = this.installed || !(this.installPrompt || this.isIos);
+  }
+
+  async install() {
+    // iOS には API が無いので、共有シートからの手順を見せる
+    if (!this.installPrompt) {
+      if (this.isIos) this.openModal(this.dom.modalInstall);
+      else this.toast('お使いのブラウザのメニューから「ホーム画面に追加」を選んでください');
+      return;
+    }
+    const prompt = this.installPrompt;
+    this.installPrompt = null;
+    try {
+      await prompt.prompt();
+      await prompt.userChoice;
+    } catch { /* 閉じられただけ。何もしない */ }
+    this.updateInstallButton();
   }
 
   // ------------------------------------------------------------ 画面の切り替え
@@ -563,6 +628,8 @@ export class Game {
     const continuing = this.starsOf(lv) === 0 && lv > 1 && lv === normalizeLevel(this.store.lastLevel);
     d.btnStartLabel.textContent = continuing ? 'つづきから' : 'ゲームスタート';
     d.btnStartSub.textContent = `レベル ${lv} ／ ${levelPreview(lv)}`;
+
+    this.updateInstallButton();
 
     d.homeProgress.innerHTML = '';
     const chips = [
@@ -639,12 +706,14 @@ export class Game {
   }
 
   anyModalOpen() {
-    return !this.dom.modalRules.hidden || !this.dom.modalSettings.hidden;
+    const d = this.dom;
+    return !d.modalRules.hidden || !d.modalSettings.hidden || !d.modalInstall.hidden;
   }
 
   closeModals() {
     this.dom.modalRules.hidden = true;
     this.dom.modalSettings.hidden = true;
+    this.dom.modalInstall.hidden = true;
   }
 
   async share() {

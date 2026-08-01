@@ -80,6 +80,26 @@ body {
   display: flex;
   justify-content: center;
   touch-action: manipulation;
+  /* 長押しの選択・コールアウトを止める。全画面で開いたときに「アプリ」らしくなる */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* 読ませる文章だけは選択できるように戻す */
+.sheet-card p,
+.sheet-card h2,
+.sheet-card h3 {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/*
+ * ホーム画面から起動したとき（standalone）。
+ * ブラウザの UI が無いぶん、上下の余白を少しだけ足して詰まって見えないようにする。
+ */
+@media (display-mode: standalone) {
+  .screen { padding-top: calc(20px + var(--safe-t)); }
+  .screen-home { padding-bottom: calc(36px + var(--safe-b)); }
 }
 
 /* 画面は3つ。同時に見えるのは常に1つだけ */
@@ -282,6 +302,17 @@ svg .fill { fill: currentColor; stroke: none; }
   opacity: 0.72;
   letter-spacing: 0;
 }
+
+/* 「ホーム画面に追加」。主役ではないので、少し小さく控えめに */
+.btn-install {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 18px;
+  font-size: 14.5px;
+}
+.btn-install svg { width: 18px; height: 18px; flex: none; }
 
 .home-links { display: flex; gap: 8px; margin-top: 22px; }
 .link-btn {
@@ -813,6 +844,15 @@ svg .fill { fill: currentColor; stroke: none; }
   color: #fff;
   font-size: 14px;
   font-weight: 700;
+}
+
+/* 本文中に混ぜる小さなアイコン（iOS の共有ボタンなど） */
+.inline-icon {
+  width: 15px;
+  height: 15px;
+  vertical-align: -2px;
+  color: var(--accent);
+  stroke-width: 2;
 }
 
 .card {
