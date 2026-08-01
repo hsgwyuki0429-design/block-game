@@ -4,7 +4,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Board } from '../src/board.js';
-import { generatePuzzle, verifySolution, clearableColors, analyzeSolution } from '../src/generator.js';
+import {
+  generatePuzzle, verifySolution, clearableColors, analyzeSolution,
+  findClearPlan, colorClearable,
+} from '../src/generator.js';
 import { seedToCode, codeToSeed, hashSeed, makeRng } from '../src/rng.js';
 
 const SEEDS = [1, 7, 42, 1234, 99991, 0xdeadbeef, 2654435761, 314159, 8675309, 20240731];
@@ -56,24 +59,48 @@ test('同じ色のブロックはちょうど2個ずつ、すべてテトロミ�
   }
 });
 
-test('PAR は色数と一致する（仕込み手が無いとき）', () => {
+test('PAR は「色数 ＋ 何も消さない手」', () => {
   for (const seed of SEEDS) {
     const p = generatePuzzle(seed);
-    assert.equal(p.setupMoves, 0, `seed ${seed}`);
-    assert.equal(p.par, p.colors, `seed ${seed}`);
+    assert.equal(p.par, p.solution.length, `seed ${seed}`);
+    // 消去は色数ぶんきっかり。残りはすべて何も消さない手
+    const clears = p.solution.filter((s) => s.kind === 'clear').length;
+    assert.equal(clears, p.colors, `seed ${seed}`);
+    assert.equal(p.par, p.colors + p.chainMoves + p.setupMoves, `seed ${seed}`);
   }
 });
 
-test('1手で消えるのはちょうど2ブロック（＝同色ペア）', () => {
+test('消えるのは kind:clear の手だけ、しかもちょうど2ブロック', () => {
   for (const seed of SEEDS.slice(0, 5)) {
     const p = generatePuzzle(seed);
     const b = new Board(p.size);
     b.restore(p.snapshot);
     for (const step of p.solution) {
       const res = b.applyMove(step.pieceId, step.dir);
-      assert.equal(res.cleared.length, step.kind === 'setup' ? 0 : 2, `seed ${seed}`);
+      assert.equal(res.cleared.length, step.kind === 'clear' ? 2 : 0, `seed ${seed}`);
     }
   }
+});
+
+test('追い込みを求めると、1組を消すまでに何手も重ねる盤面になる', () => {
+  const p = generatePuzzle(20260801, { ...BIG, chainMoves: 12 });
+  assert.equal(verifySolution(p.snapshot, p.solution, p.size).ok, true);
+  assert.ok(p.chainMoves >= 8, `追い込み手が ${p.chainMoves} 手しか入らなかった`);
+  assert.equal(p.par, p.solution.length);
+  // 初手からいきなり消せる手があってはならない ―― まず通路を読む盤面が狙い
+  assert.equal(p.analysis.clearAtStart, 0);
+  assert.ok(p.analysis.dryStreak >= 2, '何も消えない手が続かない');
+});
+
+test('追い込み手も仕込み手も、それ自体では何も消さない', () => {
+  const p = generatePuzzle(4649, { ...BIG, chainMoves: 10, setupMoves: 2 });
+  const b = new Board(p.size);
+  b.restore(p.snapshot);
+  for (const step of p.solution) {
+    const res = b.applyMove(step.pieceId, step.dir);
+    if (step.kind !== 'clear') assert.equal(res.cleared.length, 0);
+  }
+  assert.equal(b.isEmpty, true);
 });
 
 test('解答の各手は必ず1マス以上滑る', () => {
@@ -83,11 +110,11 @@ test('解答の各手は必ず1マス以上滑る', () => {
   }
 });
 
-test('仕込み手を求めると、何も消さない手が解に混ざる', () => {
+test('仕込み手を求めると、別のブロックを動かす手が解に混ざる', () => {
   const p = generatePuzzle(4242, { ...BIG, setupMoves: 2 });
   assert.ok(p.setupMoves > 0, '仕込み手がひとつも入らなかった');
   assert.equal(p.par, p.solution.length);
-  assert.equal(p.par, p.colors + p.setupMoves);
+  assert.equal(p.par, p.colors + p.setupMoves + p.chainMoves);
   assert.equal(verifySolution(p.snapshot, p.solution, p.size).ok, true);
 });
 
@@ -194,12 +221,42 @@ test('ヒント用の局面テーブルが解答の全ステップを覆う', ()
   assert.equal(sim.isEmpty, true);
 });
 
-test('解の途中のどの局面にも「消せる手」が必ず存在する', () => {
-  const p = generatePuzzle(777);
+test('解の途中のどの局面からも、数手先に必ず消去がある', () => {
+  // 追い込みが入った盤面では「いま消せる手」は無いのが普通。
+  // ヒントが頼るのは「何手先に消去があるか」なので、そちらを確かめる
+  const p = generatePuzzle(777, { ...BIG, chainMoves: 10 });
   const b = new Board(p.size);
   b.restore(p.snapshot);
   for (const step of p.solution) {
-    assert.ok(b.findClearingMoves().length > 0);
+    if (!b.isEmpty) assert.ok(findClearPlan(b, 3), '3手先まで見ても消去が無い');
     b.applyMove(step.pieceId, step.dir);
   }
+  assert.equal(b.isEmpty, true);
+});
+
+test('findClearPlan は消去にたどり着く道筋の1手目を返す', () => {
+  const p = generatePuzzle(555, { ...BIG, chainMoves: 8 });
+  const b = new Board(p.size);
+  b.restore(p.snapshot);
+
+  const plan = findClearPlan(b, 3);
+  assert.ok(plan, '道筋が見つからない');
+  assert.ok(plan.depth >= 2, '初手から消せてしまっている');
+  assert.ok(b.pieces.has(plan.pieceId));
+  // 返ってきた1手目は、実際に指せる手でなければならない
+  assert.ok(b.slideDistance(plan.pieceId, plan.dir) > 0);
+
+  // 空の盤面には道筋が無い
+  assert.equal(findClearPlan(new Board(6)), null);
+});
+
+test('colorClearable はその色が1手で消せるかを答える', () => {
+  const b = new Board(8);
+  const a1 = b.addPiece(3, [[0, 0], [1, 0], [2, 0], [3, 0]]);
+  b.addPiece(3, [[0, 5], [1, 5], [2, 5], [3, 5]]);
+  b.addPiece(4, [[6, 0], [7, 0], [6, 1], [7, 1]]);
+  assert.equal(colorClearable(b, 3), true);   // 下へ滑らせればぶつかる
+  assert.equal(colorClearable(b, 4), false);  // 相棒がいない
+  b.removePiece(a1.id);
+  assert.equal(colorClearable(b, 3), false);
 });

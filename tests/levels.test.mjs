@@ -1,23 +1,25 @@
 // レベル進行のテスト。
-// 「レベルが上がるほど盤面が広く・色が増える」「ブロックはテトロミノだけ」
-// 「同じ色はちょうど2個」「どのレベルも必ず解ける」
+// 「レベルが上がるほど盤面が広く・色が増え・追い込みが深くなる」
+// 「ブロックはテトロミノだけ」「同じ色はちょうど2個」「どのレベルも必ず解ける」
+// 「初手からは何も消せない（＝スライドを重ねないと1個も消えない）」
 // 「同じレベルならどの端末でも同じ譜面」を確かめる。
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Board } from '../src/board.js';
-import { generateLevel, verifySolution, clearableColors } from '../src/generator.js';
+import { generateLevel, verifySolution, clearableColors, findClearPlan } from '../src/generator.js';
 import {
-  levelConfig, levelSeed, levelSummary, boardSizeForLevel, boardSizeForColors,
-  colorsForLevel, setupMovesForLevel, requiresForcedLine,
-  MIN_SIZE, MAX_SIZE, MAX_COLORS,
+  levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
+  colorsForLevel, chainDepthForLevel, chainMovesForLevel, setupMovesForLevel,
+  targetTimes, starsForTime, formatTime,
+  MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES,
 } from '../src/levels.js';
 import { TETROMINOES } from '../src/shapes.js';
 
 /** 通しで確かめるレベル（全部やると遅いので代表点を拾う） */
 const SAMPLE = [1, 2, 3, 5, 7, 10, 13, 17, 21, 24, 26, 30, 42, 60, 120];
 
-test('盤面はレベル1で4×4、上がるほど広がり、12×12で頭打ち', () => {
+test('盤面はレベル1で最小、上がるほど広がり、12×12で頭打ち', () => {
   assert.equal(boardSizeForLevel(1), MIN_SIZE);
   assert.equal(boardSizeForLevel(1000), MAX_SIZE);
 
@@ -30,27 +32,43 @@ test('盤面はレベル1で4×4、上がるほど広がり、12×12で頭打ち
   }
 });
 
-test('色数はレベル1で1色、上がるほど増え、上限で頭打ち', () => {
-  assert.equal(colorsForLevel(1), 1);
+test('色数はレベル1で2色、上がるほど増え、上限で頭打ち', () => {
+  assert.equal(colorsForLevel(1), 2);
 
   let prev = 0;
   for (let lv = 1; lv <= 300; lv++) {
     const n = colorsForLevel(lv);
     assert.ok(n >= prev, `Lv${lv}: 色数が減った`);
-    assert.ok(n >= 1 && n <= MAX_COLORS);
+    assert.ok(n >= 2 && n <= MAX_COLORS);
     prev = n;
   }
   assert.equal(colorsForLevel(1000), MAX_COLORS);
 });
 
 test('色数の上限は最大盤面に収まる（色数×2ブロック×4マス）', () => {
-  assert.ok(MAX_COLORS * 8 < MAX_SIZE * MAX_SIZE * 0.7, '最大色数が盤面に対して詰まりすぎ');
+  // 追い込み手は「滑走路」を要る。半分は空けておく
+  assert.ok(MAX_COLORS * 8 <= MAX_SIZE * MAX_SIZE * 0.55, '最大色数が盤面に対して詰まりすぎ');
   assert.equal(boardSizeForColors(MAX_COLORS), MAX_SIZE);
 });
 
-test('仕込み手と一本道は、あるレベルから先で加わる', () => {
+test('追い込みはレベル1から入り、上がるほど深くなる', () => {
+  // レベル1でも「置いてすぐぶつけられる」形にはしない
+  assert.ok(chainDepthForLevel(1) >= 1);
+  assert.ok(chainMovesForLevel(1) >= colorsForLevel(1));
+
+  let prev = 0;
+  for (let lv = 1; lv <= 300; lv++) {
+    const d = chainDepthForLevel(lv);
+    assert.ok(d >= prev, `Lv${lv}: 追い込みが浅くなった`);
+    assert.ok(d >= 1 && d <= MAX_CHAIN_DEPTH);
+    assert.ok(chainMovesForLevel(lv) <= MAX_CHAIN_MOVES);
+    prev = d;
+  }
+  assert.equal(chainDepthForLevel(1000), MAX_CHAIN_DEPTH);
+});
+
+test('仕込み手は、あるレベルから先で加わる', () => {
   assert.equal(setupMovesForLevel(1), 0);
-  assert.equal(requiresForcedLine(1), false);
 
   let prev = 0;
   for (let lv = 1; lv <= 300; lv++) {
@@ -59,20 +77,12 @@ test('仕込み手と一本道は、あるレベルから先で加わる', () =>
     prev = n;
   }
   assert.ok(setupMovesForLevel(100) > 0, '上のレベルで仕込み手が入らない');
-  assert.equal(requiresForcedLine(100), true);
-  // 一本道は「一度始まったら戻らない」
-  let seen = false;
-  for (let lv = 1; lv <= 300; lv++) {
-    const f = requiresForcedLine(lv);
-    if (f) seen = true;
-    else assert.equal(seen, false, `Lv${lv}: 一本道が取り消された`);
-  }
 });
 
-test('PAR は 色数 + 仕込み手', () => {
+test('PAR の見込みは 色数 + 追い込み手 + 仕込み手', () => {
   for (const lv of [1, 5, 13, 24, 60]) {
     const cfg = levelConfig(lv);
-    assert.equal(cfg.par, cfg.colors + cfg.setupMoves);
+    assert.equal(cfg.par, cfg.colors + cfg.chainMoves + cfg.setupMoves);
     assert.equal(cfg.pieces, cfg.colors * 2);
   }
 });
@@ -116,39 +126,74 @@ test('ブロックはテトロミノだけで、同じ色はちょうど2個ず�
   }
 });
 
-test('仕込み手を求めるレベルでは、初手に「消せる手」が無い盤面を狙う', () => {
-  // 生成は最善を尽くすが必ず成功するとは限らない。代表点の大半で成り立てばよい
-  const levels = [18, 23, 28, 33, 40, 50, 60];
-  let ok = 0;
-  for (const lv of levels) {
+test('初期盤面ではどのブロックを動かしても何も消えない', () => {
+  // これがこのゲームの核。生成は最善を尽くすが必ず成功するとは限らないので、
+  // 代表点の大半で成り立てばよい
+  let blocked = 0;
+  for (const lv of SAMPLE) {
     const p = generateLevel(lv);
-    assert.ok(p.config.setupMoves > 0, `Lv${lv}: 仕込み手が設定されていない`);
-    if (p.analysis.clearAtStart === 0) ok++;
+    const b = new Board(p.size);
+    b.restore(p.snapshot);
+    assert.equal(clearableColors(b).size, p.analysis.clearAtStart, `Lv${lv}`);
+    if (p.analysis.clearAtStart === 0) blocked++;
   }
-  assert.ok(ok >= levels.length - 2, `仕込み必須の盤面が ${ok}/${levels.length} しか作れていない`);
+  assert.ok(blocked >= SAMPLE.length - 2, `初手が塞がった盤面が ${blocked}/${SAMPLE.length} しかない`);
 });
 
-test('一本道を求めるレベルでは、実際にほぼ分岐が無い', () => {
-  const levels = [16, 20, 25, 35, 45, 70];
-  let ok = 0;
-  for (const lv of levels) {
+test('どのレベルも「消すには何手か重ねる」手順になっている', () => {
+  for (const lv of SAMPLE) {
     const p = generateLevel(lv);
-    assert.equal(p.config.forced, true, `Lv${lv}: 一本道が設定されていない`);
-    if (p.analysis.forced) ok++;
+    // 何も消さない手が解に必ず混ざる（＝1手で消えるだけの盤面ではない）
+    const quiet = p.solution.filter((s) => s.kind !== 'clear').length;
+    assert.ok(quiet >= p.colors, `Lv${lv}: 何も消さない手が ${quiet} 手しかない`);
+    assert.ok(p.par > p.colors, `Lv${lv}: PAR が色数と同じ（＝1手ずつ消えるだけ）`);
+    assert.ok(p.analysis.dryStreak >= 1, `Lv${lv}`);
   }
-  assert.ok(ok >= levels.length - 2, `一本道の盤面が ${ok}/${levels.length} しか作れていない`);
 });
 
-test('消える色は「消せる色」の集合と一致する', () => {
-  const p = generateLevel(9);
-  const b = new Board(p.size);
-  b.restore(p.snapshot);
-  const colors = clearableColors(b);
-  for (const c of colors) {
-    // その色が実際に消せることを、盤面のコピーで確かめる
-    const found = b.findClearingMoves().some((m) => b.pieces.get(m.id).color === c);
-    assert.ok(found, `色 ${c} が消せると報告されたが手が無い`);
+test('レベルが上がるほど手順は長くなる（多少の上下は許す）', () => {
+  const pars = [1, 6, 12, 20, 30].map((lv) => generateLevel(lv).par);
+  assert.ok(pars[0] < pars[2], `Lv1 ${pars[0]} / Lv12 ${pars[2]}`);
+  assert.ok(pars[2] < pars[4], `Lv12 ${pars[2]} / Lv30 ${pars[4]}`);
+});
+
+test('ヒントはどのレベルの初期盤面でも道筋を出せる', () => {
+  for (const lv of [1, 5, 13, 26]) {
+    const p = generateLevel(lv);
+    const b = new Board(p.size);
+    b.restore(p.snapshot);
+    const plan = findClearPlan(b, 3);
+    assert.ok(plan, `Lv${lv}: 3手先まで見ても消去の道筋が無い`);
+    assert.ok(b.slideDistance(plan.pieceId, plan.dir) > 0, `Lv${lv}: 指せない手を返した`);
   }
+});
+
+test('星は解決時間で決まる', () => {
+  const t = targetTimes(10, 4);
+  assert.ok(t.gold > 0 && t.silver > t.gold);
+  assert.equal(starsForTime(1, t), 3);
+  assert.equal(starsForTime(t.gold, t), 3);
+  assert.equal(starsForTime(t.gold + 1, t), 2);
+  assert.equal(starsForTime(t.silver, t), 2);
+  assert.equal(starsForTime(t.silver + 1, t), 1);
+  assert.equal(starsForTime(99999, t), 1);
+});
+
+test('しきい値は手順が長いほど緩む', () => {
+  const short = targetTimes(4, 2);
+  const long = targetTimes(28, 9);
+  assert.ok(long.gold > short.gold);
+  // 極端な値でも壊れない
+  assert.ok(targetTimes(0, 0).gold > 0);
+});
+
+test('時間の表記は M:SS（1時間を超えたら H:MM:SS）', () => {
+  assert.equal(formatTime(0), '0:00');
+  assert.equal(formatTime(9), '0:09');
+  assert.equal(formatTime(75), '1:15');
+  assert.equal(formatTime(600), '10:00');
+  assert.equal(formatTime(3661), '1:01:01');
+  assert.equal(formatTime(-5), '0:00');
 });
 
 test('同じレベルなら、どの端末でも同じ譜面になる', () => {
@@ -174,20 +219,25 @@ test('違うレベルは違う譜面になる', () => {
   assert.equal(seen.size, 12);
 });
 
-test('レベル1は1色2個・1手で解ける入門用', () => {
+test('レベル1は2色4個の入門用。それでも一手では消えない', () => {
   const p = generateLevel(1);
-  assert.equal(p.size, 4);
-  assert.equal(p.par, 1);
-  assert.equal(p.colors, 1);
-  assert.equal(p.pieces, 2);
+  assert.equal(p.size, MIN_SIZE);
+  assert.equal(p.colors, 2);
+  assert.equal(p.pieces, 4);
+  assert.ok(p.par >= 3, `PAR が ${p.par} 手しかない`);
+  assert.equal(p.analysis.clearAtStart, 0);
 });
 
 test('レベルの要約は主要なパラメータを含む', () => {
-  const s = levelSummary(levelConfig(60));
   const cfg = levelConfig(60);
+  const s = levelSummary(cfg);
   assert.match(s, new RegExp(`${cfg.size}×${cfg.size}`));
   assert.match(s, new RegExp(`${cfg.colors}色`));
-  assert.match(s, /一本道/);
+  assert.match(s, /追い込み/);
+
+  // 遊んだあとの要約には、実際にかかる手数が入る
+  const p = generateLevel(13);
+  assert.match(puzzleSummary(p), new RegExp(`PAR ${p.par}手`));
 });
 
 test('レベル番号が不正でもレベル1として扱う', () => {

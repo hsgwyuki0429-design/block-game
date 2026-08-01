@@ -4,7 +4,7 @@
 
 import { generateLevel, verifySolution } from '../src/generator.js';
 import { Board } from '../src/board.js';
-import { levelSummary } from '../src/levels.js';
+import { puzzleSummary, targetTimes } from '../src/levels.js';
 
 const maxLevel = Number(process.argv[2] || 60);
 const from = Number(process.argv[3] || 1);
@@ -53,17 +53,20 @@ for (let level = from; level <= maxLevel; level++) {
     par: puzzle.par,
     pieces: puzzle.pieces,
     colors: puzzle.colors,
+    chain: puzzle.chainMoves,
+    wantChain: puzzle.config.chainMoves,
     setup: puzzle.setupMoves,
-    // 初手の選択肢の数。0 なら「仕込み手を通さないと何も消せない」
+    // 初手の選択肢の数。0 なら「まず通路を作らないと1個も消せない」
     open: puzzle.analysis.clearAtStart,
+    dry: puzzle.analysis.dryStreak,
     forced: puzzle.analysis.forced,
-    wantForced: puzzle.config.forced,
-    summary: levelSummary(puzzle.config),
+    gold: targetTimes(puzzle.par, puzzle.colors).gold,
+    summary: puzzleSummary(puzzle),
     ms,
   });
 }
 
-const head = 'Lv   盤面  埋め率  PAR  個数  色  仕込  初手  一本道   ms';
+const head = 'Lv   盤面  埋め率  PAR  個数  色  追込  仕込  初手  連続  ★★★    ms';
 console.log(head);
 console.log('-'.repeat(head.length + 4));
 for (const r of rows) {
@@ -75,24 +78,26 @@ for (const r of rows) {
     String(r.par).padStart(4),
     String(r.pieces).padStart(5),
     String(r.colors).padStart(3),
+    `${r.chain}/${r.wantChain}`.padStart(5),
     String(r.setup).padStart(5),
     String(r.open).padStart(5),
-    (r.wantForced ? (r.forced ? '  一本道' : '  分岐あり') : '      –').padStart(8),
+    String(r.dry).padStart(5),
+    `${Math.floor(r.gold / 60)}:${String(r.gold % 60).padStart(2, '0')}`.padStart(6),
     String(r.ms).padStart(5),
   );
 }
 
 const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-const forcedRows = rows.filter((r) => r.wantForced);
 const setupRows = rows.filter((r) => r.setup > 0);
 console.log('-'.repeat(head.length + 4));
 console.log(`レベル ${from}〜${maxLevel} / ${Date.now() - t0}ms`);
 console.log(`失敗            : ${failures}`);
 console.log(`埋め率          : 平均 ${(avg(rows.map((r) => r.fill)) * 100).toFixed(1)}%`);
 console.log(`PAR             : 平均 ${avg(rows.map((r) => r.par)).toFixed(1)} (${Math.min(...rows.map((r) => r.par))}〜${Math.max(...rows.map((r) => r.par))})`);
-if (forcedRows.length) {
-  console.log(`一本道の達成    : ${forcedRows.filter((r) => r.forced).length}/${forcedRows.length}`);
-}
+console.log(`初手が塞がった盤面: ${rows.filter((r) => r.open === 0).length}/${rows.length}`);
+console.log(`追い込みの達成  : ${rows.filter((r) => r.chain >= r.wantChain).length}/${rows.length}`);
+console.log(`最長の無消去連続: 平均 ${avg(rows.map((r) => r.dry)).toFixed(1)} / 最大 ${Math.max(...rows.map((r) => r.dry))}`);
+console.log(`一本道になった  : ${rows.filter((r) => r.forced).length}/${rows.length}`);
 if (setupRows.length) {
   console.log(`仕込みが必須    : ${setupRows.filter((r) => r.open === 0).length}/${setupRows.length}`);
 }

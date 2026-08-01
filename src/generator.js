@@ -4,9 +4,10 @@
 // 完成状態（空盤面）から出発し、1手ぶんずつ逆再生するようにブロックを置いていく。
 // 最後に置いたステップが、解の第1手になる。
 //
-// 盤面には同じ色のブロックがちょうど2個ずつ。だから1手で消えるのは必ずその2個で、
-// 「最短手数＝色数」が構造的に決まる。逆順構築の1ステップはこうなる:
+// 盤面には同じ色のブロックがちょうど2個ずつ。だから消去は色数ぶんしか起きない。
+// 逆順構築は3層になっている。
 //
+// ① 消去の1手（kind:'clear'）
 //   色 c を新しく1つ選ぶ
 //     移動ブロック P : テトロミノ。着地点 B・滑走方向 d・開始点 A (= B - t×d)
 //     相棒ブロック Q : 同じ色 c。B にいる P に隣接する
@@ -17,11 +18,24 @@
 //   A→B の経路が空 / B+d に壁かブロック      その手が実行でき、ちょうど B で止まる
 //   A にいる P は Q に触れていない            初期盤面から同色は隣接しない
 //
+// ② 追い込み手（kind:'chain'）― このゲームの核
+//   ①で置いた P を、さらに手前へ何度も「巻き戻す」。巻き戻し先 A' は
+//   「A' から滑らせるとちょうど A で止まる」位置。P は相棒に触れない位置にしか
+//   戻さないので、その手自体では何も消えない。
+//   これを n 回重ねると、その1組を消すのに n+1 手が必要になる ――
+//   ぶつける場所へ「滑らせて、また滑らせて」持っていく読みが要る。
+//   滑って止まった直後に同じ方向へは進めないので、追い込み手は必ず曲がる。
+//
+// ③ 仕込み手（kind:'setup'）
+//   盤面にある「別の」ブロックを1つ選び、同じ要領で手前へ戻す。
+//   その手自体では何も消えないが、通さないと後の手が成立しない ――
+//   一見関係ない場所を動かす必要が生まれる。
+//
 // 色ごとにブロックは2個しかないので「予定外の巻き込み消去」は原理的に起きない。
 //
-// さらに上のレベルでは「仕込み手」を前に足す。盤面にあるブロックを1つ選び、
-// 滑らせれば今の位置に来るような手前の位置へ戻す。その手自体では何も消えないが、
-// 通さないと後の手が成立しない ―― 一見関係ない場所を動かす必要が生まれる。
+// 最後に「初手から消せてしまう色」が残っていれば、その色をもう1手ぶん奥へ追い込む。
+// 狙いは clearAtStart === 0 ―― 初期盤面では、どのブロックをどう動かしても
+// 何も消えない。まず通路を作る読みから入る盤面になる。
 
 import { Board } from './board.js';
 import { DIRS, DIR_KEYS, OPPOSITE, TETROMINOES } from './shapes.js';
@@ -31,6 +45,8 @@ import { levelConfig, levelSeed } from './levels.js';
 export const DEFAULT_OPTIONS = {
   size: 8,
   colors: 4,
+  /** 追い込み手の総数。色ごとに振り分けられる */
+  chainMoves: 0,
   setupMoves: 0,
   forced: false,
   attempts: 60,
@@ -40,6 +56,10 @@ export const DEFAULT_OPTIONS = {
   packingJitter: 3,
   /** 一本道の判定を1ステップで何回まで試すか（探索が指数的に伸びるのを防ぐ） */
   forcedChecks: 90,
+  /** 追い込み1手あたりに評価する巻き戻し候補の数 */
+  chainTries: 40,
+  /** 初手の消し手を潰すために、あとから足してよい追い込み手の上限 */
+  openingPushes: 8,
 };
 
 /** セル群の上下左右の隣接セルを Set に集める（盤外は無視） */
@@ -150,6 +170,62 @@ export function clearableColors(board, limit = Infinity) {
   return out;
 }
 
+/** その色が「いま1手で消せる」か。色ごとにブロックは2個なので判定は軽い */
+export function colorClearable(board, color) {
+  for (const [id, piece] of board.pieces) {
+    if (piece.color !== color) continue;
+    for (const dir of DIR_KEYS) {
+      const r = board.simulate(id, dir);
+      if (r && r.cleared.length > 0) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 「あと何手で1組消せるか」を幅優先で探す。
+ *
+ * 追い込み手が入った盤面では、消せる手はたいてい目の前に無い。だから
+ * 「いま消せる手」を挙げるだけのヒントは役に立たない ―― 何手か先に消去がある
+ * 道筋の1手目を教える必要がある。
+ *
+ * 局面は指紋で重複を除き、探索したノード数に上限を置く（深いレベルでも
+ * ボタンを押した指が待たされない範囲で打ち切る）。
+ *
+ * @returns {{dir:string, pieceId:number, depth:number}|null} 最初の1手
+ */
+export function findClearPlan(board, maxDepth = 3, budget = 12000) {
+  if (board.isEmpty) return null;
+  const seen = new Set([board.fingerprint()]);
+  /** @type {{snap:object, first:{pieceId:number,dir:string}|null, depth:number}[]} */
+  let frontier = [{ snap: board.snapshot(), first: null, depth: 0 }];
+  const sim = new Board(board.size);
+  let visited = 0;
+
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    const next = [];
+    for (const node of frontier) {
+      for (const piece of node.snap.pieces) {
+        for (const dir of DIR_KEYS) {
+          if (visited++ > budget) return null;
+          sim.restore(node.snap);
+          const res = sim.applyMove(piece.id, dir);
+          if (!res) continue;
+          const first = node.first || { pieceId: piece.id, dir };
+          if (res.cleared.length > 0) return { ...first, depth };
+          const print = sim.fingerprint();
+          if (seen.has(print)) continue;
+          seen.add(print);
+          if (depth < maxDepth) next.push({ snap: sim.snapshot(), first, depth });
+        }
+      }
+    }
+    frontier = next;
+    if (frontier.length === 0) break;
+  }
+  return null;
+}
+
 /** 見つけた候補を実際に盤面へ置く */
 function commitPair(board, color, cand) {
   const moving = board.addPiece(color, cand.acells, cand.aname);
@@ -237,10 +313,10 @@ function placePair(board, rng, opts, color, requireForced) {
 
       const cand = { acells, aname: placement.shape.name, q, dir, t };
       const placed = commitPair(board, color, cand);
-      if (!requireForced) return placed.step;
+      if (!requireForced) return placed;
 
       // 一本道を求めるレベルでは、この局面で消せる色がこの色だけであることを課す
-      if (clearableColors(board, 2).size <= 1) return placed.step;
+      if (clearableColors(board, 2).size <= 1) return placed;
 
       board.removePiece(placed.movingId);
       board.removePiece(placed.mateId);
@@ -249,8 +325,177 @@ function placePair(board, rng, opts, color, requireForced) {
     }
   }
 
-  if (fallback) return commitPair(board, color, fallback).step;
+  if (fallback) return commitPair(board, color, fallback);
   return null;
+}
+
+/**
+ * ブロック id の「巻き戻し先」候補をすべて挙げる。
+ *
+ * 候補 (dir, t) は「今の位置から dir と逆向きに t マス戻した位置 A' から
+ * dir 方向へ滑らせると、ちょうど今の位置で止まる」ことを意味する。条件は2つ:
+ *   ・今の位置の進行方向側が壁か他のブロック（＝そこで止まる）
+ *   ・A' までの経路が空いている（自分が今いるセルは通ってよい）
+ * さらに A' で相棒に触れていてはいけない ―― 触れていたらその場で消えてしまう。
+ */
+function retractCandidates(board, id) {
+  const size = board.size;
+  const piece = board.pieces.get(id);
+  if (!piece) return [];
+  const partner = [...board.pieces.values()].find((p) => p.color === piece.color && p.id !== id);
+  const own = new Set(piece.cells.map(([x, y]) => y * size + x));
+  const out = [];
+
+  for (const dir of DIR_KEYS) {
+    const d = DIRS[dir];
+
+    // 今の位置に「ちょうど止まる」ためには、進行方向側が壁かブロックである必要がある
+    let stopped = false;
+    for (const [x, y] of piece.cells) {
+      const nx = x + d.x;
+      const ny = y + d.y;
+      if (nx < 0 || ny < 0 || nx >= size || ny >= size) { stopped = true; break; }
+      const gi = ny * size + nx;
+      if (own.has(gi)) continue;
+      if (board.grid[gi] !== -1) { stopped = true; break; }
+    }
+    if (!stopped) continue;
+
+    // 手前へ何マス戻せるか（自分のセルは通過できる）
+    for (let t = 1; t < size; t++) {
+      let ok = true;
+      for (const [x, y] of piece.cells) {
+        const nx = x - d.x * t;
+        const ny = y - d.y * t;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) { ok = false; break; }
+        const gi = ny * size + nx;
+        if (own.has(gi)) continue;
+        if (board.grid[gi] !== -1) { ok = false; break; }
+      }
+      if (!ok) break;
+
+      // 戻した先で相棒に触れていてはいけない（触れていたらその場で消えてしまう）
+      if (partner) {
+        const from = piece.cells.map(([x, y]) => [x - d.x * t, y - d.y * t]);
+        const halo = haloOf(size, from);
+        if (partner.cells.some(([x, y]) => halo.has(y * size + x))) continue;
+      }
+      out.push({ id, dir, t, color: piece.color });
+    }
+  }
+  return out;
+}
+
+/**
+ * 追い込み手を1手ぶん足す。ブロック id を1つ手前の「滑らせれば今の位置に来る」
+ * 場所へ戻し、その手を返す（盤面は書き換わる）。
+ *
+ * 候補の選び方が難易度を決める。いちばん効くのは
+ * 「戻したあと、その色がもう1手では消せなくなっていること」――
+ * これが満たされる限り、消すには必ずもう1手ぶん滑らせる必要がある。
+ * 次に、長く滑る候補を好む（盤面の端から端まで動くほど読む範囲が広がる）。
+ */
+function retractOnce(board, rng, opts, id, seen) {
+  const piece = board.pieces.get(id);
+  if (!piece) return null;
+  const cands = retractCandidates(board, id);
+  if (cands.length === 0) return null;
+
+  shuffle(rng, cands);
+  let best = null;
+  let bestScore = -Infinity;
+  for (const c of cands.slice(0, opts.chainTries)) {
+    board.movePiece(id, OPPOSITE[c.dir], c.t);
+    const revisits = seen.has(board.fingerprint());
+    const stillClearable = revisits ? false : colorClearable(board, piece.color);
+    board.movePiece(id, c.dir, c.t);
+
+    // 一度通った局面へ戻す手は採らない。行って戻るだけの往復が解に混ざってしまう
+    if (revisits) continue;
+    const s = (stillClearable ? 0 : 100) + c.t * 4 + rng() * 6;
+    if (s > bestScore) { bestScore = s; best = c; }
+  }
+  if (!best) return null;
+
+  board.movePiece(id, OPPOSITE[best.dir], best.t);
+  seen.add(board.fingerprint());
+  return { pieceId: id, dir: best.dir, distance: best.t, color: piece.color, kind: 'chain' };
+}
+
+/**
+ * 追い込み手を hops 回まで重ねる。戻り値は「作った順」（＝プレイ順の逆）。
+ *
+ * 巻き戻す相手は「ぶつけに行く側 P」だけでなく「待ち受ける側 Q」でもよい。
+ * Q を巻き戻すと、プレイでは先に Q を定位置へ滑らせてから P をぶつけることになる
+ * ―― 1組を消すのに両方のブロックを動かす、いちばん読み応えのある形になる。
+ * （Q が戻る手はプレイ順で必ず P の消去手より前に来るので、ストッパーは崩れない）
+ */
+function retractPair(board, rng, opts, movingId, mateId, hops, seen) {
+  const steps = [];
+  for (let i = 0; i < hops; i++) {
+    // どちらを巻き戻すかは毎回振る。P 寄りにして「ぶつけに行く側」の道のりを主役にする
+    const order = rng() < 0.65 ? [movingId, mateId] : [mateId, movingId];
+    let step = null;
+    for (const id of order) {
+      step = retractOnce(board, rng, opts, id, seen);
+      if (step) break;
+    }
+    if (!step) break; // どちらも戻せない。ここまでの深さで諦める
+    steps.push(step);
+  }
+  return steps;
+}
+
+/** 追い込み手の総数を色ごとに配る。先に置く色（＝最後に消す色）ほど深くする */
+function hopPlan(colors, total) {
+  const plan = new Array(Math.max(0, colors)).fill(0);
+  if (plan.length === 0) return plan;
+  const base = Math.floor(total / plan.length);
+  let extra = total - base * plan.length;
+  for (let i = 0; i < plan.length; i++) {
+    plan[i] = base + (extra > 0 ? 1 : 0);
+    if (extra > 0) extra--;
+  }
+  return plan;
+}
+
+/**
+ * 初期盤面に「いきなり消せてしまう色」が残っていたら、その色をもう1手ぶん奥へ追い込む。
+ * 狙いは clearAtStart === 0 ―― 第1手からすでに、何を動かしても消えない盤面。
+ * 足した手は解の先頭に積む（この時点の盤面がそのまま初期盤面なので、常に成立する）。
+ */
+function pushBackOpenings(board, rng, opts, solution, seen) {
+  let added = 0;
+  while (added < opts.openingPushes) {
+    const open = clearableColors(board);
+    if (open.size === 0) return;
+
+    let moved = false;
+    for (const color of open) {
+      if (added >= opts.openingPushes) break;
+      const ids = [...board.pieces.values()].filter((p) => p.color === color).map((p) => p.id);
+      for (const id of shuffle(rng, ids)) {
+        const step = retractOnce(board, rng, opts, id, seen);
+        if (!step) continue;
+        solution.unshift(step);
+        added++;
+        moved = true;
+        break;
+      }
+    }
+
+    // 当の色を動かせないこともある（周りが詰まっていて戻す先が無い）。
+    // そのときは他のブロックを退かして、ぶつかり先のストッパーごと崩しにいく
+    if (!moved && added < opts.openingPushes) {
+      const step = placeSetup(board, rng, opts, seen);
+      if (step) {
+        solution.unshift(step);
+        added++;
+        moved = true;
+      }
+    }
+    if (!moved) return; // どうにも動かせない。best-effort でここまで
+  }
 }
 
 /**
@@ -259,54 +504,13 @@ function placePair(board, rng, opts, color, requireForced) {
  * その手自体では何も消えない（同色は隣接していないため）が、
  * 通さないと後の手が成立しない。
  *
- * @param {number[]} preferIds この順で優先して対象を選ぶ（次に動かす予定のブロックなど）
+ * 追い込み手との違いは「対象を選ばないこと」。次に消したいブロックとは限らない
+ * ので、盤面のどこを触ればよいのか自体が読みどころになる。
  */
-function placeSetup(board, rng, opts) {
-  const size = board.size;
+function placeSetup(board, rng, opts, seen) {
   const candidates = [];
-
   for (const id of board.pieces.keys()) {
-    const piece = board.pieces.get(id);
-    const partner = [...board.pieces.values()].find((p) => p.color === piece.color && p.id !== id);
-    const own = new Set(piece.cells.map(([x, y]) => y * size + x));
-
-    for (const dir of DIR_KEYS) {
-      const d = DIRS[dir];
-
-      // 今の位置に「ちょうど止まる」ためには、進行方向側が壁かブロックである必要がある
-      let stopped = false;
-      for (const [x, y] of piece.cells) {
-        const nx = x + d.x;
-        const ny = y + d.y;
-        if (nx < 0 || ny < 0 || nx >= size || ny >= size) { stopped = true; break; }
-        const gi = ny * size + nx;
-        if (own.has(gi)) continue;
-        if (board.grid[gi] !== -1) { stopped = true; break; }
-      }
-      if (!stopped) continue;
-
-      // 手前へ何マス戻せるか（自分のセルは通過できる）
-      for (let t = 1; t < size; t++) {
-        let ok = true;
-        for (const [x, y] of piece.cells) {
-          const nx = x - d.x * t;
-          const ny = y - d.y * t;
-          if (nx < 0 || ny < 0 || nx >= size || ny >= size) { ok = false; break; }
-          const gi = ny * size + nx;
-          if (own.has(gi)) continue;
-          if (board.grid[gi] !== -1) { ok = false; break; }
-        }
-        if (!ok) break;
-
-        // 戻した先で相棒に触れていてはいけない（触れていたらその場で消えてしまう）
-        const from = piece.cells.map(([x, y]) => [x - d.x * t, y - d.y * t]);
-        if (partner) {
-          const halo = haloOf(size, from);
-          if (partner.cells.some(([x, y]) => halo.has(y * size + x))) continue;
-        }
-        candidates.push({ id, dir, t, color: piece.color });
-      }
-    }
+    for (const c of retractCandidates(board, id)) candidates.push(c);
   }
   if (candidates.length === 0) return null;
 
@@ -317,7 +521,8 @@ function placeSetup(board, rng, opts) {
   let bestN = Infinity;
   for (const c of candidates.slice(0, 80)) {
     board.movePiece(c.id, OPPOSITE[c.dir], c.t);
-    const n = clearableColors(board, bestN).size;
+    const revisits = seen.has(board.fingerprint());
+    const n = revisits ? Infinity : clearableColors(board, bestN).size;
     board.movePiece(c.id, c.dir, c.t);
     if (n < bestN) {
       bestN = n;
@@ -328,6 +533,7 @@ function placeSetup(board, rng, opts) {
   if (!best) return null;
 
   board.movePiece(best.id, OPPOSITE[best.dir], best.t);
+  seen.add(board.fingerprint());
   return { pieceId: best.id, dir: best.dir, distance: best.t, color: best.color, kind: 'setup' };
 }
 
@@ -336,27 +542,40 @@ function attemptBuild(seed, opts) {
   const rng = makeRng(seed);
   const board = new Board(opts.size);
   const solution = [];
+  const plan = hopPlan(opts.colors, opts.chainMoves);
+  // 作った各手の「直前の局面」。同じ局面へ戻る手を採らないために覚えておく
+  // （放っておくと「右へ押して、左へ押し戻す」だけの往復が手順に混ざる）
+  const seen = new Set();
 
   for (let c = 0; c < opts.colors; c++) {
-    const step = placePair(board, rng, opts, c, opts.forced);
-    if (!step) return null;
+    const placed = placePair(board, rng, opts, c, opts.forced);
+    if (!placed) return null;
     // 逆順に作っているので、新しいステップほど「先の手」になる
-    solution.unshift(step);
+    solution.unshift(placed.step);
+    seen.add(board.fingerprint());
+    // ぶつける場所から手前へ何度も巻き戻す ―― ここで「スライドの重ね」が生まれる
+    const chain = retractPair(board, rng, opts, placed.movingId, placed.mateId, plan[c], seen);
+    for (const step of chain) solution.unshift(step);
   }
 
   for (let i = 0; i < opts.setupMoves; i++) {
-    const step = placeSetup(board, rng, opts);
+    const step = placeSetup(board, rng, opts, seen);
     if (!step) break;
     solution.unshift(step);
   }
+
+  // 仕込み手で通路が変わり、また消せるようになった色があれば奥へ押し戻す
+  pushBackOpenings(board, rng, opts, solution, seen);
 
   return { board, solution };
 }
 
 /**
  * 解の道筋を調べる。
- *   clearAtStart : 初期盤面に「消せる手」がいくつあるか（0 なら仕込み手が必須）
+ *   clearAtStart : 初期盤面に「消せる手」がいくつあるか（0 が狙い）
  *   forced       : どの局面でも「消せる手」の結果が実質1通りしかないか
+ *   dryStreak    : 何も消えない手が最大で何手続くか（＝読みの深さ）
+ *   blindMoves   : 「消せる色がひとつも無い」局面が何回あるか
  */
 export function analyzeSolution(snapshot, solution, size) {
   const board = new Board(size);
@@ -364,18 +583,24 @@ export function analyzeSolution(snapshot, solution, size) {
   let forced = true;
   let clearAtStart = 0;
   let branchPoints = 0;
+  let blindMoves = 0;
+  let dryStreak = 0;
+  let streak = 0;
 
   for (let i = 0; i < solution.length; i++) {
     const colors = clearableColors(board);
     if (i === 0) clearAtStart = colors.size;
-    // 仕込み手の局面（消せる色が無い）は分岐とみなさない
+    if (colors.size === 0) blindMoves++;
+    // 何も消せない局面は「選択肢が無い」ので分岐とはみなさない
     if (colors.size > 1) {
       forced = false;
       branchPoints++;
     }
-    board.applyMove(solution[i].pieceId, solution[i].dir);
+    const res = board.applyMove(solution[i].pieceId, solution[i].dir);
+    if (res && res.cleared.length > 0) streak = 0;
+    else dryStreak = Math.max(dryStreak, ++streak);
   }
-  return { forced, clearAtStart, branchPoints };
+  return { forced, clearAtStart, branchPoints, blindMoves, dryStreak };
 }
 
 /** レベル番号からパズルを作る */
@@ -384,6 +609,7 @@ export function generateLevel(level, overrides = {}) {
   const puzzle = generatePuzzle(levelSeed(config.level), {
     size: config.size,
     colors: config.colors,
+    chainMoves: config.chainMoves,
     setupMoves: config.setupMoves,
     forced: config.forced,
     attempts: config.attempts,
@@ -398,6 +624,7 @@ export async function generateLevelAsync(level, overrides = {}, onProgress = nul
   const puzzle = await generatePuzzleAsync(levelSeed(config.level), {
     size: config.size,
     colors: config.colors,
+    chainMoves: config.chainMoves,
     setupMoves: config.setupMoves,
     forced: config.forced,
     attempts: config.attempts,
@@ -425,25 +652,32 @@ function runAttempt(seed, opts, attempt) {
     pieces: built.board.pieceCount,
     size: opts.size,
     colors: opts.colors,
+    chainMoves: built.solution.filter((s) => s.kind === 'chain').length,
     setupMoves: built.solution.filter((s) => s.kind === 'setup').length,
     analysis,
   };
 }
 
-/** 望んだ性質をどれだけ満たしているか。大きいほど良い */
+/**
+ * 望んだ性質をどれだけ満たしているか。大きいほど良い。
+ * いちばん重いのは「初手から何も消せないこと」―― この盤面でしか
+ * 「スライドを重ねて読む」体験は生まれない。
+ */
 function score(result, opts) {
   let s = result.cells;
-  if (opts.setupMoves > 0) {
-    s += result.setupMoves * 40;
-    // 初手から消せる手が無い＝仕込みが必須。これが一番欲しい形
-    if (result.analysis.clearAtStart === 0) s += 200;
-  }
+  // 初手から消せる手が無い＝まず通路を作る読みから入る。これが一番欲しい形
+  if (result.analysis.clearAtStart === 0) s += 400;
+  else s -= result.analysis.clearAtStart * 60;
+  s += Math.min(result.chainMoves, opts.chainMoves) * 45;
+  s += result.analysis.dryStreak * 12;
+  if (opts.setupMoves > 0) s += Math.min(result.setupMoves, opts.setupMoves) * 40;
   if (opts.forced && result.analysis.forced) s += 300;
   return s;
 }
 
 function goodEnough(result, opts) {
-  if (opts.setupMoves > 0 && result.analysis.clearAtStart !== 0) return false;
+  if (result.analysis.clearAtStart !== 0) return false;
+  if (result.chainMoves < opts.chainMoves) return false;
   if (opts.setupMoves > 0 && result.setupMoves < opts.setupMoves) return false;
   if (opts.forced && !result.analysis.forced) return false;
   return true;
@@ -520,7 +754,8 @@ export function verifySolution(snapshot, solution, size) {
     if (res.steps !== step.distance) {
       return { ok: false, reason: `手 ${i + 1}: 停止位置が想定と違う (${res.steps} != ${step.distance})` };
     }
-    const wantCleared = step.kind === 'setup' ? 0 : 2;
+    // 消えるのは 'clear' の手だけ。追い込み手も仕込み手も何も消してはいけない
+    const wantCleared = step.kind === 'clear' ? 2 : 0;
     if (res.cleared.length !== wantCleared) {
       return { ok: false, reason: `手 ${i + 1}: 消去数が想定と違う (${res.cleared.length} != ${wantCleared})` };
     }
