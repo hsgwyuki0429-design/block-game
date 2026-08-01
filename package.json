@@ -7,8 +7,9 @@
   "scripts": {
     "build": "node tools/build.mjs",
     "start": "node server.mjs",
-    "test": "node tools/build.mjs --check && node --test \"tests/**/*.test.mjs\"",
-    "verify": "node tools/verify.mjs 80"
+    "test": "node tools/build.mjs --check && node tools/icons.mjs --check && node --test \"tests/**/*.test.mjs\"",
+    "verify": "node tools/verify.mjs 80",
+    "icons": "node tools/icons.mjs"
   },
   "license": "MIT"
 }

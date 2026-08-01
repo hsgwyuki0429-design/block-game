@@ -18,6 +18,7 @@ const dom = {
   btnStartLabel: $('btn-start-label'),
   btnStartSub: $('btn-start-sub'),
   btnOpenLevels: $('btn-open-levels'),
+  btnInstall: $('btn-install'),
   homeProgress: $('home-progress'),
 
   // レベル一覧
@@ -60,6 +61,7 @@ const dom = {
   btnSettings2: $('btn-settings-2'),
   modalRules: $('modal-rules'),
   modalSettings: $('modal-settings'),
+  modalInstall: $('modal-install'),
   optSound: $('opt-sound'),
   optHaptics: $('opt-haptics'),
   optSymbols: $('opt-symbols'),
@@ -95,5 +97,16 @@ try {
     localStorage.setItem('slidepop.seenRules', '1');
   }
 } catch { /* プライベートモードなどでは無視 */ }
+
+/*
+ * ホーム画面から開いたときに、通信が無くても遊べるようにする。
+ * file:// では Service Worker が使えないので、そこでは何もしない。
+ */
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  window.addEventListener('load', () => {
+    // sw.js 自体はキャッシュさせない（新しい版に気づけなくなる）
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
+  });
+}
 
 window.slidePop = game;
