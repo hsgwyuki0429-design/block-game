@@ -12,22 +12,10 @@ import { Renderer, colorFor } from './render.js';
 import { attachInput } from './input.js';
 import { Sound } from './audio.js';
 
-/** 大量消去の段階評価（セル数）。明るい背景で読める中間の明度に寄せてある */
-const TIERS = [
-  { cells: 20, label: 'ミラクル!!!', color: '#e0388f' },
-  { cells: 16, label: 'ファンタスティック!!', color: '#e08a00' },
-  { cells: 12, label: 'グレイト!', color: '#0f9d63' },
-];
-
 const STORE_KEY = 'slidepop.v3';
 
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
-
-function tierOf(cells) {
-  for (const t of TIERS) if (cells >= t.cells) return t;
-  return null;
-}
 
 /**
  * 手数の星評価。
@@ -93,7 +81,6 @@ export class Game {
     this.lastFrame = performance.now();
     this.toastTimer = 0;
     this.newRecord = false;
-    this.initialCells = 0;
     this.activeColors = [];
     /** 連続で消せた回数。増えるほど消去音の音程が上がる */
     this.combo = 0;
@@ -182,7 +169,6 @@ export class Game {
     this.puzzle = puzzle;
     this.board = new Board(puzzle.size);
     this.board.restore(puzzle.snapshot);
-    this.initialCells = puzzle.cells;
     this.history = [];
     this.moves = 0;
     this.hintsUsed = 0;
@@ -314,18 +300,25 @@ export class Game {
     this.doClear(group);
   }
 
-  /** 消去の演出と実行 */
+  /**
+   * 消去の演出と実行。
+   * 祝うのは光と音だけ ―― 画面に文字は出さない。連鎖の深さは
+   * 音程の階段と、光の強さ・画面の揺れで伝える。
+   */
   doClear(group) {
     const pieces = group.map((id) => this.board.pieces.get(id)).filter(Boolean);
     if (pieces.length < 2) { this.anim = null; this.afterMove(); return; }
 
     this.combo++;
+    // 連鎖が深いほど強く光る（頭打ちは付ける。眩しすぎると読めなくなる）
+    const heat = Math.min(2.2, 1 + (this.combo - 1) * 0.28);
 
     let cells = 0;
     let sx = 0;
     let sy = 0;
     for (const p of pieces) {
-      this.renderer.burst(p.cells, p.color);
+      this.renderer.shatter(p.cells, p.color);
+      this.renderer.burst(p.cells, p.color, heat);
       for (const [x, y] of p.cells) {
         sx += x + 0.5;
         sy += y + 0.5;
@@ -334,17 +327,10 @@ export class Game {
     }
     const center = this.renderer.cellCenter(sx / cells - 0.5, sy / cells - 0.5);
     const color = pieces[0].color;
-    this.renderer.ring(center.x, center.y, color, pieces.length);
-    this.renderer.flash(center.x, center.y, pieces.length / 2);
-    this.renderer.addShake(2.5 + cells * 0.5);
+    this.renderer.ring(center.x, center.y, color, heat);
+    this.renderer.flash(center.x, center.y, heat);
+    this.renderer.addShake(3 + cells * 0.4 * heat);
     this.sound.pop(this.combo - 1, pieces.length);
-
-    const tier = tierOf(cells);
-    let sub = tier ? tier.label : null;
-    if (this.combo >= 2) sub = sub ? `${sub}  ${this.combo}コンボ` : `${this.combo}コンボ!`;
-    // 段階評価が無いときは、消えたブロックの色そのままで祝う
-    const textColor = tier ? tier.color : colorFor(color).dark;
-    this.renderer.floatText(center.x, center.y, `${cells}個消し！`, sub, textColor);
 
     for (const id of group) this.board.removePiece(id);
     this.selected = null;
@@ -477,6 +463,17 @@ export class Game {
 
   bindUi() {
     const d = this.dom;
+
+    // 押せるものは全部、盤面と同じ乾いたウッドクリックで鳴る。
+    // pointerdown で鳴らすと指の動きと音がずれない。ここが音の解錠地点でもある
+    // （ホーム画面のボタンを押した時点で iOS の音が開く）。
+    document.addEventListener('pointerdown', (e) => {
+      const hit = e.target.closest && e.target.closest('button, .switch');
+      if (!hit || hit.disabled) return;
+      this.sound.unlock();
+      this.sound.click();
+    }, { passive: true });
+
     d.btnUndo.addEventListener('click', () => this.undo());
     d.btnHint.addEventListener('click', () => this.showHint());
     d.btnRestart.addEventListener('click', () => this.restart());
@@ -529,7 +526,7 @@ export class Game {
         this.applySettings();
         this.store.settings = this.settings;
         saveStore(this.store);
-        if (key === 'sound' && el.checked) { this.sound.unlock(); this.sound.tap(); }
+        if (key === 'sound' && el.checked) { this.sound.unlock(); this.sound.click(); }
       });
     }
 
@@ -712,9 +709,6 @@ export class Game {
     d.statLeft.textContent = String(this.board.pieceCount);
     d.statLevel.textContent = String(this.level);
     d.levelInfo.textContent = this.puzzle ? levelSummary(this.puzzle.config) : '\u00a0';
-
-    const done = this.initialCells ? (this.initialCells - this.board.filledCells) / this.initialCells : 0;
-    d.progressBar.style.width = `${Math.round(done * 100)}%`;
 
     d.btnUndo.disabled = this.history.length === 0 || this.busy;
     d.hudMoves.classList.toggle('over', this.puzzle ? this.moves > this.puzzle.par : false);
