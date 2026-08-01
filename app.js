@@ -1220,8 +1220,12 @@ function colorFor(index) {
   return c;
 }
 
-/** 盤面（ブロックを並べる面）。影を落とさない、平らな一色 */
-const TRAY = { plate: '#dde2f0', hole: '#eef1f8' };
+/**
+ * 盤面（ブロックを並べる面）。影も光沢も落とさない、平らな面。
+ * 上端にだけ細い明るい線を引く ―― ガラス板の縁が光を拾ったときの1本で、
+ * これだけで面が「浮いている」ように見える。
+ */
+const TRAY = { plate: '#dde2f0', hole: '#eef1f8', rim: 'rgba(255,255,255,.85)' };
 
 /** 色覚サポート用の記号。色数が増えても足りるよう繰り返して使う */
 const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', '☰'];
@@ -1229,7 +1233,6 @@ const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', 
 const UI_FONT = 'ui-rounded, -apple-system, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Hiragino Sans", system-ui, sans-serif';
 
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
-const easeOutBack = (t) => 1 + 2.4 * Math.pow(t - 1, 3) + 1.6 * Math.pow(t - 1, 2);
 
 class Renderer {
   constructor(canvas) {
@@ -1244,8 +1247,8 @@ class Renderer {
     this.viewH = 1;
 
     this.particles = [];
+    this.shards = [];
     this.rings = [];
-    this.texts = [];
     this.flashes = [];
     this.shake = 0;
     this.time = 0;
@@ -1265,8 +1268,9 @@ class Renderer {
     this.viewW = w;
     this.viewH = h;
 
-    // 盤面は正方形。外周にわずかな縁だけ取る
-    const cell = Math.floor((Math.min(w, h) - 18) / this.size);
+    // 盤面は正方形。画面をできるだけ大きく使う ―― 余白ではなく盤面が主役。
+    // 外周は演出（光の輪）がわずかに滲む余地だけ残す
+    const cell = Math.floor((Math.min(w, h) - 8) / this.size);
     this.cell = Math.max(8, cell);
     const boardPx = this.cell * this.size;
     this.ox = Math.floor((w - boardPx) / 2);
@@ -1295,28 +1299,40 @@ class Renderer {
   }
 
   // ---------------------------------------------------------------- 演出
+  //
+  // 消えた瞬間の報酬は「光」だけで作る。文字は一切出さない。
+  //   マスが光に開く -> 破片が散る -> リングが広がる -> 画面が一瞬白む
+  // 連鎖が深いほど強度が上がり、音程の階段と一緒に効いてくる。
+
+  /** 消えたマスそのものが光になって開く */
+  shatter(cells, colorIndex) {
+    const c = colorFor(colorIndex);
+    for (const [x, y] of cells) {
+      this.shards.push({ x, y, color: c.light, life: 1 });
+    }
+  }
 
   /** 砕けた破片が飛び散る */
-  burst(cells, colorIndex) {
+  burst(cells, colorIndex, strength = 1) {
     const c = colorFor(colorIndex);
-    const n = this.options.calm ? 3 : 8;
+    const n = this.options.calm ? 3 : Math.round(9 + strength * 3);
     for (const [cx, cy] of cells) {
       const p = this.cellCenter(cx, cy);
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2;
-        const sp = (0.5 + Math.random() * 2.8) * this.cell * 0.06;
-        const white = Math.random() < 0.16;
+        const sp = (0.5 + Math.random() * 3.1) * this.cell * 0.06;
+        const white = Math.random() < 0.3;
         this.particles.push({
           x: p.x + (Math.random() - 0.5) * this.cell * 0.6,
           y: p.y + (Math.random() - 0.5) * this.cell * 0.6,
           vx: Math.cos(a) * sp,
-          vy: Math.sin(a) * sp - this.cell * 0.03,
+          vy: Math.sin(a) * sp - this.cell * 0.04,
           g: this.cell * 0.011,
           life: 1,
-          decay: 0.016 + Math.random() * 0.018,
-          size: this.cell * (white ? 0.06 : 0.11 + Math.random() * 0.2),
-          radius: 0.34,
-          color: white ? '#ffffff' : (Math.random() < 0.4 ? c.light : c.base),
+          decay: 0.015 + Math.random() * 0.018,
+          size: this.cell * (white ? 0.05 : 0.09 + Math.random() * 0.18),
+          radius: white ? 0.5 : 0.3,
+          color: white ? '#ffffff' : (Math.random() < 0.45 ? c.light : c.base),
           spin: (Math.random() - 0.5) * 0.34,
           rot: Math.random() * Math.PI,
         });
@@ -1324,24 +1340,23 @@ class Renderer {
     }
   }
 
+  /** 色のついた光の輪が広がる */
   ring(x, y, colorIndex, strength = 1) {
+    const c = colorFor(colorIndex);
     this.rings.push({
       x, y,
-      r: this.cell * 0.35,
-      maxR: this.cell * (2 + strength * 1.4),
+      r: this.cell * 0.3,
+      maxR: this.cell * (2.2 + strength * 1.6),
       life: 1,
-      color: colorFor(colorIndex).shadow,
+      color: c.shadow,
+      glow: c.light,
     });
   }
 
-  /** 消えた瞬間の白いフラッシュ（報酬のトリガー） */
+  /** 消えた瞬間のフラッシュ（報酬のトリガー） */
   flash(x, y, strength = 1) {
     if (this.options.calm) return;
-    this.flashes.push({ x, y, r: this.cell * (2.4 + strength * 1.6), life: 1 });
-  }
-
-  floatText(x, y, text, sub, color) {
-    this.texts.push({ x, y, text, sub, color, life: 1, vy: -0.5 });
+    this.flashes.push({ x, y, r: this.cell * (2.6 + strength * 1.8), life: 1 });
   }
 
   addShake(amount) {
@@ -1351,8 +1366,8 @@ class Renderer {
 
   clearEffects() {
     this.particles.length = 0;
+    this.shards.length = 0;
     this.rings.length = 0;
-    this.texts.length = 0;
     this.flashes.length = 0;
     this.shake = 0;
   }
@@ -1386,10 +1401,10 @@ class Renderer {
     if (view.ghost && this.options.ghost) this.drawGhost(view);
     if (view.hint) this.drawHint(view);
 
+    this.drawShards(dt);
     this.drawRings(dt);
     this.drawFlashes(dt);
     this.drawParticles(dt);
-    this.drawTexts(dt);
 
     ctx.restore();
   }
@@ -1407,11 +1422,21 @@ class Renderer {
     const y0 = this.oy;
     const pad = Math.max(2, cell * 0.06);
 
+    const radius = Math.max(6, cell * 0.24);
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, Math.max(6, cell * 0.24));
+    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
     ctx.fillStyle = TRAY.plate;
     ctx.fill();
+    // ガラスの縁の光。上半分だけを 1px でなぞる
+    ctx.save();
+    ctx.clip();
+    ctx.strokeStyle = TRAY.rim;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x0 - pad + 0.5, y0 - pad + 0.5, w + pad * 2 - 1, (w + pad * 2) * 0.6, radius);
+    ctx.stroke();
+    ctx.restore();
     ctx.restore();
 
     const gap = this.tileGap;
@@ -1769,6 +1794,40 @@ class Renderer {
     ctx.restore();
   }
 
+  /**
+   * 消えたマスが光になって開く。
+   * ブロックと同じ矩形を、白く飛ばしながら少しだけ膨らませて消す ――
+   * 「そこにあったものが光になった」ように見せたいので、位置と形は変えない。
+   */
+  drawShards(dt) {
+    const ctx = this.ctx;
+    const k = dt * 60;
+    const cell = this.cell;
+    const gap = this.tileGap;
+    const size = this.tileSize;
+    for (let i = this.shards.length - 1; i >= 0; i--) {
+      const s = this.shards[i];
+      s.life -= 0.075 * k;
+      if (s.life <= 0) {
+        this.shards.splice(i, 1);
+        continue;
+      }
+      const t = easeOutCubic(1 - s.life);
+      const grow = 1 + t * 0.85;
+      const w = size * grow;
+      const cx = this.ox + s.x * cell + gap + size / 2;
+      const cy = this.oy + s.y * cell + gap + size / 2;
+      ctx.save();
+      ctx.globalAlpha = s.life * 0.9;
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = s.life > 0.55 ? '#ffffff' : s.color;
+      ctx.beginPath();
+      ctx.roundRect(cx - w / 2, cy - w / 2, w, w, this.tileRadius * grow);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   drawRings(dt) {
     const ctx = this.ctx;
     const k = dt * 60;
@@ -1782,11 +1841,19 @@ class Renderer {
       const t = easeOutCubic(1 - r.life);
       const rad = r.r + (r.maxR - r.r) * t;
       ctx.save();
-      ctx.globalAlpha = r.life * 0.5;
+      ctx.globalAlpha = r.life * 0.55;
       ctx.strokeStyle = `rgba(${r.color},1)`;
       ctx.lineWidth = Math.max(1.5, this.cell * 0.17 * r.life);
       ctx.beginPath();
       ctx.arc(r.x, r.y, rad, 0, Math.PI * 2);
+      ctx.stroke();
+      // 内側にもう一本、明るい輪を重ねてネオンのように光らせる
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = r.life * 0.45;
+      ctx.strokeStyle = r.glow;
+      ctx.lineWidth = Math.max(1, this.cell * 0.06 * r.life);
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, rad * 0.93, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
@@ -1809,43 +1876,6 @@ class Renderer {
       ctx.save();
       ctx.fillStyle = g;
       ctx.fillRect(f.x - rad, f.y - rad, rad * 2, rad * 2);
-      ctx.restore();
-    }
-  }
-
-  drawTexts(dt) {
-    const ctx = this.ctx;
-    const k = dt * 60;
-    for (let i = this.texts.length - 1; i >= 0; i--) {
-      const t = this.texts[i];
-      t.life -= 0.014 * k;
-      t.y += t.vy * k;
-      t.vy *= Math.pow(0.965, k);
-      if (t.life <= 0) {
-        this.texts.splice(i, 1);
-        continue;
-      }
-      const appear = Math.min(1, (1 - t.life) * 5);
-      const scale = easeOutBack(appear);
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, t.life * 2.4);
-      ctx.translate(t.x, t.y);
-      ctx.scale(scale, scale);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(4, this.cell * 0.22);
-      ctx.strokeStyle = 'rgba(16,20,36,.85)';
-      ctx.font = `800 ${Math.floor(this.cell * 0.82)}px ${UI_FONT}`;
-      ctx.strokeText(t.text, 0, 0);
-      ctx.fillStyle = t.color;
-      ctx.fillText(t.text, 0, 0);
-      if (t.sub) {
-        ctx.font = `800 ${Math.floor(this.cell * 0.52)}px ${UI_FONT}`;
-        ctx.strokeText(t.sub, 0, this.cell * 0.8);
-        ctx.fillStyle = '#ffd60a';
-        ctx.fillText(t.sub, 0, this.cell * 0.8);
-      }
       ctx.restore();
     }
   }
@@ -1966,29 +1996,85 @@ function attachInput(canvas, handlers) {
 // ===== src/audio.js =====
 // 効果音。音源ファイルは持たず、WebAudio でその場で合成する。
 //
-// 狙い:
-//   着地音  マリンバのような丸い「コトン」。置く行為そのものを心地よいリズムにする
-//   消去音  氷が砕けるような「シャラン」。溜まったものが解ける爽快感
-//   連鎖音  連続で消すたびに音程が階段状に上がる。「次の音が聴きたい」を作る
+// 音の設計は 2 種類だけ。
+//
+//   ウッドクリック  掴む・滑る・着地する・UI を押す ―― 操作すべて。
+//                   乾いた「カチッ／コトン」。木片を叩いたときの、芯があって
+//                   すぐ消える音。マリンバの丸みを少しだけ混ぜてある。
+//                   操作が全部これになることで、プレイがリズムになる。
+//
+//   グラスシャター  消えた瞬間。薄い氷が砕けるような「シャラン」。
+//                   非整数倍の高い partial を重ねると、鐘でも打楽器でもない
+//                   「ガラス」の質感になる。連鎖するほど音程が階段状に上がる。
+//
+// ハプティクスは音と同じ関数の中で鳴らす。指と耳がずれない。
 //
 // iOS は最初のタップまで音を出せないので、unlock() を最初のポインタ操作で呼ぶ。
 
 /** 音程の階段（ペンタトニック：外れた感じにならず、上がり続けても心地よい） */
 const LADDER = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28, 31];
 
+/** ガラスの部分音。整数倍から外すと「鐘」ではなく「ガラス」に聴こえる */
+const GLASS_PARTIALS = [1, 2.41, 3.86, 5.62, 7.71, 9.94];
+
+/**
+ * ほぼ無音の WAV を作る（画面収録対策。理由は keepAlive のコメント）。
+ * 完全な 0 ではなく最下位ビットだけを 22kHz で振っている ―― 人には聴こえず、
+ * それでいて「無音だから」と再生を止められることもない。
+ */
+function silentLoopUrl() {
+  const rate = 44100;
+  const frames = rate >> 1; // 0.5 秒
+  const buf = new ArrayBuffer(44 + frames * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF');
+  v.setUint32(4, 36 + frames * 2, true);
+  str(8, 'WAVE');
+  str(12, 'fmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  str(36, 'data');
+  v.setUint32(40, frames * 2, true);
+  for (let i = 0; i < frames; i++) v.setInt16(44 + i * 2, i & 1 ? 1 : -1, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
 class Sound {
   constructor() {
     this.ctx = null;
     this.master = null;
     this.noise = null;
-    this.enabled = true;
+    this._enabled = true;
     this.haptics = true;
+    this.keepAlive = null;
+  }
+
+  /**
+   * サウンドの入切。切ったら「画面収録用の無音ループ」も止める
+   * （鳴らさないのに音声セッションを占有しない）。
+   */
+  get enabled() { return this._enabled; }
+
+  set enabled(v) {
+    this._enabled = !!v;
+    if (!this.keepAlive) return;
+    if (this._enabled) this.keepAlive.play().catch(() => {});
+    else this.keepAlive.pause();
   }
 
   /** 最初のユーザー操作で呼ぶ。以降いつでも鳴らせるようになる */
   unlock() {
     if (this.ctx) {
       if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.keepAlive && this._enabled && this.keepAlive.paused) {
+        this.keepAlive.play().catch(() => {});
+      }
       return;
     }
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -2007,26 +2093,61 @@ class Sound {
     this.master.connect(comp);
     comp.connect(this.ctx.destination);
 
-    // ノイズは使い回す（砕ける音とアタックの芯に使う）
-    const len = Math.floor(this.ctx.sampleRate * 0.4);
+    // ノイズは使い回す（砕ける音とクリックの芯に使う）
+    const len = Math.floor(this.ctx.sampleRate * 0.5);
     this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
     const data = this.noise.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+
+    this.startKeepAlive();
+  }
+
+  /**
+   * 画面収録に音が乗るようにする。
+   *
+   * iOS/Safari は WebAudio だけを鳴らしていると音声セッションが「環境音」扱いのままで、
+   * 消音スイッチで黙るうえ、画面収録にも録音されない ―― 収録した動画が無音になる。
+   * <audio> 要素で何かを再生し続けているあいだはセッションが「メディア再生」に上がり、
+   * 同じセッションを共有する WebAudio の出力も、消音スイッチを無視して鳴り、収録される。
+   *
+   * そのための、ほぼ無音のループ。再生が止められても復帰できるように見張る。
+   */
+  startKeepAlive() {
+    if (this.keepAlive || typeof Audio === 'undefined') return;
+    try {
+      const el = new Audio(silentLoopUrl());
+      el.loop = true;
+      el.preload = 'auto';
+      el.setAttribute('playsinline', '');
+      el.setAttribute('aria-hidden', 'true');
+      this.keepAlive = el;
+      if (this._enabled) el.play().catch(() => {});
+
+      // タブに戻ってきたとき、OS に止められていたら鳴らし直す
+      const revive = () => {
+        if (!this._enabled || document.hidden) return;
+        if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+        if (el.paused) el.play().catch(() => {});
+      };
+      document.addEventListener('visibilitychange', revive);
+      el.addEventListener('pause', revive);
+    } catch { /* 使えない環境では諦める（音は鳴る。収録に乗らないだけ） */ }
   }
 
   get ready() {
-    return this.enabled && this.ctx && this.master;
+    return this._enabled && this.ctx && this.master;
   }
 
   /** 単音。type と包絡を指定して鳴らす */
-  tone(freq, { type = 'sine', gain = 0.2, attack = 0.004, decay = 0.25, delay = 0, detune = 0 } = {}) {
+  tone(freq, { type = 'sine', gain = 0.2, attack = 0.004, decay = 0.25, delay = 0, glide = 0 } = {}) {
     if (!this.ready) return;
     const t = this.ctx.currentTime + delay;
     const osc = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     osc.type = type;
-    osc.frequency.setValueAtTime(freq, t);
-    if (detune) osc.detune.setValueAtTime(detune, t);
+    // glide > 0 なら少し上から落ちてくる。木を叩いた瞬間の「詰まり」がこれで出る
+    osc.frequency.setValueAtTime(freq * (1 + glide), t);
+    if (glide) osc.frequency.exponentialRampToValueAtTime(freq, t + 0.02);
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + attack);
     g.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
@@ -2037,14 +2158,15 @@ class Sound {
   }
 
   /** ノイズをフィルタ越しに一瞬だけ */
-  burst({ gain = 0.12, decay = 0.14, delay = 0, hp = 1200, q = 0.7 } = {}) {
+  burst({ gain = 0.12, decay = 0.14, delay = 0, type = 'highpass', freq = 1200, q = 0.7 } = {}) {
     if (!this.ready || !this.noise) return;
     const t = this.ctx.currentTime + delay;
     const src = this.ctx.createBufferSource();
     src.buffer = this.noise;
+    src.playbackRate.value = 0.8 + Math.random() * 0.4;
     const f = this.ctx.createBiquadFilter();
-    f.type = 'highpass';
-    f.frequency.value = hp;
+    f.type = type;
+    f.frequency.value = freq;
     f.Q.value = q;
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(gain, t);
@@ -2056,18 +2178,67 @@ class Sound {
     src.stop(t + decay + 0.02);
   }
 
+  /**
+   * 乾いたウッドクリック。この音がゲーム中のすべての操作音になる。
+   *
+   *   ・帯域を絞ったノイズの一撃  = 木を叩いた「カチッ」という芯
+   *   ・上から落ちてくる基音      = 木片の詰まった鳴り
+   *   ・4 倍音を少しだけ          = マリンバ寄りの丸み
+   */
+  wood(freq = 520, { gain = 1, decay = 0.11, delay = 0 } = {}) {
+    this.burst({
+      type: 'bandpass',
+      freq: freq * 3.4,
+      q: 1.6,
+      gain: 0.09 * gain,
+      decay: 0.022,
+      delay,
+    });
+    this.tone(freq, { type: 'triangle', gain: 0.17 * gain, attack: 0.002, decay, delay, glide: 0.06 });
+    this.tone(freq * 4, { type: 'sine', gain: 0.035 * gain, attack: 0.002, decay: decay * 0.5, delay });
+  }
+
+  /**
+   * 薄いガラス／氷が砕ける音。
+   * 非整数倍の partial を上から順に、ほんの少しずつ遅らせて散らす。
+   */
+  glass(root = 1046.5, { gain = 1, spread = 1 } = {}) {
+    GLASS_PARTIALS.forEach((mul, i) => {
+      this.tone(root * mul, {
+        type: 'sine',
+        gain: (0.15 / (1 + i * 0.9)) * gain,
+        attack: 0.002,
+        decay: (0.42 - i * 0.045) * spread,
+        delay: i * 0.008 * spread,
+      });
+    });
+    // 破片が散る「シャラン」
+    this.burst({ type: 'highpass', freq: 5200, q: 0.7, gain: 0.1 * gain, decay: 0.26 * spread });
+    this.burst({ type: 'highpass', freq: 9000, q: 0.7, gain: 0.06 * gain, decay: 0.4 * spread, delay: 0.03 });
+    // 炭酸が弾ける「シュワッ」
+    this.burst({ type: 'bandpass', freq: 3000, q: 0.5, gain: 0.05 * gain, decay: 0.18 * spread, delay: 0.01 });
+  }
+
+  // ---------------------------------------------------------------- 効果音
+
   /** ブロックをつかんだ合図 */
   tap() {
-    this.tone(660, { type: 'sine', gain: 0.055, decay: 0.07 });
+    this.wood(880, { gain: 0.42, decay: 0.06 });
+    this.vibrate(5);
+  }
+
+  /** UI のボタン。盤面と同じ手触りに揃える */
+  click() {
+    this.wood(700, { gain: 0.5, decay: 0.07 });
+    this.vibrate(6);
   }
 
   /** 滑って壁にぶつかった瞬間。距離が長いほど低く重い音 */
   land(distance = 1) {
-    const f = 300 - Math.min(distance, 8) * 14;
-    this.tone(f, { type: 'triangle', gain: 0.18, decay: 0.2 });
-    this.tone(f * 3.02, { type: 'sine', gain: 0.05, decay: 0.1 });
-    this.burst({ gain: 0.05, decay: 0.05, hp: 1800 });
-    this.vibrate(8);
+    const d = Math.min(distance, 10);
+    this.wood(430 - d * 18, { gain: 1, decay: 0.13 + d * 0.006 });
+    this.tone(96, { type: 'sine', gain: 0.07, attack: 0.002, decay: 0.09 });
+    this.vibrate(Math.round(7 + d));
   }
 
   /**
@@ -2077,46 +2248,34 @@ class Sound {
    */
   pop(combo = 0, pieces = 2) {
     const step = LADDER[Math.min(combo, LADDER.length - 1)];
-    const root = 523.25 * Math.pow(2, step / 12); // C5 から上へ
-    this.tone(root, { type: 'sine', gain: 0.2, decay: 0.34 });
-    this.tone(root * 1.5, { type: 'sine', gain: 0.11, decay: 0.28, delay: 0.012 });
-    this.tone(root * 2.02, { type: 'sine', gain: 0.07, decay: 0.22, delay: 0.024 });
-    this.burst({ gain: 0.1, decay: 0.18, hp: 2600 });
-    if (pieces >= 3) {
-      this.tone(root * 3, { type: 'sine', gain: 0.06, decay: 0.3, delay: 0.05 });
-      this.burst({ gain: 0.07, decay: 0.24, hp: 3800, delay: 0.05 });
-    }
-    this.vibrate(pieces >= 3 ? [12, 26, 16] : 14);
+    const root = 1046.5 * Math.pow(2, step / 12); // C6 から上へ
+    // 階段を「聴かせる」のはウッドクリックの側。ガラスはその上に散る
+    this.wood(523.25 * Math.pow(2, step / 12), { gain: 0.75, decay: 0.1 });
+    this.glass(root, { gain: 1, spread: pieces >= 3 ? 1.25 : 1 });
+    this.vibrate(pieces >= 3 ? [12, 24, 18] : 13);
   }
 
-  /** 動かせない方向。低く短く突き放す */
+  /** 動かせない方向。木を押さえて叩いたような、詰まった短い音 */
   invalid() {
-    this.tone(120, { type: 'sine', gain: 0.12, decay: 0.1 });
-    this.vibrate([10, 40, 10]);
+    this.wood(150, { gain: 0.7, decay: 0.05 });
+    this.vibrate([9, 36, 9]);
   }
 
-  /** 全消し。上がっていくアルペジオ */
+  /** 全消し。ウッドクリックの階段を駆け上がって、最後にガラスが散る */
   win() {
-    const notes = [523.25, 659.25, 783.99, 1046.5];
-    notes.forEach((f, i) => {
-      this.tone(f, { type: 'sine', gain: 0.2, decay: 0.5, delay: i * 0.09 });
-      this.tone(f * 2, { type: 'sine', gain: 0.06, decay: 0.4, delay: i * 0.09 });
+    [0, 4, 7, 12, 16].forEach((s, i) => {
+      this.wood(523.25 * Math.pow(2, s / 12), { gain: 0.8, decay: 0.16, delay: i * 0.085 });
     });
-    this.burst({ gain: 0.08, decay: 0.5, hp: 2600, delay: 0.25 });
-    this.vibrate([16, 40, 16, 40, 30]);
+    this.glass(2093, { gain: 1.15, spread: 1.6 });
+    this.burst({ type: 'highpass', freq: 6000, gain: 0.07, decay: 0.9, delay: 0.4 });
+    this.vibrate([14, 34, 14, 34, 26]);
   }
 
-  /** 詰み。下がっていく2音 */
-  dead() {
-    this.tone(330, { type: 'triangle', gain: 0.16, decay: 0.28 });
-    this.tone(247, { type: 'triangle', gain: 0.16, decay: 0.5, delay: 0.14 });
-    this.vibrate([30, 60, 30]);
-  }
-
-  /** 1手戻した合図 */
+  /** 1手戻した合図。下がる2つのクリック */
   undo() {
-    this.tone(392, { type: 'sine', gain: 0.1, decay: 0.14 });
-    this.tone(294, { type: 'sine', gain: 0.1, decay: 0.2, delay: 0.06 });
+    this.wood(560, { gain: 0.5, decay: 0.07 });
+    this.wood(400, { gain: 0.45, decay: 0.09, delay: 0.07 });
+    this.vibrate(6);
   }
 
   vibrate(pattern) {
@@ -2134,22 +2293,10 @@ class Sound {
 // レベルは「ひとつ前をクリアするまで開かない」ので、進行状況は
 // 「解放済みレベル」と「レベルごとの星」だけで表せる。
 
-/** 大量消去の段階評価（セル数）。明るい背景で読める中間の明度に寄せてある */
-const TIERS = [
-  { cells: 20, label: 'ミラクル!!!', color: '#e0388f' },
-  { cells: 16, label: 'ファンタスティック!!', color: '#e08a00' },
-  { cells: 12, label: 'グレイト!', color: '#0f9d63' },
-];
-
 const STORE_KEY = 'slidepop.v3';
 
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
-
-function tierOf(cells) {
-  for (const t of TIERS) if (cells >= t.cells) return t;
-  return null;
-}
 
 /**
  * 手数の星評価。
@@ -2215,7 +2362,6 @@ class Game {
     this.lastFrame = performance.now();
     this.toastTimer = 0;
     this.newRecord = false;
-    this.initialCells = 0;
     this.activeColors = [];
     /** 連続で消せた回数。増えるほど消去音の音程が上がる */
     this.combo = 0;
@@ -2304,7 +2450,6 @@ class Game {
     this.puzzle = puzzle;
     this.board = new Board(puzzle.size);
     this.board.restore(puzzle.snapshot);
-    this.initialCells = puzzle.cells;
     this.history = [];
     this.moves = 0;
     this.hintsUsed = 0;
@@ -2436,18 +2581,25 @@ class Game {
     this.doClear(group);
   }
 
-  /** 消去の演出と実行 */
+  /**
+   * 消去の演出と実行。
+   * 祝うのは光と音だけ ―― 画面に文字は出さない。連鎖の深さは
+   * 音程の階段と、光の強さ・画面の揺れで伝える。
+   */
   doClear(group) {
     const pieces = group.map((id) => this.board.pieces.get(id)).filter(Boolean);
     if (pieces.length < 2) { this.anim = null; this.afterMove(); return; }
 
     this.combo++;
+    // 連鎖が深いほど強く光る（頭打ちは付ける。眩しすぎると読めなくなる）
+    const heat = Math.min(2.2, 1 + (this.combo - 1) * 0.28);
 
     let cells = 0;
     let sx = 0;
     let sy = 0;
     for (const p of pieces) {
-      this.renderer.burst(p.cells, p.color);
+      this.renderer.shatter(p.cells, p.color);
+      this.renderer.burst(p.cells, p.color, heat);
       for (const [x, y] of p.cells) {
         sx += x + 0.5;
         sy += y + 0.5;
@@ -2456,17 +2608,10 @@ class Game {
     }
     const center = this.renderer.cellCenter(sx / cells - 0.5, sy / cells - 0.5);
     const color = pieces[0].color;
-    this.renderer.ring(center.x, center.y, color, pieces.length);
-    this.renderer.flash(center.x, center.y, pieces.length / 2);
-    this.renderer.addShake(2.5 + cells * 0.5);
+    this.renderer.ring(center.x, center.y, color, heat);
+    this.renderer.flash(center.x, center.y, heat);
+    this.renderer.addShake(3 + cells * 0.4 * heat);
     this.sound.pop(this.combo - 1, pieces.length);
-
-    const tier = tierOf(cells);
-    let sub = tier ? tier.label : null;
-    if (this.combo >= 2) sub = sub ? `${sub}  ${this.combo}コンボ` : `${this.combo}コンボ!`;
-    // 段階評価が無いときは、消えたブロックの色そのままで祝う
-    const textColor = tier ? tier.color : colorFor(color).dark;
-    this.renderer.floatText(center.x, center.y, `${cells}個消し！`, sub, textColor);
 
     for (const id of group) this.board.removePiece(id);
     this.selected = null;
@@ -2599,6 +2744,17 @@ class Game {
 
   bindUi() {
     const d = this.dom;
+
+    // 押せるものは全部、盤面と同じ乾いたウッドクリックで鳴る。
+    // pointerdown で鳴らすと指の動きと音がずれない。ここが音の解錠地点でもある
+    // （ホーム画面のボタンを押した時点で iOS の音が開く）。
+    document.addEventListener('pointerdown', (e) => {
+      const hit = e.target.closest && e.target.closest('button, .switch');
+      if (!hit || hit.disabled) return;
+      this.sound.unlock();
+      this.sound.click();
+    }, { passive: true });
+
     d.btnUndo.addEventListener('click', () => this.undo());
     d.btnHint.addEventListener('click', () => this.showHint());
     d.btnRestart.addEventListener('click', () => this.restart());
@@ -2651,7 +2807,7 @@ class Game {
         this.applySettings();
         this.store.settings = this.settings;
         saveStore(this.store);
-        if (key === 'sound' && el.checked) { this.sound.unlock(); this.sound.tap(); }
+        if (key === 'sound' && el.checked) { this.sound.unlock(); this.sound.click(); }
       });
     }
 
@@ -2834,9 +2990,6 @@ class Game {
     d.statLeft.textContent = String(this.board.pieceCount);
     d.statLevel.textContent = String(this.level);
     d.levelInfo.textContent = this.puzzle ? levelSummary(this.puzzle.config) : '\u00a0';
-
-    const done = this.initialCells ? (this.initialCells - this.board.filledCells) / this.initialCells : 0;
-    d.progressBar.style.width = `${Math.round(done * 100)}%`;
 
     d.btnUndo.disabled = this.history.length === 0 || this.busy;
     d.hudMoves.classList.toggle('over', this.puzzle ? this.moves > this.puzzle.par : false);
@@ -3025,7 +3178,6 @@ const dom = {
   statPar: $('stat-par'),
   statLeft: $('stat-left'),
   levelInfo: $('level-info'),
-  progressBar: $('progress-bar'),
   legend: $('legend'),
 
   overlay: $('overlay'),

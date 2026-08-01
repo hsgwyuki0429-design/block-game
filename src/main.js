@@ -36,7 +36,6 @@ const dom = {
   statPar: $('stat-par'),
   statLeft: $('stat-left'),
   levelInfo: $('level-info'),
-  progressBar: $('progress-bar'),
   legend: $('legend'),
 
   overlay: $('overlay'),

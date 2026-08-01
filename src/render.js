@@ -98,8 +98,12 @@ export function colorFor(index) {
   return c;
 }
 
-/** 盤面（ブロックを並べる面）。影を落とさない、平らな一色 */
-const TRAY = { plate: '#dde2f0', hole: '#eef1f8' };
+/**
+ * 盤面（ブロックを並べる面）。影も光沢も落とさない、平らな面。
+ * 上端にだけ細い明るい線を引く ―― ガラス板の縁が光を拾ったときの1本で、
+ * これだけで面が「浮いている」ように見える。
+ */
+const TRAY = { plate: '#dde2f0', hole: '#eef1f8', rim: 'rgba(255,255,255,.85)' };
 
 /** 色覚サポート用の記号。色数が増えても足りるよう繰り返して使う */
 const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', '☰'];
@@ -107,7 +111,6 @@ const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', 
 const UI_FONT = 'ui-rounded, -apple-system, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Hiragino Sans", system-ui, sans-serif';
 
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
-const easeOutBack = (t) => 1 + 2.4 * Math.pow(t - 1, 3) + 1.6 * Math.pow(t - 1, 2);
 
 export class Renderer {
   constructor(canvas) {
@@ -122,8 +125,8 @@ export class Renderer {
     this.viewH = 1;
 
     this.particles = [];
+    this.shards = [];
     this.rings = [];
-    this.texts = [];
     this.flashes = [];
     this.shake = 0;
     this.time = 0;
@@ -143,8 +146,9 @@ export class Renderer {
     this.viewW = w;
     this.viewH = h;
 
-    // 盤面は正方形。外周にわずかな縁だけ取る
-    const cell = Math.floor((Math.min(w, h) - 18) / this.size);
+    // 盤面は正方形。画面をできるだけ大きく使う ―― 余白ではなく盤面が主役。
+    // 外周は演出（光の輪）がわずかに滲む余地だけ残す
+    const cell = Math.floor((Math.min(w, h) - 8) / this.size);
     this.cell = Math.max(8, cell);
     const boardPx = this.cell * this.size;
     this.ox = Math.floor((w - boardPx) / 2);
@@ -173,28 +177,40 @@ export class Renderer {
   }
 
   // ---------------------------------------------------------------- 演出
+  //
+  // 消えた瞬間の報酬は「光」だけで作る。文字は一切出さない。
+  //   マスが光に開く -> 破片が散る -> リングが広がる -> 画面が一瞬白む
+  // 連鎖が深いほど強度が上がり、音程の階段と一緒に効いてくる。
+
+  /** 消えたマスそのものが光になって開く */
+  shatter(cells, colorIndex) {
+    const c = colorFor(colorIndex);
+    for (const [x, y] of cells) {
+      this.shards.push({ x, y, color: c.light, life: 1 });
+    }
+  }
 
   /** 砕けた破片が飛び散る */
-  burst(cells, colorIndex) {
+  burst(cells, colorIndex, strength = 1) {
     const c = colorFor(colorIndex);
-    const n = this.options.calm ? 3 : 8;
+    const n = this.options.calm ? 3 : Math.round(9 + strength * 3);
     for (const [cx, cy] of cells) {
       const p = this.cellCenter(cx, cy);
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2;
-        const sp = (0.5 + Math.random() * 2.8) * this.cell * 0.06;
-        const white = Math.random() < 0.16;
+        const sp = (0.5 + Math.random() * 3.1) * this.cell * 0.06;
+        const white = Math.random() < 0.3;
         this.particles.push({
           x: p.x + (Math.random() - 0.5) * this.cell * 0.6,
           y: p.y + (Math.random() - 0.5) * this.cell * 0.6,
           vx: Math.cos(a) * sp,
-          vy: Math.sin(a) * sp - this.cell * 0.03,
+          vy: Math.sin(a) * sp - this.cell * 0.04,
           g: this.cell * 0.011,
           life: 1,
-          decay: 0.016 + Math.random() * 0.018,
-          size: this.cell * (white ? 0.06 : 0.11 + Math.random() * 0.2),
-          radius: 0.34,
-          color: white ? '#ffffff' : (Math.random() < 0.4 ? c.light : c.base),
+          decay: 0.015 + Math.random() * 0.018,
+          size: this.cell * (white ? 0.05 : 0.09 + Math.random() * 0.18),
+          radius: white ? 0.5 : 0.3,
+          color: white ? '#ffffff' : (Math.random() < 0.45 ? c.light : c.base),
           spin: (Math.random() - 0.5) * 0.34,
           rot: Math.random() * Math.PI,
         });
@@ -202,24 +218,23 @@ export class Renderer {
     }
   }
 
+  /** 色のついた光の輪が広がる */
   ring(x, y, colorIndex, strength = 1) {
+    const c = colorFor(colorIndex);
     this.rings.push({
       x, y,
-      r: this.cell * 0.35,
-      maxR: this.cell * (2 + strength * 1.4),
+      r: this.cell * 0.3,
+      maxR: this.cell * (2.2 + strength * 1.6),
       life: 1,
-      color: colorFor(colorIndex).shadow,
+      color: c.shadow,
+      glow: c.light,
     });
   }
 
-  /** 消えた瞬間の白いフラッシュ（報酬のトリガー） */
+  /** 消えた瞬間のフラッシュ（報酬のトリガー） */
   flash(x, y, strength = 1) {
     if (this.options.calm) return;
-    this.flashes.push({ x, y, r: this.cell * (2.4 + strength * 1.6), life: 1 });
-  }
-
-  floatText(x, y, text, sub, color) {
-    this.texts.push({ x, y, text, sub, color, life: 1, vy: -0.5 });
+    this.flashes.push({ x, y, r: this.cell * (2.6 + strength * 1.8), life: 1 });
   }
 
   addShake(amount) {
@@ -229,8 +244,8 @@ export class Renderer {
 
   clearEffects() {
     this.particles.length = 0;
+    this.shards.length = 0;
     this.rings.length = 0;
-    this.texts.length = 0;
     this.flashes.length = 0;
     this.shake = 0;
   }
@@ -264,10 +279,10 @@ export class Renderer {
     if (view.ghost && this.options.ghost) this.drawGhost(view);
     if (view.hint) this.drawHint(view);
 
+    this.drawShards(dt);
     this.drawRings(dt);
     this.drawFlashes(dt);
     this.drawParticles(dt);
-    this.drawTexts(dt);
 
     ctx.restore();
   }
@@ -285,11 +300,21 @@ export class Renderer {
     const y0 = this.oy;
     const pad = Math.max(2, cell * 0.06);
 
+    const radius = Math.max(6, cell * 0.24);
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, Math.max(6, cell * 0.24));
+    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
     ctx.fillStyle = TRAY.plate;
     ctx.fill();
+    // ガラスの縁の光。上半分だけを 1px でなぞる
+    ctx.save();
+    ctx.clip();
+    ctx.strokeStyle = TRAY.rim;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x0 - pad + 0.5, y0 - pad + 0.5, w + pad * 2 - 1, (w + pad * 2) * 0.6, radius);
+    ctx.stroke();
+    ctx.restore();
     ctx.restore();
 
     const gap = this.tileGap;
@@ -647,6 +672,40 @@ export class Renderer {
     ctx.restore();
   }
 
+  /**
+   * 消えたマスが光になって開く。
+   * ブロックと同じ矩形を、白く飛ばしながら少しだけ膨らませて消す ――
+   * 「そこにあったものが光になった」ように見せたいので、位置と形は変えない。
+   */
+  drawShards(dt) {
+    const ctx = this.ctx;
+    const k = dt * 60;
+    const cell = this.cell;
+    const gap = this.tileGap;
+    const size = this.tileSize;
+    for (let i = this.shards.length - 1; i >= 0; i--) {
+      const s = this.shards[i];
+      s.life -= 0.075 * k;
+      if (s.life <= 0) {
+        this.shards.splice(i, 1);
+        continue;
+      }
+      const t = easeOutCubic(1 - s.life);
+      const grow = 1 + t * 0.85;
+      const w = size * grow;
+      const cx = this.ox + s.x * cell + gap + size / 2;
+      const cy = this.oy + s.y * cell + gap + size / 2;
+      ctx.save();
+      ctx.globalAlpha = s.life * 0.9;
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = s.life > 0.55 ? '#ffffff' : s.color;
+      ctx.beginPath();
+      ctx.roundRect(cx - w / 2, cy - w / 2, w, w, this.tileRadius * grow);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   drawRings(dt) {
     const ctx = this.ctx;
     const k = dt * 60;
@@ -660,11 +719,19 @@ export class Renderer {
       const t = easeOutCubic(1 - r.life);
       const rad = r.r + (r.maxR - r.r) * t;
       ctx.save();
-      ctx.globalAlpha = r.life * 0.5;
+      ctx.globalAlpha = r.life * 0.55;
       ctx.strokeStyle = `rgba(${r.color},1)`;
       ctx.lineWidth = Math.max(1.5, this.cell * 0.17 * r.life);
       ctx.beginPath();
       ctx.arc(r.x, r.y, rad, 0, Math.PI * 2);
+      ctx.stroke();
+      // 内側にもう一本、明るい輪を重ねてネオンのように光らせる
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = r.life * 0.45;
+      ctx.strokeStyle = r.glow;
+      ctx.lineWidth = Math.max(1, this.cell * 0.06 * r.life);
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, rad * 0.93, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
@@ -687,43 +754,6 @@ export class Renderer {
       ctx.save();
       ctx.fillStyle = g;
       ctx.fillRect(f.x - rad, f.y - rad, rad * 2, rad * 2);
-      ctx.restore();
-    }
-  }
-
-  drawTexts(dt) {
-    const ctx = this.ctx;
-    const k = dt * 60;
-    for (let i = this.texts.length - 1; i >= 0; i--) {
-      const t = this.texts[i];
-      t.life -= 0.014 * k;
-      t.y += t.vy * k;
-      t.vy *= Math.pow(0.965, k);
-      if (t.life <= 0) {
-        this.texts.splice(i, 1);
-        continue;
-      }
-      const appear = Math.min(1, (1 - t.life) * 5);
-      const scale = easeOutBack(appear);
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, t.life * 2.4);
-      ctx.translate(t.x, t.y);
-      ctx.scale(scale, scale);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(4, this.cell * 0.22);
-      ctx.strokeStyle = 'rgba(16,20,36,.85)';
-      ctx.font = `800 ${Math.floor(this.cell * 0.82)}px ${UI_FONT}`;
-      ctx.strokeText(t.text, 0, 0);
-      ctx.fillStyle = t.color;
-      ctx.fillText(t.text, 0, 0);
-      if (t.sub) {
-        ctx.font = `800 ${Math.floor(this.cell * 0.52)}px ${UI_FONT}`;
-        ctx.strokeText(t.sub, 0, this.cell * 0.8);
-        ctx.fillStyle = '#ffd60a';
-        ctx.fillText(t.sub, 0, this.cell * 0.8);
-      }
       ctx.restore();
     }
   }

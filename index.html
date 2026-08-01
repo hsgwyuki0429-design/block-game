@@ -8,13 +8,15 @@
 <meta name="description" content="SLIDE POP! ― 盤面を滑らせて、同色をぶつけて、盤面を空にする空間推理パズル。">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>SLIDE POP!</title>
-<link rel="stylesheet" href="styles.css?v=25050a1b44">
+<link rel="stylesheet" href="styles.css?v=47b7312081">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
 
 <!-- ============================================================ ホーム -->
 <section class="screen screen-home" id="screen-home">
+  <!-- ガラスが屈折させるための、ごく淡い色の広がり -->
+  <div class="home-aura" aria-hidden="true"></div>
   <div class="home-inner">
     <div class="home-mark" aria-hidden="true">
       <i style="--c:#3f8ede"></i><i style="--c:#d94a41"></i>
@@ -98,8 +100,6 @@
     <div class="seg"><span class="k">PAR</span><span class="v" id="stat-par">–</span></div>
     <div class="seg"><span class="k">残り</span><span class="v" id="stat-left">–</span></div>
   </div>
-
-  <div class="progress"><i id="progress-bar"></i></div>
 
   <!-- 色ごとの残りブロック数（同色ペアを見つけるための補助） -->
   <div class="legend" id="legend" aria-label="色ごとの残りブロック数"></div>
@@ -240,6 +240,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=25050a1b44"></script>
+<script defer src="app.js?v=47b7312081"></script>
 </body>
 </html>
