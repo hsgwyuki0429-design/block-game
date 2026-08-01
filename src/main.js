@@ -1,13 +1,35 @@
-// 起動。DOM を集めて Game に渡し、URL のハッシュから最初の問題を決める。
+// 起動。DOM を集めて Game に渡し、URL のハッシュから最初の画面を決める。
 
 import { Game } from './game.js';
 
 const $ = (id) => document.getElementById(id);
 
 const dom = {
+  // 画面
+  screenHome: $('screen-home'),
+  screenLevels: $('screen-levels'),
+  screenGame: $('screen-game'),
+
   canvas: $('board'),
   toast: $('toast'),
 
+  // ホーム
+  btnStart: $('btn-start'),
+  btnStartLabel: $('btn-start-label'),
+  btnStartSub: $('btn-start-sub'),
+  btnOpenLevels: $('btn-open-levels'),
+  homeProgress: $('home-progress'),
+
+  // レベル一覧
+  levelGrid: $('level-grid'),
+  levelsSubtitle: $('levels-subtitle'),
+  pageRange: $('page-range'),
+  btnLevelsBack: $('btn-levels-back'),
+  btnLevelsJump: $('btn-levels-jump'),
+  btnPagePrev: $('btn-page-prev'),
+  btnPageNext: $('btn-page-next'),
+
+  // ゲーム
   statLevel: $('stat-level'),
   statMoves: $('stat-moves'),
   hudMoves: $('hud-moves'),
@@ -20,6 +42,7 @@ const dom = {
   overlay: $('overlay'),
   overlayBadge: $('overlay-badge'),
   overlayTitle: $('overlay-title'),
+  overlayStars: $('overlay-stars'),
   overlayText: $('overlay-text'),
   overlayExtra: $('overlay-extra'),
   overlayStats: $('overlay-stats'),
@@ -29,23 +52,20 @@ const dom = {
   btnHint: $('btn-hint'),
   btnRestart: $('btn-restart'),
   btnLevels: $('btn-levels'),
-  btnRules: $('btn-rules'),
-  btnSettings: $('btn-settings'),
+  btnHome: $('btn-home'),
 
+  // シート（ホームとゲーム、両方から開ける）
+  btnRules: $('btn-rules'),
+  btnRules2: $('btn-rules-2'),
+  btnSettings: $('btn-settings'),
+  btnSettings2: $('btn-settings-2'),
   modalRules: $('modal-rules'),
   modalSettings: $('modal-settings'),
-  modalLevels: $('modal-levels'),
   optSound: $('opt-sound'),
   optHaptics: $('opt-haptics'),
   optSymbols: $('opt-symbols'),
   optGhost: $('opt-ghost'),
   optCalm: $('opt-calm'),
-  levelInput: $('level-input'),
-  levelPreview: $('level-preview'),
-  btnLevelPrev: $('btn-level-prev'),
-  btnLevelNext: $('btn-level-next'),
-  btnLevelGo: $('btn-level-go'),
-  btnLevelBest: $('btn-level-best'),
   btnShare: $('btn-share'),
 };
 
@@ -59,8 +79,10 @@ function levelFromHash() {
   return Math.max(1, parseInt(m[1], 10));
 }
 
-// 優先順位: URL のレベル > 前回遊んでいたレベル > レベル1
-game.load(levelFromHash() || game.store.lastLevel || 1);
+// リンクでレベルを指定されたときだけ直行する。そうでなければホームから始める
+const linked = levelFromHash();
+if (linked) game.load(linked);
+else game.showHome();
 
 window.addEventListener('hashchange', () => {
   const lv = levelFromHash();
@@ -73,6 +95,6 @@ try {
     dom.modalRules.hidden = false;
     localStorage.setItem('slidepop.seenRules', '1');
   }
-} catch { /* 無視 */ }
+} catch { /* プライベートモードなどでは無視 */ }
 
 window.slidePop = game;

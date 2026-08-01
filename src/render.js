@@ -1,10 +1,11 @@
-// Canvas 描画。盤面・粘土ブロック・着地予測ゴースト・演出をすべてここで描く。
+// Canvas 描画。盤面・ブロック・着地予測ゴースト・演出をすべてここで描く。
 //
-// ブロックは「粘土」として描く:
-//   下に色付きのやわらかい影 → 斜めのグラデーションで塊感 → 内側の上左に光、
-//   下右に翳り → 表面に細かいざらつき（グレイン） → 縁取り線は引かない。
-// マットで、押したらへこみそうな質感を目指している。UI 側がガラスで退いているぶん、
-// ここだけが主役として前に出る。
+// ブロックは「色そのもの」で描く。影も光沢も模様も乗せない ―― 一色のベタ塗りに、
+// ほんのわずかな角丸だけ。マス同士のすき間も髪の毛ほどしか空けないので、
+// 盤面はタイルを敷き詰めたモザイクのように見える。
+// 同じブロックのマス同士はすき間なく繋がるので「どこまでが一緒に動くか」は形で読める。
+//
+// 後ろの盤面も同じ考えで、淡い色のマスを敷き詰めただけの平らな面にしている。
 
 import { DIRS, DIR_KEYS } from './shapes.js';
 
@@ -40,78 +41,73 @@ function installRoundRect() {
 }
 installRoundRect();
 
+// ---------------------------------------------------------------- 色
+
 /**
- * 6色の毛糸。織物の質感を乗せるので、彩度を高めにして色そのもので見分けられるようにする。
- * light=上端に当たる光 / base=素の色 / dark=下端の翳り / shadow=盤面に落ちる影
+ * 色は何色でも作れる。レベルが上がれば色数はいくらでも増えるので、
+ * 手で選んだ一覧ではなく「隣り合う番号どうしがいちばん離れて見える色相の並び」
+ * から手続き的に組み立てる。一覧を使い切ったら色相をずらし、
+ * 明度も段ごとに変えるので、同じ色相が戻ってきても別の色として読める。
  */
-export const PALETTE = [
-  { name: '赤', base: '#d9453b', light: '#e8695c', dark: '#a52a25', shadow: '120,26,22' },
-  { name: '橙', base: '#e07b2c', light: '#ee9b4c', dark: '#a95315', shadow: '122,52,12' },
-  { name: '黄', base: '#e9b02b', light: '#f6c94f', dark: '#b07f12', shadow: '126,88,10' },
-  { name: '緑', base: '#3ebe33', light: '#63d456', dark: '#268c1e', shadow: '26,88,20' },
-  { name: '青', base: '#4c7fd6', light: '#6f9de6', dark: '#2f5aa6', shadow: '26,58,116' },
-  { name: '紫', base: '#b44bd1', light: '#c972e0', dark: '#8a2ea3', shadow: '84,24,104' },
-];
+const HUES = [4, 210, 46, 142, 288, 26, 190, 330, 96, 258, 168, 14, 308, 64, 228, 118, 348, 200, 78, 272];
 
-/** 盤面（タイルを並べる台）。糸の色が立つように暗くする */
-const TRAY = {
-  light: { frame: '#1e2740', hole: '#36406a', ring: '#9aa6cc' },
-  dark: { frame: '#0f1424', hole: '#232c4a', ring: '#3d4666' },
-};
+/** 色相ごとの見た目の明るさ補正（黄～緑は明るく見えるので少し暗く置く） */
+function toneFor(hue) {
+  const yellowness = Math.max(0, Math.cos(((hue - 55) * Math.PI) / 180));
+  return 1 - yellowness * 0.16;
+}
 
-/** 色覚サポート用の記号 */
-const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚'];
+function hsl(h, s, l) {
+  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const v = l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * v);
+  };
+  return [f(0), f(8), f(4)];
+}
+
+const hex = (rgb) => `#${rgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+
+const paletteCache = [];
+
+/**
+ * 色番号 -> 色。番号はいくつでもよい（無制限）。
+ * base=ブロックの色 / light=明るめ / dark=文字などに使う濃いめ / shadow="r,g,b"
+ */
+export function colorFor(index) {
+  const i = Math.max(0, Math.floor(index) || 0);
+  if (paletteCache[i]) return paletteCache[i];
+
+  const lap = Math.floor(i / HUES.length);
+  const hue = (HUES[i % HUES.length] + lap * 23) % 360;
+  const tone = toneFor(hue);
+  // 周回ごとに明るさを振って、同じ色相帯でも別の色として見えるようにする
+  const shift = [0, 10, -8, 18][lap % 4];
+  const sat = 68 - (lap % 3) * 7;
+  const light = Math.max(30, Math.min(72, 55 * tone + shift));
+
+  const c = {
+    name: `色${i + 1}`,
+    base: hex(hsl(hue, sat, light)),
+    light: hex(hsl(hue, sat, Math.min(88, light + 13))),
+    dark: hex(hsl(hue, Math.min(90, sat + 10), Math.max(20, light - 22))),
+    shadow: hsl(hue, Math.min(90, sat + 10), Math.max(16, light - 30)).join(','),
+  };
+  paletteCache[i] = c;
+  return c;
+}
+
+/** 盤面（ブロックを並べる面）。影を落とさない、平らな一色 */
+const TRAY = { plate: '#dde2f0', hole: '#eef1f8' };
+
+/** 色覚サポート用の記号。色数が増えても足りるよう繰り返して使う */
+const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', '☰'];
 
 const UI_FONT = 'ui-rounded, -apple-system, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Hiragino Sans", system-ui, sans-serif';
 
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 const easeOutBack = (t) => 1 + 2.4 * Math.pow(t - 1, 3) + 1.6 * Math.pow(t - 1, 2);
-
-/**
- * 織物（刺繍）の地。斜め45度に走る糸の列を、繰り返して使えるタイルとして描く。
- * グレー #808080 を基準色にして overlay で重ねるので、どの色の上でも
- * 「明るい糸／暗い糸」として乗る。糸の間隔はマスの大きさに比例させる。
- */
-function makeWeave(cellPx) {
-  const spacing = Math.max(2, Math.round(cellPx / 14));
-  const size = spacing * 10; // 45度の縞が継ぎ目なく繰り返せるよう間隔の倍数にする
-  const c = document.createElement('canvas');
-  c.width = size;
-  c.height = size;
-  const g = c.getContext('2d');
-
-  g.fillStyle = '#808080';
-  g.fillRect(0, 0, size, size);
-
-  // 糸1本ぶん＝明るい面と暗い面の対
-  g.lineCap = 'butt';
-  for (let i = -size; i <= size * 2; i += spacing) {
-    g.strokeStyle = 'rgba(255,255,255,.6)';
-    g.lineWidth = Math.max(0.8, spacing * 0.34);
-    g.beginPath();
-    g.moveTo(i, size);
-    g.lineTo(i + size, 0);
-    g.stroke();
-
-    g.strokeStyle = 'rgba(0,0,0,.46)';
-    g.lineWidth = Math.max(0.8, spacing * 0.3);
-    g.beginPath();
-    g.moveTo(i + spacing * 0.46, size);
-    g.lineTo(i + spacing * 0.46 + size, 0);
-    g.stroke();
-  }
-
-  // 繊維のざらつき
-  const img = g.getImageData(0, 0, size, size);
-  for (let i = 0; i < img.data.length; i += 4) {
-    const n = (Math.random() - 0.5) * 20;
-    img.data[i] = Math.max(0, Math.min(255, img.data[i] + n));
-    img.data[i + 1] = Math.max(0, Math.min(255, img.data[i + 1] + n));
-    img.data[i + 2] = Math.max(0, Math.min(255, img.data[i + 2] + n));
-  }
-  g.putImageData(img, 0, 0);
-  return c;
-}
 
 export class Renderer {
   constructor(canvas) {
@@ -133,18 +129,6 @@ export class Renderer {
     this.time = 0;
 
     this.options = { symbols: false, ghost: true, calm: false };
-
-    this.weavePattern = null;
-    this.weaveFor = 0;
-
-    this.dark = false;
-    const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-    if (mq) {
-      this.dark = mq.matches;
-      const onChange = (e) => { this.dark = e.matches; };
-      if (mq.addEventListener) mq.addEventListener('change', onChange);
-      else if (mq.addListener) mq.addListener(onChange);
-    }
   }
 
   resize(size) {
@@ -159,96 +143,21 @@ export class Renderer {
     this.viewW = w;
     this.viewH = h;
 
-    // 盤面は正方形。影がはみ出せるよう外周に余白を取る
-    const cell = Math.floor((Math.min(w, h) - 30) / this.size);
+    // 盤面は正方形。外周にわずかな縁だけ取る
+    const cell = Math.floor((Math.min(w, h) - 18) / this.size);
     this.cell = Math.max(8, cell);
     const boardPx = this.cell * this.size;
     this.ox = Math.floor((w - boardPx) / 2);
     this.oy = Math.floor((h - boardPx) / 2);
-    this.buildWeave();
   }
-
-  /** マスの大きさが変わったら、織物の目とタイルの絵を作り直す */
-  buildWeave() {
-    const key = `${this.cell}:${this.dpr}`;
-    if (this.weaveFor === key && this.weavePattern) return;
-    this.weaveFor = key;
-    this.weaveCanvas = makeWeave(this.cell);
-    this.weavePattern = this.ctx.createPattern(this.weaveCanvas, 'repeat');
-    this.buildTiles();
-  }
-
-  /** タイルの実寸。マスからすき間を除いた大きさ */
-  get tileGap() { return Math.max(1, Math.round(this.cell * 0.025)); }
-  get tileSize() { return this.cell - this.tileGap * 2; }
-  get tileRadius() { return Math.max(2, this.tileSize * 0.11); }
 
   /**
-   * 色ごとに 1 枚だけタイルを描いておき、盤面では貼るだけにする。
-   * 毎フレーム 100 枚以上をグラデーション＋クリップで描くと重いため。
+   * マスとマスのすき間。「ほんの少しだけ」＝ 1〜2px。
+   * 敷き詰まって見えることを優先し、マスが小さいときも 1px 以上は空けない。
    */
-  buildTiles() {
-    const size = this.tileSize;
-    const r = this.tileRadius;
-    const px = Math.max(4, Math.round(size * this.dpr));
-
-    this.tiles = PALETTE.map((c) => {
-      const cv = document.createElement('canvas');
-      cv.width = px;
-      cv.height = px;
-      const g = cv.getContext('2d');
-      g.scale(px / size, px / size); // 以降は CSS ピクセルで考える
-
-      const path = new Path2D();
-      path.roundRect(0, 0, size, size, r);
-
-      // 面。上端が明るく、下端が翳る
-      const grad = g.createLinearGradient(0, 0, 0, size);
-      grad.addColorStop(0, c.light);
-      grad.addColorStop(0.16, c.base);
-      grad.addColorStop(0.82, c.base);
-      grad.addColorStop(1, c.dark);
-      g.fillStyle = grad;
-      g.fill(path);
-
-      g.save();
-      g.clip(path);
-
-      // 織物の目
-      const pat = g.createPattern(this.weaveCanvas, 'repeat');
-      if (pat) {
-        g.globalAlpha = 0.34;
-        g.globalCompositeOperation = 'overlay';
-        g.fillStyle = pat;
-        g.fillRect(0, 0, size, size);
-        g.globalCompositeOperation = 'source-over';
-        g.globalAlpha = 1;
-      }
-
-      // 縁の立ち上がり。輪郭をずらして描き、クリップで内側半分だけ残す
-      const bevel = Math.max(1, Math.min(size * 0.075, 7));
-      g.lineWidth = bevel * 2;
-      g.save();
-      g.translate(0, bevel);
-      g.strokeStyle = 'rgba(255,255,255,.34)';
-      g.stroke(path);
-      g.restore();
-      g.save();
-      g.translate(0, -bevel);
-      g.strokeStyle = `rgba(${c.shadow},.5)`;
-      g.stroke(path);
-      g.restore();
-
-      g.restore();
-
-      // ふちの締め
-      g.lineWidth = Math.max(1, size * 0.025);
-      g.strokeStyle = 'rgba(10,14,28,.32)';
-      g.stroke(path);
-
-      return cv;
-    });
-  }
+  get tileGap() { return this.cell >= 34 ? 1.5 : 1; }
+  get tileSize() { return this.cell - this.tileGap * 2; }
+  get tileRadius() { return Math.max(1.5, this.tileSize * 0.14); }
 
   /** 画面座標 -> 盤面セル */
   toCell(clientX, clientY) {
@@ -265,9 +174,9 @@ export class Renderer {
 
   // ---------------------------------------------------------------- 演出
 
-  /** 粘土のかけらが飛び散る */
+  /** 砕けた破片が飛び散る */
   burst(cells, colorIndex) {
-    const c = PALETTE[colorIndex];
+    const c = colorFor(colorIndex);
     const n = this.options.calm ? 3 : 8;
     for (const [cx, cy] of cells) {
       const p = this.cellCenter(cx, cy);
@@ -299,7 +208,7 @@ export class Renderer {
       r: this.cell * 0.35,
       maxR: this.cell * (2 + strength * 1.4),
       life: 1,
-      color: PALETTE[colorIndex].shadow,
+      color: colorFor(colorIndex).shadow,
     });
   }
 
@@ -363,7 +272,10 @@ export class Renderer {
     ctx.restore();
   }
 
-  /** 盤面＝粘土を並べるマット。空きマスはくぼみとして見せる */
+  /**
+   * 盤面。ブロックと同じ寸法・同じすき間の淡いマスを敷き詰めただけの平らな面。
+   * 影も枠線も付けない ―― 空きマスがそのまま「通路」として読めればいい。
+   */
   drawTray(board) {
     const ctx = this.ctx;
     const n = this.size;
@@ -371,45 +283,28 @@ export class Renderer {
     const w = cell * n;
     const x0 = this.ox;
     const y0 = this.oy;
-    const pad = Math.max(3, cell * 0.07);
-    const dark = this.dark;
-
-    // 台。外周に明るいふちを回し、内側は濃紺。写真と同じ額縁の作り
-    const t = dark ? TRAY.dark : TRAY.light;
-    const ring = Math.max(3, cell * 0.09);
-    const radius = Math.max(10, cell * 0.3);
+    const pad = Math.max(2, cell * 0.06);
 
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(x0 - pad - ring, y0 - pad - ring, w + (pad + ring) * 2, w + (pad + ring) * 2, radius + ring);
-    ctx.fillStyle = t.ring;
-    ctx.shadowColor = dark ? 'rgba(0,0,0,.7)' : 'rgba(28,34,60,.26)';
-    ctx.shadowBlur = cell * 0.8;
-    ctx.shadowOffsetY = cell * 0.2;
+    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, Math.max(6, cell * 0.24));
+    ctx.fillStyle = TRAY.plate;
     ctx.fill();
     ctx.restore();
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
-    ctx.fillStyle = t.frame;
-    ctx.fill();
-    ctx.restore();
-
-    // 空きマス（＝通路）。台よりわずかに明るくして、通れる場所が読めるようにする
     const gap = this.tileGap;
     const size = this.tileSize;
     const tr = this.tileRadius;
     ctx.save();
-    ctx.fillStyle = t.hole;
+    ctx.fillStyle = TRAY.hole;
+    ctx.beginPath();
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         if (board && board.at(x, y) !== -1) continue;
-        ctx.beginPath();
         ctx.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
-        ctx.fill();
       }
     }
+    ctx.fill();
     ctx.restore();
   }
 
@@ -430,7 +325,7 @@ export class Renderer {
           dy = -d.y * anim.steps * this.cell * (1 - p);
           this.drawTrail(piece, d, anim, p);
         } else if (anim.phase === 'land') {
-          // 進行方向につぶれて戻る（粘土がぶつかった手応え）
+          // 進行方向につぶれて戻る（ぶつかった手応え）
           squash = Math.sin(anim.t * Math.PI) * 0.16;
         }
       }
@@ -449,7 +344,7 @@ export class Renderer {
 
   drawTrail(piece, d, anim, p) {
     const ctx = this.ctx;
-    const c = PALETTE[piece.color];
+    const c = colorFor(piece.color);
     const total = anim.steps * this.cell;
     const cell = this.cell;
     for (let i = 1; i <= 3; i++) {
@@ -524,15 +419,13 @@ export class Renderer {
   }
 
   /**
-   * 粘土ブロック本体。
+   * ブロック本体。
    * @param {string} mode 'solid' | 'outline'
    * @param {string|null} axis つぶれる向き（着地アニメ用）
    */
   drawPiece(piece, dx = 0, dy = 0, alpha = 1, squash = 0, selected = false, mode = 'solid', axis = null) {
     const ctx = this.ctx;
     const cell = this.cell;
-    const gap = this.tileGap;
-    const size = this.tileSize;
     const rects = this.cellRects(piece, dx, dy);
     const box = this.bboxOf(rects);
 
@@ -548,11 +441,12 @@ export class Renderer {
       ctx.translate(-cx, -cy);
     }
 
+    const c = colorFor(piece.color);
     const outline = this.outlineOf(rects, this.tileRadius);
 
     if (mode === 'outline') {
       ctx.lineWidth = Math.max(2, cell * 0.09);
-      ctx.strokeStyle = PALETTE[piece.color].light;
+      ctx.strokeStyle = c.light;
       ctx.setLineDash([cell * 0.26, cell * 0.2]);
       ctx.lineCap = 'round';
       ctx.stroke(outline);
@@ -561,38 +455,31 @@ export class Renderer {
       return;
     }
 
-    // 1マス＝1枚の刺繍タイルを貼っていく。
-    // 同色は隣接しないという不変条件があるので、隣り合う同じ色のタイルは
-    // 必ず同じブロック ―― タイルを分けて描いても「どこまでが一緒に動くか」は色で読める。
-    const tile = this.tiles && this.tiles[piece.color];
-    if (tile) {
-      for (const [x, y] of piece.cells) {
-        ctx.drawImage(tile, this.ox + x * cell + gap + dx, this.oy + y * cell + gap + dy, size, size);
-      }
-    }
+    // ベタ塗り一色。同じブロックのマス同士は継ぎ目なく繋がり、
+    // 別のブロックとのあいだにだけ髪の毛ほどのすき間が残る。
+    ctx.fillStyle = c.base;
+    ctx.fill(this.pathOf(rects));
 
     // 色記号（色覚サポート）
     if (this.options.symbols && cell > 16) {
       const [ax, ay] = piece.cells[Math.floor(piece.cells.length / 2)];
       ctx.save();
-      ctx.globalAlpha = alpha * 0.34;
-      ctx.fillStyle = 'rgba(0,0,0,.9)';
+      ctx.globalAlpha = alpha * 0.38;
+      ctx.fillStyle = c.dark;
       ctx.font = `700 ${Math.floor(cell * 0.44)}px ${UI_FONT}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(SYMBOLS[piece.color], this.ox + (ax + 0.5) * cell + dx, this.oy + (ay + 0.55) * cell + dy);
+      ctx.fillText(SYMBOLS[piece.color % SYMBOLS.length], this.ox + (ax + 0.5) * cell + dx, this.oy + (ay + 0.55) * cell + dy);
       ctx.restore();
     }
 
-    // 選択中はブロック全体を白い光で囲む（動く単位を示す）
+    // 選択中はブロックの外周をなぞる（動く単位を示す）。光らせず、線だけ
     if (selected) {
       const pulse = 0.5 + 0.5 * Math.sin(this.time * 6.5);
       ctx.save();
-      ctx.globalAlpha = alpha * (0.5 + 0.4 * pulse);
-      ctx.lineWidth = Math.max(2, cell * 0.07);
+      ctx.globalAlpha = alpha * (0.55 + 0.45 * pulse);
+      ctx.lineWidth = Math.max(2, cell * 0.08);
       ctx.strokeStyle = '#ffffff';
-      ctx.shadowColor = 'rgba(255,255,255,.9)';
-      ctx.shadowBlur = cell * (0.3 + 0.3 * pulse);
       ctx.stroke(outline);
       ctx.restore();
     }
