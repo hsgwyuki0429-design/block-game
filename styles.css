@@ -1,17 +1,20 @@
 /* SLIDE POP! ― UI
  *
  * iOS 26 の Apple Music に倣った作り:
- *   ・ほぼ無彩色の背景。色を持つのはコンテンツ（粘土のブロック）だけ
+ *   ・ほぼ無彩色の背景。色を持つのはコンテンツ（盤面のブロック）だけ
  *   ・左上に大きく太いタイトル。その下に薄いグレーの補足
  *   ・下に浮くガラスのピル＋独立した丸ボタン。コンテンツはその下を通って透ける
  *   ・カプセル型のセグメント、細いインセットの区切り線、たっぷりの余白
  *
  * ガラスは「背景をぼかして彩度を上げ、上端に光の線、下に落ち影」で作る。
  * 装飾は足さない。色は状態を伝えるときだけ使う。
+ *
+ * 明るい配色ひとつだけ。ダークモードは持たない ―― 端末の設定に関わらず、
+ * 盤面のブロックの色が同じに見えることを優先している。
  */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 
   /* --- 面 --- */
   --bg: #ffffff;
@@ -52,33 +55,6 @@
   --dock-h: 92px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #000000;
-    --card: #1c1c1e;
-    --card-2: #2c2c2e;
-    --glass: rgba(38, 38, 41, 0.72);
-    --glass-solid: rgba(30, 30, 32, 0.96);
-    --glass-hi: rgba(255, 255, 255, 0.14);
-    --fill: rgba(118, 118, 128, 0.24);
-    --fill-2: rgba(118, 118, 128, 0.36);
-    --separator: rgba(84, 84, 88, 0.6);
-
-    --label: #ffffff;
-    --label-2: rgba(235, 235, 245, 0.6);
-    --label-3: rgba(235, 235, 245, 0.3);
-
-    --accent: #0a84ff;
-    --accent-fill: rgba(10, 132, 255, 0.22);
-    --warn: #ff453a;
-    --gold: #ffd60a;
-
-    --sh-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.4);
-    --sh-dock: 0 0 0 0.5px rgba(255, 255, 255, 0.06), 0 8px 28px rgba(0, 0, 0, 0.6);
-    --sh-modal: 0 -2px 40px rgba(0, 0, 0, 0.7);
-  }
-}
-
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
@@ -101,15 +77,23 @@ body {
   touch-action: manipulation;
 }
 
-#app {
+/* 画面は3つ。同時に見えるのは常に1つだけ */
+.screen {
   width: 100%;
   max-width: 540px;
   min-height: 100%;
-  padding: calc(14px + var(--safe-t)) 20px calc(var(--dock-h) + var(--safe-b));
+  padding: calc(14px + var(--safe-t)) 20px calc(28px + var(--safe-b));
   display: flex;
   flex-direction: column;
   gap: 14px;
+  animation: screenIn 0.34s var(--spring);
 }
+@keyframes screenIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+.screen-game { padding-bottom: calc(var(--dock-h) + var(--safe-b)); }
 
 svg {
   fill: none;
@@ -128,6 +112,8 @@ svg .fill { fill: currentColor; stroke: none; }
   justify-content: space-between;
   gap: 12px;
 }
+.nav-title { flex: 1 1 auto; min-width: 0; }
+.nav > .circle-btn { margin-top: 4px; }
 
 .title {
   margin: 0;
@@ -140,11 +126,14 @@ svg .fill { fill: currentColor; stroke: none; }
 
 .subtitle {
   margin: 3px 0 0;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--label-2);
   letter-spacing: -0.005em;
   min-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav-actions { display: flex; gap: 8px; flex: none; padding-top: 2px; }
@@ -166,6 +155,220 @@ svg .fill { fill: currentColor; stroke: none; }
 .circle-btn:active { transform: scale(0.88); }
 .circle-btn:hover { color: var(--label); }
 .circle-btn svg { width: 20px; height: 20px; }
+
+/* ============================================================ ホーム */
+
+.screen-home { justify-content: center; }
+
+.home-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0;
+  padding: 24px 0 8px;
+}
+
+/* タイトルの上に置く4色のブロック。ゲームの色をそのまま名刺にする */
+.home-mark {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 3px;
+  width: 76px;
+  margin-bottom: 22px;
+}
+.home-mark i {
+  display: block;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  background: var(--c);
+}
+
+.home-title {
+  margin: 0;
+  font-size: clamp(38px, 12vw, 52px);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 1;
+}
+
+.home-lead {
+  margin: 10px 0 0;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--label-2);
+  letter-spacing: -0.008em;
+}
+
+.home-progress {
+  display: flex;
+  gap: 8px;
+  margin: 26px 0 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.home-progress span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 15px;
+  border-radius: 999px;
+  background: var(--fill);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--label-2);
+  letter-spacing: -0.01em;
+}
+.home-progress b {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--label);
+  font-variant-numeric: tabular-nums;
+}
+
+.home-actions {
+  width: min(100%, 320px);
+  margin-top: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.btn-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 15px 18px;
+}
+.btn-hero small {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.72;
+  letter-spacing: 0;
+}
+
+.home-links { display: flex; gap: 8px; margin-top: 22px; }
+.link-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--label-2);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.link-btn:hover { color: var(--label); background: var(--fill); }
+
+/* ============================================================ レベル一覧 */
+
+.page-pick {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.pager {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--fill);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.26s var(--spring), opacity 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.pager:active { transform: scale(0.86); }
+.pager:disabled { opacity: 0.28; cursor: default; }
+.pager svg { width: 18px; height: 18px; stroke-width: 2.3; }
+
+.page-range {
+  min-width: 116px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.level-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  align-content: start;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 4px;
+}
+
+.level-cell {
+  appearance: none;
+  border: 0;
+  padding: 8px 2px 6px;
+  border-radius: 18px;
+  background: var(--fill);
+  color: var(--label);
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  aspect-ratio: 1;
+  justify-content: center;
+  transition: transform 0.26s var(--spring), background 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.level-cell:active { transform: scale(0.92); }
+.level-cell .n {
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.level-cell .stars {
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  color: var(--gold);
+  min-height: 10px;
+}
+.level-cell .stars.none { color: var(--label-3); }
+
+/* まだ開いていないレベル */
+.level-cell.locked {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--separator);
+  color: var(--label-3);
+  cursor: default;
+}
+.level-cell.locked:active { transform: none; }
+.level-cell.locked .lock { width: 15px; height: 15px; }
+
+/* いま挑戦できる先頭のレベル */
+.level-cell.current {
+  background: var(--accent);
+  color: #fff;
+}
+.level-cell.current .stars { color: rgba(255, 255, 255, 0.92); }
+.level-cell.current .stars.none { color: rgba(255, 255, 255, 0.55); }
+
+/* クリア済み */
+.level-cell.done { background: var(--accent-fill); color: var(--accent); }
+
+.levels-note { margin: 0; flex: none; }
 
 /* ============================================================ セグメント */
 
@@ -225,9 +428,11 @@ svg .fill { fill: currentColor; stroke: none; }
 
 .legend {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
   min-height: 28px;
+  margin-inline: auto;
+  width: 100%;
 }
 .legend-chip {
   display: flex;
@@ -275,9 +480,9 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 
 .toast {
-  position: absolute;
+  position: fixed;
   left: 50%;
-  bottom: 8px;
+  bottom: calc(var(--dock-h) + var(--safe-b));
   transform: translate(-50%, 12px) scale(0.96);
   padding: 10px 18px;
   border-radius: 999px;
@@ -294,7 +499,7 @@ svg .fill { fill: currentColor; stroke: none; }
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.26s var(--ease), transform 0.4s var(--spring);
-  z-index: 4;
+  z-index: 30;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
 
@@ -420,6 +625,26 @@ svg .fill { fill: currentColor; stroke: none; }
   line-height: 1.62;
   color: var(--label-2);
   letter-spacing: -0.008em;
+}
+
+/* クリア画面の星。取れなかったぶんは薄く残して「あと1つ」を見せる */
+.overlay-stars {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin: 2px 0 12px;
+  font-size: 30px;
+  line-height: 1;
+  color: var(--gold);
+}
+.overlay-stars:empty { display: none; }
+.overlay-stars i { font-style: normal; animation: starIn 0.5s var(--spring) backwards; }
+.overlay-stars i.off { color: var(--label-3); }
+.overlay-stars i:nth-child(2) { animation-delay: 0.12s; }
+.overlay-stars i:nth-child(3) { animation-delay: 0.24s; }
+@keyframes starIn {
+  from { transform: scale(0.2) rotate(-40deg); opacity: 0; }
+  to { transform: none; opacity: 1; }
 }
 
 .overlay-extra {
@@ -626,58 +851,15 @@ svg .fill { fill: currentColor; stroke: none; }
 .switch:checked { background: #34c759; }
 .switch:checked::after { transform: translateX(20px); }
 
-/* レベル選択 */
-.level-pick { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-.stepper {
-  flex: none;
-  width: 52px;
-  height: 52px;
-  border: 0;
-  border-radius: 50%;
-  background: var(--fill);
-  color: var(--accent);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  transition: transform 0.26s var(--spring);
-}
-.stepper:active { transform: scale(0.86); }
-.stepper svg { width: 22px; height: 22px; stroke-width: 2.4; }
-
-#level-input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  border-radius: 20px;
-  background: var(--fill);
-  color: var(--label);
-  font: inherit;
-  font-size: 32px;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.03em;
-  text-align: center;
-  padding: 9px 4px;
-  -moz-appearance: textfield;
-}
-#level-input::-webkit-outer-spin-button,
-#level-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-#level-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-.level-preview {
-  text-align: center;
-  font-size: 13px !important;
-  color: var(--label-2) !important;
-  margin: 0 0 18px !important;
-  min-height: 18px;
-}
+.stars-inline { color: var(--gold); letter-spacing: 1px; }
 .sheet-card .btn + .btn { margin-top: 8px; }
 .sheet-card .btn + .muted { margin-top: 14px; }
 
 /* ============================================================ 画面サイズ対応 */
 
 @media (min-width: 620px) and (min-height: 640px) {
-  #app { max-width: 660px; }
+  .screen { max-width: 660px; }
+  .level-grid { grid-template-columns: repeat(6, 1fr); gap: 10px; }
   .sheet { align-items: center; padding: 24px; }
   .sheet-card {
     border-radius: var(--r-sheet);
@@ -688,17 +870,22 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 
 @media (min-width: 920px) and (min-height: 800px) {
-  #app { max-width: 800px; }
+  .screen { max-width: 800px; }
   .title { font-size: 40px; }
+  .level-grid { grid-template-columns: repeat(7, 1fr); }
 }
 
 @media (max-height: 700px) {
   :root { --dock-h: 82px; }
   .title { font-size: 27px; }
   .subtitle { font-size: 12px; }
-  #app { gap: 10px; }
+  .screen { gap: 10px; }
   .seg { padding: 7px 6px; }
   .seg .v { font-size: 16px; }
+  .home-mark { width: 60px; margin-bottom: 16px; }
+  .home-progress { margin: 18px 0 0; }
+  .home-actions { margin-top: 20px; }
+  .home-links { margin-top: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

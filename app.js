@@ -3,7 +3,11 @@
 'use strict';
 
 // ===== src/shapes.js =====
-// ブロック形状の定義。テトロミノ7種を全回転させたものを「向き付き形状」として持つ。
+// ブロック形状の定義。
+//
+// 盤面に出るのはテトロミノ（4マス）だけ。7 種をすべて回転させたものを
+// 「向き付き形状」として持つ（19 通り）。連結した大型ブロックは出さない ――
+// 難しさは形ではなく、色数・仕込み手・一本道でつける。
 
 /** 方向ベクトル。y は下が正（画面座標系と一致させる） */
 const DIRS = {
@@ -14,8 +18,6 @@ const DIRS = {
 };
 
 const DIR_KEYS = ['up', 'right', 'down', 'left'];
-
-const DIR_LABEL = { up: '↑', right: '→', down: '↓', left: '←' };
 
 /** 反対方向 */
 const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
@@ -29,14 +31,6 @@ const TETROMINO_BASE = {
   Z: [[0, 0], [1, 0], [1, 1], [2, 1]],
   J: [[0, 0], [0, 1], [1, 1], [2, 1]],
   L: [[2, 0], [0, 1], [1, 1], [2, 1]],
-};
-
-// 生成が詰まったときだけ使う小型ピース（既定では未使用）。
-const SMALL_BASE = {
-  i1: [[0, 0]],
-  i2: [[0, 0], [1, 0]],
-  i3: [[0, 0], [1, 0], [2, 0]],
-  v3: [[0, 0], [0, 1], [1, 1]],
 };
 
 function normalize(cells) {
@@ -60,7 +54,7 @@ function keyOf(cells) {
   return cells.map(([x, y]) => `${x},${y}`).join(' ');
 }
 
-function buildShapes(base, kind) {
+function buildShapes(base) {
   const out = [];
   for (const [name, cells0] of Object.entries(base)) {
     const seen = new Set();
@@ -75,17 +69,7 @@ function buildShapes(base, kind) {
           if (x + 1 > w) w = x + 1;
           if (y + 1 > h) h = y + 1;
         }
-        out.push({
-          id: out.length,
-          name,
-          kind,
-          rotation: r,
-          cells,
-          parts: cells.map(() => 0),
-          w,
-          h,
-          size: cells.length,
-        });
+        out.push({ id: out.length, name, rotation: r, cells, w, h, size: cells.length });
       }
       cells = rotate(cells);
     }
@@ -94,146 +78,7 @@ function buildShapes(base, kind) {
 }
 
 /** テトロミノ全種・全向き（19 通り） */
-const TETROMINOES = buildShapes(TETROMINO_BASE, 'tetromino');
-
-/** 1〜3 セルの小型ピース（生成オプションで有効化した場合のみ使用） */
-const SMALL_PIECES = buildShapes(SMALL_BASE, 'small');
-
-/** 形状名 -> 代表的な向きの一覧 */
-function shapesByName(name) {
-  return TETROMINOES.filter((s) => s.name === name);
-}
-
-// --------------------------------------------------------------------------
-// 連結ピース ― テトロミノを 2 個・3 個とつなげた大型ブロック
-//
-// レベルが上がるにつれてブロックが複雑になっていく。形は「テトロミノを辺で
-// 繋いだもの」に限定しているので、大きくなっても“テトリスのブロックの合体”
-// として読める。cells と同じ並びで parts（何番目のテトロミノ由来か）を持ち、
-// 描画側はその境界に継ぎ目を入れる。
-// --------------------------------------------------------------------------
-
-/** セル配列 + パート番号を正規化して形状オブジェクトにする */
-function finalizeShape(cells, parts, name, kind) {
-  let minX = Infinity;
-  let minY = Infinity;
-  for (const [x, y] of cells) {
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-  }
-  const moved = cells.map(([x, y]) => [x - minX, y - minY]);
-  const order = moved.map((_, i) => i);
-  order.sort((a, b) => (moved[a][1] - moved[b][1]) || (moved[a][0] - moved[b][0]));
-
-  const outCells = order.map((i) => moved[i]);
-  const outParts = order.map((i) => parts[i]);
-  let w = 0;
-  let h = 0;
-  for (const [x, y] of outCells) {
-    if (x + 1 > w) w = x + 1;
-    if (y + 1 > h) h = y + 1;
-  }
-  return { name, kind, cells: outCells, parts: outParts, w, h, size: outCells.length, rotation: 0 };
-}
-
-/** 既存セル群に、辺で接するようテトロミノを 1 個くっつける（座標は負でもよい） */
-function attachTetromino(rng, cells) {
-  const occupied = new Set(cells.map(([x, y]) => `${x},${y}`));
-
-  // 接続先の候補 = 既存セルの上下左右で、まだ埋まっていないところ
-  const halo = [];
-  const seen = new Set();
-  for (const [x, y] of cells) {
-    for (const key of DIR_KEYS) {
-      const d = DIRS[key];
-      const k = `${x + d.x},${y + d.y}`;
-      if (occupied.has(k) || seen.has(k)) continue;
-      seen.add(k);
-      halo.push([x + d.x, y + d.y]);
-    }
-  }
-  shuffleInPlace(rng, halo);
-
-  for (const [hx, hy] of halo) {
-    for (const shape of shuffleInPlace(rng, TETROMINOES.slice())) {
-      const idx = shuffleInPlace(rng, shape.cells.map((_, i) => i));
-      for (const i of idx) {
-        const ox = hx - shape.cells[i][0];
-        const oy = hy - shape.cells[i][1];
-        const abs = [];
-        let clash = false;
-        for (const [cx, cy] of shape.cells) {
-          const p = [cx + ox, cy + oy];
-          if (occupied.has(`${p[0]},${p[1]}`)) { clash = true; break; }
-          abs.push(p);
-        }
-        if (!clash) return abs;
-      }
-    }
-  }
-  return null;
-}
-
-function shuffleInPlace(rng, arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    const t = arr[i];
-    arr[i] = arr[j];
-    arr[j] = t;
-  }
-  return arr;
-}
-
-/**
- * テトロミノを parts 個つなげた形をひとつ作る。
- * @param {() => number} rng シード付き乱数（同じ種なら同じ形）
- * @param {number} parts つなげるテトロミノの数（1 なら素のテトロミノ）
- * @param {number} maxSpan 縦横の最大長。盤面内で必ず 1 マス以上滑れるよう size-1 を渡す
- */
-function makeCompoundShape(rng, parts, maxSpan) {
-  const kind = parts === 1 ? 'tetromino' : `x${parts}`;
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const base = TETROMINOES[Math.floor(rng() * TETROMINOES.length)];
-    const cells = base.cells.map(([x, y]) => [x, y]);
-    const partOf = cells.map(() => 0);
-
-    let ok = true;
-    for (let p = 1; p < parts; p++) {
-      const added = attachTetromino(rng, cells);
-      if (!added) { ok = false; break; }
-      for (const c of added) {
-        cells.push(c);
-        partOf.push(p);
-      }
-    }
-    if (!ok) continue;
-
-    const shape = finalizeShape(cells, partOf, `${base.name}${parts > 1 ? `+${parts}` : ''}`, kind);
-    if (shape.w > maxSpan || shape.h > maxSpan) continue;
-    return shape;
-  }
-  return null;
-}
-
-/** ある形状の全回転（重複は除く）。parts は cells と並びを揃えたまま回る */
-function rotationsOfShape(shape) {
-  const out = [];
-  const seen = new Set();
-  let cells = shape.cells.map(([x, y]) => [x, y]);
-  const parts = shape.parts ? shape.parts.slice() : shape.cells.map(() => 0);
-
-  for (let r = 0; r < 4; r++) {
-    const s = finalizeShape(cells, parts, shape.name, shape.kind);
-    const key = keyOf(s.cells);
-    if (!seen.has(key)) {
-      seen.add(key);
-      s.rotation = r;
-      out.push(s);
-    }
-    cells = cells.map(([x, y]) => [-y, x]);
-  }
-  return out;
-}
+const TETROMINOES = buildShapes(TETROMINO_BASE);
 
 // ===== src/board.js =====
 // 盤面モデルとルールの実装。
@@ -247,9 +92,11 @@ function rotationsOfShape(shape) {
 // 不変条件: どの手の直後も「同色ブロック同士は隣接していない」。
 // 触れた瞬間に消えるため、この性質は初期盤面から永久に保たれる。
 // この不変条件があるおかげで「動かしたブロックに触れた相手だけが消える」ことが確定する。
+//
+// 敗北条件は無い。盤面には同じ色がちょうど2個ずつしか無く、消せる手が
+// 見当たらない局面でも、何も消さない手で通路を作れば必ず解ける。
 
 const BOARD_SIZE = 12;
-const COLOR_COUNT = 6;
 
 const EMPTY = -1;
 const WALL = -2;
@@ -315,15 +162,13 @@ class Board {
     return false;
   }
 
-  addPiece(color, cells, shape = '', parts = null) {
+  addPiece(color, cells, shape = '') {
     const id = this.nextId++;
     const piece = {
       id,
       color,
       cells: cells.map(([x, y]) => [x, y]),
       shape,
-      // cells と並びを揃えた「何番目のテトロミノ由来か」。連結ピースの継ぎ目描画に使う
-      parts: parts ? parts.slice() : cells.map(() => 0),
     };
     this.pieces.set(id, piece);
     for (const [x, y] of piece.cells) this.grid[y * this.size + x] = id;
@@ -514,26 +359,6 @@ class Board {
     return out;
   }
 
-  /**
-   * デッドロック判定。
-   * 仕様上の敗北条件は「どの手でも同色接触が起きない」だが、
-   * 「消去しない手が通路をずらして次の手を生む」ケースを誤って敗北にしないよう、
-   * 2 手先まで見る（消去手が 2 手以内にひとつも無ければ詰み）。
-   */
-  isDeadlock() {
-    if (this.pieces.size === 0) return false;
-    if (this.findClearingMoves().length > 0) return false;
-    const moves = this.allMoves();
-    for (const m of moves) {
-      const snap = this.snapshot();
-      this.movePiece(m.id, m.dir, m.steps);
-      const found = this.findClearingMoves().length > 0;
-      this.restore(snap);
-      if (found) return false;
-    }
-    return true;
-  }
-
   /** 盤面の完全なスナップショット（Undo 用） */
   snapshot() {
     return {
@@ -542,7 +367,6 @@ class Board {
         id: p.id,
         color: p.color,
         shape: p.shape,
-        parts: p.parts ? p.parts.slice() : null,
         cells: p.cells.map(([x, y]) => [x, y]),
       })),
     };
@@ -557,7 +381,6 @@ class Board {
         id: p.id,
         color: p.color,
         shape: p.shape,
-        parts: p.parts ? p.parts.slice() : p.cells.map(() => 0),
         cells: p.cells.map(([x, y]) => [x, y]),
       };
       this.pieces.set(piece.id, piece);
@@ -669,24 +492,30 @@ function codeToSeed(code) {
 // レベル1から無限に続く。同じレベルなら、どの端末でも必ず同じ譜面が出る
 // （レベル番号 -> シード -> 決定論的な生成、という一本道になっている）。
 //
-// レベルが上がるにつれて変わるもの:
-//   盤面   4×4 から 1 マスずつ広がり、レベル26で 12×12 に到達（上限）
-//   ブロック  テトロミノ -> 2個つなぎ -> 3個つなぎ。レベル46以降は全部3個つなぎ
-//   色数   小さい盤面は3色。広がるにつれて6色まで増える
+// 盤面には「同じ色のブロックがちょうど2個ずつ」置かれる。
+// 1手で消えるのは必ずその2個なので、
 //
-// 「1手で消えるブロック群」を逆順に積み上げる生成方式は変わらないので、
-// どのレベルでも「必ず全消しできること」は構造的に保証されたままになる。
+//     最短手数 = 色数
+//
+// が構造的に決まる。レベルが上がると色数が増え、それに合わせて盤面も広がる。
+// さらに上のレベルでは
+//   ・仕込み手（それ自体では何も消えないが、通さないと解けない手）
+//   ・一本道（どの局面でも「消せる手」が実質1通りしかない）
+// が加わる。
 
 const MIN_SIZE = 4;
 const MAX_SIZE = 12;
+/**
+ * 色数の上限。最大盤面 12×12 に「11色 × 2個 × 4マス = 88マス」を敷いても
+ * 埋め率は 61% ―― 逆順構築が滑走路を確保できる密度に収まる。
+ * これ以上増やすと盤面が詰まりすぎて生成が破綻する。
+ */
+const MAX_COLORS = 11;
 
-/** このレベルに達したら盤面が 1 マス広がる（4×4 から 12×12 まで 9 段階） */
-const SIZE_UPS = [1, 3, 5, 7, 10, 13, 17, 21, 26];
+/** 目標の埋め率。これを基準に色数から盤面サイズを決める */
+const FILL = 0.62;
 
-/** 形状が最も複雑になる（＝全部3個つなぎになる）レベル */
-const MAX_COMPLEXITY_LEVEL = 46;
-
-const clamp01 = (v) => Math.max(0, Math.min(1, v));
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /** 数値でない・1未満のレベル指定はレベル1として扱う */
 function normalizeLevel(level) {
@@ -694,26 +523,35 @@ function normalizeLevel(level) {
   return Number.isFinite(n) && n >= 1 ? n : 1;
 }
 
+/** レベル -> 色数（＝ブロックのペア数＝最短手数） */
+function colorsForLevel(level) {
+  const lv = normalizeLevel(level);
+  return clamp(1 + Math.floor((lv - 1) / 2), 1, MAX_COLORS);
+}
+
+/** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
+function boardSizeForColors(colors) {
+  const cells = clamp(Math.round(colors), 1, MAX_COLORS) * 8;
+  return clamp(Math.round(Math.sqrt(cells / FILL)), MIN_SIZE, MAX_SIZE);
+}
+
 /** レベル -> 盤面サイズ */
 function boardSizeForLevel(level) {
-  const lv = normalizeLevel(level);
-  let size = MIN_SIZE - 1;
-  for (const up of SIZE_UPS) if (lv >= up) size++;
-  return Math.min(MAX_SIZE, size);
+  return boardSizeForColors(colorsForLevel(level));
 }
 
 /**
- * レベル -> ブロックの複雑さの配合。
- *   single = テトロミノそのまま（4セル）
- *   double = テトロミノ2個つなぎ（8セル）
- *   triple = テトロミノ3個つなぎ（12セル）
+ * レベル -> 仕込み手の数。
+ * 「一見関係ないところを動かさないと解けない」手を何手ぶん混ぜるか。
  */
-function shapeMixForLevel(level) {
+function setupMovesForLevel(level) {
   const lv = normalizeLevel(level);
-  const single = clamp01(1 - (lv - 12) / 12); // L12 まで 1.0、L24 で 0
-  const triple = clamp01((lv - 26) / 20);     // L26 から出現、L46 で 1.0
-  const double = clamp01(1 - single - triple);
-  return { single, double, triple };
+  return clamp(Math.floor((lv - 8) / 5), 0, 4);
+}
+
+/** レベル -> 一本道（解が実質1通り）を要求するか */
+function requiresForcedLine(level) {
+  return normalizeLevel(level) >= 16;
 }
 
 /** レベル -> 生成シード。この一本道が「どの端末でも同じ譜面」を担保する */
@@ -724,155 +562,74 @@ function levelSeed(level) {
 /** レベルの各種パラメータ */
 function levelConfig(level) {
   const lv = normalizeLevel(level);
-  const size = boardSizeForLevel(lv);
-  const mix = shapeMixForLevel(lv);
-  const area = size * size;
-
-  // 1ブロックあたりの平均セル数（4 / 8 / 12 の加重平均）
-  const avgPiece = 4 * (mix.single + 2 * mix.double + 3 * mix.triple);
-  const maxPiece = 4 * (mix.triple > 0 ? 3 : mix.double > 0 ? 2 : 1);
-
-  // 大きいブロックほど詰めにくい（同色非隣接の制約が効くので実際に頭打ちになる）。
-  // 到達できない目標を掲げると生成が延々とリトライして遅くなるだけなので、
-  // 実測できる上限に沿って下げる: 4セル=80% / 8セル=74% / 12セル=68%
-  const fill = 0.80 - 0.06 * (avgPiece / 4 - 1);
-  const targetCells = Math.round(area * fill);
-
-  // 上級では「1手でまとめて消える数」を増やして橋渡しを難しくする
-  const hard = clamp01((lv - MAX_COMPLEXITY_LEVEL) / 40);
-  const bigPiece = clamp01((avgPiece - 4) / 8);
-  const partnerWeights = [
-    0.45 + 0.35 * bigPiece - 0.15 * hard,
-    0.40 - 0.25 * bigPiece + 0.05 * hard,
-    0.15 - 0.10 * bigPiece + 0.10 * hard,
-  ].map((w) => Math.max(0, w));
-
+  const colors = colorsForLevel(lv);
+  const size = boardSizeForColors(colors);
+  const setupMoves = setupMovesForLevel(lv);
   return {
     level: lv,
+    colors,
     size,
-    mix,
-    avgPiece,
-    maxPiece,
-    colors: Math.max(3, Math.min(6, 3 + Math.floor((size - 4) / 2))),
-    targetCells,
-    minCells: Math.max(2 * maxPiece, Math.round(area * 0.42)),
-    acceptSlack: maxPiece + 2,
-    /** 大きいブロックは 1 回の試行が重いので、リトライ回数を抑える */
-    attempts: avgPiece >= 10 ? 9 : avgPiece >= 8 ? 14 : 24,
-    maxSteps: Math.ceil(targetCells / (2 * avgPiece)) + 4,
-    minPar: size <= 6 ? 1 : size <= 9 ? 3 : 4,
-    partnerWeights,
-    /** 1 クラスあたり何種類の連結ピースを用意するか */
-    poolSize: 6,
+    setupMoves,
+    forced: requiresForcedLine(lv),
+    /** ブロック数（色数×2） */
+    pieces: colors * 2,
+    /** 最短手数＝色数＋仕込み手 */
+    par: colors + setupMoves,
+    /** 生成の試行回数 */
+    attempts: 60,
   };
 }
 
-/**
- * レベルのブロック集合を作る。
- * 「素のテトロミノ」「2個つなぎ」「3個つなぎ」をそれぞれ 1 クラスとし、
- * 配合比を重みとして返す。生成器は 1 ステップごとにクラスを抽選して使う。
- */
-function buildLevelClasses(config) {
-  const rng = makeRng((levelSeed(config.level) ^ 0x5bf03635) >>> 0);
-  const classes = [];
-
-  if (config.mix.single > 0.001) {
-    classes.push({ kind: 'single', parts: 1, weight: config.mix.single, shapes: TETROMINOES });
-  }
-
-  for (const [kind, parts] of [['double', 2], ['triple', 3]]) {
-    const weight = config.mix[kind];
-    if (weight <= 0.001) continue;
-    const shapes = [];
-    const seen = new Set();
-    for (let i = 0; i < config.poolSize * 6 && shapes.length < config.poolSize * 4; i++) {
-      const shape = makeCompoundShape(rng, parts, config.size - 1);
-      if (!shape) continue;
-      for (const rot of rotationsOfShape(shape)) {
-        const key = rot.cells.map(([x, y]) => `${x},${y}`).join(' ');
-        if (seen.has(key)) continue;
-        seen.add(key);
-        shapes.push(rot);
-      }
-    }
-    if (shapes.length > 0) classes.push({ kind, parts, weight, shapes });
-  }
-
-  // 万一どのクラスも作れなければテトロミノに落とす
-  if (classes.length === 0) {
-    classes.push({ kind: 'single', parts: 1, weight: 1, shapes: TETROMINOES });
-  }
-  return classes;
-}
-
-/** レベルの見出し文（実際に出てくる可能性が高いブロックだけを挙げる） */
-function levelFlavor(config) {
-  const { mix } = config;
-  const parts = [];
-  if (mix.single >= 0.15) parts.push('テトロミノ');
-  if (mix.double >= 0.15) parts.push('2個つなぎ');
-  if (mix.triple >= 0.15) parts.push('3個つなぎ');
-  if (parts.length === 0) parts.push(mix.triple >= mix.double ? '3個つなぎ' : '2個つなぎ');
-  return parts.join('＋');
+/** レベルの内容を一言で（見出しの下に出す補足） */
+function levelSummary(config) {
+  const parts = [`${config.size}×${config.size}`, `${config.colors}色`];
+  if (config.setupMoves > 0) parts.push(`仕込み${config.setupMoves}手`);
+  if (config.forced) parts.push('一本道');
+  return parts.join('・');
 }
 
 // ===== src/generator.js =====
 // パズル生成 ―「解の逆順構築」
 //
-// ランダムに埋めて解けるか検証する、という素朴な方法は使わない（80% 埋めはほぼ確実に詰む）。
-// 代わりに完成状態（空盤面）から出発し、「ある 1 手でまとめて消えるブロック群」を
-// 1 ステップずつ置いていく。最後に置いたステップが、解の第 1 手になる。
+// ランダムに埋めて解けるか検証する、という素朴な方法は使わない。代わりに
+// 完成状態（空盤面）から出発し、1手ぶんずつ逆再生するようにブロックを置いていく。
+// 最後に置いたステップが、解の第1手になる。
 //
-//   S_N = ∅（空盤面）← 逆順ステップ 1 ─ S_{N-1} ← ステップ 2 ─ … ← ステップ N ─ S_0（初期盤面）
+// 盤面には同じ色のブロックがちょうど2個ずつ。だから1手で消えるのは必ずその2個で、
+// 「最短手数＝色数」が構造的に決まる。逆順構築の1ステップはこうなる:
 //
-// 各ステップで置くもの:
-//   移動ブロック P : 色 c・形状・着地点 B・滑走方向 d・開始点 A (= B - t*d)
-//   相棒ブロック Q : 同色 c。B にいる P に隣接し、Q 同士は非隣接
+//   色 c を新しく1つ選ぶ
+//     移動ブロック P : テトロミノ。着地点 B・滑走方向 d・開始点 A (= B - t×d)
+//     相棒ブロック Q : 同じ色 c。B にいる P に隣接する
 //
-// 配置時の制約（それぞれが一つの保証に対応する）:
-//   新規セルはすべて空き               -> ブロックの重複なし
-//   既存の同色ブロックと隣接しない       -> 同色隣接ゼロ ＋ 予定外の巻き込み消去が起きない
-//   A→B の経路が空 / B+d に壁かブロック -> その手が実行可能で、ちょうど B で止まる
-//   A にいる時点で同色接触していない     -> 中間状態の不変条件が保たれる
+//   制約                                   保証される性質
+//   ─────────────────────────────────────────────────────
+//   新規セルはすべて空き                    ブロックの重複なし
+//   A→B の経路が空 / B+d に壁かブロック      その手が実行でき、ちょうど B で止まる
+//   A にいる P は Q に触れていない            初期盤面から同色は隣接しない
 //
-// 結果として PAR（保証解の手数）と完全な解答手順が副産物として手に入る。
+// 色ごとにブロックは2個しかないので「予定外の巻き込み消去」は原理的に起きない。
+//
+// さらに上のレベルでは「仕込み手」を前に足す。盤面にあるブロックを1つ選び、
+// 滑らせれば今の位置に来るような手前の位置へ戻す。その手自体では何も消えないが、
+// 通さないと後の手が成立しない ―― 一見関係ない場所を動かす必要が生まれる。
 
 const DEFAULT_OPTIONS = {
-  size: BOARD_SIZE,
-  colors: COLOR_COUNT,
-  /** 使用するブロックのクラス（形状集合と配合比）。レベルごとに差し替える */
-  classes: [{ kind: 'single', parts: 1, weight: 1, shapes: TETROMINOES }],
-  /** 目標の埋め率（セル数）。盤面の約 80% */
-  targetCells: 120,
-  /** これを下回る盤面は生成失敗として作り直す */
-  minCells: 100,
-  /** 目標にこれだけ届いていれば「十分良い」として打ち切る */
-  acceptSlack: 4,
-  /** 手数（PAR）の上限 */
-  maxSteps: 16,
-  /** これ未満の手数しかない盤面は物足りないので作り直す */
-  minPar: 4,
-  /** 1 ステップの相棒ブロック数（= 1手で消えるブロック数 - 1）の重み */
-  partnerWeights: [0.45, 0.4, 0.15],
-  /** 滑走距離の偏り。1 未満で「長い滑走」寄り、1 より大きいと短い滑走寄り */
+  size: 8,
+  colors: 4,
+  setupMoves: 0,
+  forced: false,
+  attempts: 60,
+  /** 滑走距離の偏り。1 未満で「長い滑走」寄り */
   distanceBias: 0.85,
   /** 配置優先度のゆらぎ。0 だと常に最も詰まった場所へ置く（＝単調になる） */
   packingJitter: 3,
-  /** 1 ステップあたりの探索予算 */
-  budget: 26000,
-  /** 生成全体のリトライ回数 */
-  attempts: 24,
+  /** 一本道の判定を1ステップで何回まで試すか（探索が指数的に伸びるのを防ぐ） */
+  forcedChecks: 90,
 };
 
-/** [x,y] 配列を「格子 index の Set」に */
-function cellSet(size, cells) {
-  const s = new Set();
-  for (const [x, y] of cells) s.add(y * size + x);
-  return s;
-}
-
-/** セル群の上下左右の隣接セルを Set に追加（盤外は無視） */
-function addHalo(size, cells, target) {
+/** セル群の上下左右の隣接セルを Set に集める（盤外は無視） */
+function haloOf(size, cells, target = new Set()) {
   for (const [x, y] of cells) {
     for (const key of DIR_KEYS) {
       const d = DIRS[key];
@@ -885,11 +642,11 @@ function addHalo(size, cells, target) {
   return target;
 }
 
-/** 盤面上に置けるすべての「形状 × 位置」を列挙（空きマスのみ） */
-function emptyPlacements(board, shapes) {
+/** 盤面に置けるすべての「形状 × 位置」を列挙（空きマスのみ） */
+function emptyPlacements(board) {
   const out = [];
   const size = board.size;
-  for (const shape of shapes) {
+  for (const shape of TETROMINOES) {
     const maxX = size - shape.w;
     const maxY = size - shape.h;
     for (let oy = 0; oy <= maxY; oy++) {
@@ -910,48 +667,8 @@ function emptyPlacements(board, shapes) {
 }
 
 /**
- * 相棒ブロック Q の候補をひとつ探す。
- * anchors のいずれかのセルを含み、すべての制約を満たす配置を返す（無ければ null）。
- */
-function findPartner(board, rng, ctx, anchors) {
-  const { size, color, shapes, blocked, forbiddenAdj } = ctx;
-  const anchorList = shuffle(rng, [...anchors]);
-  for (const anchor of anchorList) {
-    const ax = anchor % size;
-    const ay = (anchor - ax) / size;
-    const shapeList = shuffle(rng, shapes.slice());
-    for (const shape of shapeList) {
-      const offsets = shuffle(rng, shape.cells.map((c, i) => i));
-      for (const oi of offsets) {
-        const [px, py] = shape.cells[oi];
-        const ox = ax - px;
-        const oy = ay - py;
-        const cells = [];
-        let ok = true;
-        for (const [cx, cy] of shape.cells) {
-          const x = cx + ox;
-          const y = cy + oy;
-          if (x < 0 || y < 0 || x >= size || y >= size) { ok = false; break; }
-          const gi = y * size + x;
-          if (board.grid[gi] !== -1) { ok = false; break; }
-          if (blocked.has(gi)) { ok = false; break; }
-          // 動かすブロック P（A 地点）や既に選んだ相棒に隣接してはいけない
-          if (forbiddenAdj.has(gi)) { ok = false; break; }
-          cells.push([x, y]);
-        }
-        if (!ok) continue;
-        // 盤面上の同色ブロックと隣接してはいけない（予定外の巻き込み消去の防止）
-        if (board.touchesColor(cells, color)) continue;
-        return { shape, cells };
-      }
-    }
-  }
-  return null;
-}
-
-/**
  * 配置の「詰まり具合」。壁や既存ブロックに接しているほど高い。
- * これを優先して置くことで空きマスの断片化を防ぎ、埋め率を上げる。
+ * これを優先して置くと空きマスが断片化せず、密度の高い盤面になる。
  */
 function contactScore(board, cells) {
   const size = board.size;
@@ -969,184 +686,253 @@ function contactScore(board, cells) {
 }
 
 /**
- * 逆順構築の 1 ステップ。
- *
- * まずブロックのクラス（テトロミノ / 2個つなぎ / 3個つなぎ）を配合比で抽選し、
- * そのクラスだけで 1 ステップを組む。1 ステップ分のブロックはまとめて消える
- * 仲間なので、同じクラスで揃えると見た目のまとまりも良くなる。
- * 抽選したクラスで置けなければ、残りのクラスへ順に落としていく。
+ * 相棒ブロック Q を1つ探す。
+ * anchors のいずれかのセルを含み、すべての制約を満たす配置を返す（無ければ null）。
  */
-function buildStep(board, rng, opts) {
-  const order = weightedOrder(rng, opts.classes);
-  for (let i = 0; i < order.length; i++) {
-    const cls = order[i];
-    // 第1候補には満額、フォールバックには控えめな探索予算を与える
-    const budget = i === 0 ? opts.budget : Math.round(opts.budget * 0.35);
-    const step = buildStepWithShapes(board, rng, opts, cls.shapes, budget);
-    if (step) return { ...step, kind: cls.kind };
-  }
-  return null;
-}
-
-/** 重みつきの並べ替え（重みが大きいクラスほど前に来やすい） */
-function weightedOrder(rng, classes) {
-  const pool = classes.slice();
-  const out = [];
-  while (pool.length > 0) {
-    let total = 0;
-    for (const c of pool) total += Math.max(1e-6, c.weight);
-    let r = rng() * total;
-    let idx = pool.length - 1;
-    for (let i = 0; i < pool.length; i++) {
-      r -= Math.max(1e-6, pool[i].weight);
-      if (r < 0) { idx = i; break; }
-    }
-    out.push(pool[idx]);
-    pool.splice(idx, 1);
-  }
-  return out;
-}
-
-/**
- * 指定した形状集合だけで 1 ステップ組む。
- *
- * 探索は「開始点 A」から始める。A に置いたブロックが盤面に残るので、
- * A を詰まった場所から順に試すと空きマスが断片化しにくい。
- */
-function buildStepWithShapes(board, rng, opts, shapes, budgetLimit) {
-  const size = board.size;
-  const placements = emptyPlacements(board, shapes);
-  for (const p of placements) p.score = contactScore(board, p.cells) + rng() * opts.packingJitter;
-  placements.sort((a, b) => b.score - a.score);
-  let budget = budgetLimit;
-
-  const used = new Array(opts.colors).fill(0);
-  for (const p of board.pieces.values()) used[p.color]++;
-
-  for (const placement of placements) {
-    if (budget <= 0) break;
-    const acells = placement.cells;
-
-    // ---- 色を選ぶ（開始点 A で同色に触れない色だけ = 中間状態の不変条件） ----
-    // 使用数の少ない色を優先し、6色がまんべんなく盤面に出るようにする
-    const colorOrder = Array.from({ length: opts.colors }, (_, i) => i)
-      .sort((a, b) => (used[a] + rng() * 2.5) - (used[b] + rng() * 2.5));
-    for (const color of colorOrder) {
-      if (--budget <= 0) break;
-      if (board.touchesColor(acells, color)) continue;
-
-      // ---- 滑走方向と距離を選ぶ ----
-      for (const dir of shuffle(rng, DIR_KEYS.slice())) {
-        const d = DIRS[dir];
-
-        // A から d 方向へ何マス進めるか（= 経路が空である最大距離）
-        let maxT = 0;
-        for (let t = 1; t < size; t++) {
-          let ok = true;
-          for (const [x, y] of acells) {
-            const nx = x + d.x * t;
-            const ny = y + d.y * t;
-            if (nx < 0 || ny < 0 || nx >= size || ny >= size) { ok = false; break; }
-            if (board.grid[ny * size + nx] !== -1) { ok = false; break; }
-          }
-          if (!ok) break;
-          maxT = t;
+function findPartner(board, rng, ctx, anchors) {
+  const { size, blocked, forbidden } = ctx;
+  for (const anchor of shuffle(rng, [...anchors])) {
+    const ax = anchor % size;
+    const ay = (anchor - ax) / size;
+    for (const shape of shuffle(rng, TETROMINOES.slice())) {
+      for (const oi of shuffle(rng, shape.cells.map((_, i) => i))) {
+        const [px, py] = shape.cells[oi];
+        const ox = ax - px;
+        const oy = ay - py;
+        const cells = [];
+        let ok = true;
+        for (const [cx, cy] of shape.cells) {
+          const x = cx + ox;
+          const y = cy + oy;
+          if (x < 0 || y < 0 || x >= size || y >= size) { ok = false; break; }
+          const gi = y * size + x;
+          if (board.grid[gi] !== -1) { ok = false; break; }
+          if (blocked.has(gi)) { ok = false; break; }
+          if (forbidden.has(gi)) { ok = false; break; }
+          cells.push([x, y]);
         }
-        if (maxT === 0) continue;
-
-        const t = 1 + Math.floor(Math.pow(rng(), opts.distanceBias) * maxT);
-        const bcells = acells.map(([x, y]) => [x + d.x * t, y + d.y * t]);
-        // 着地点 B で既存の同色ブロックに触れてはいけない（予定外の巻き込み消去の防止）
-        if (board.touchesColor(bcells, color)) continue;
-
-        // ---- 掃過セル（A から B までに P が占める全セル）。相棒はここに置けない ----
-        const blocked = new Set();
-        for (let i = 0; i <= t; i++) {
-          for (const [x, y] of acells) blocked.add((y + d.y * i) * size + (x + d.x * i));
-        }
-
-        // ---- ストッパー: B+d に壁か既存ブロックがあるか ----
-        const bset = cellSet(size, bcells);
-        let stopped = false;
-        const front = new Set();
-        for (const [x, y] of bcells) {
-          const nx = x + d.x;
-          const ny = y + d.y;
-          if (nx < 0 || ny < 0 || nx >= size || ny >= size) { stopped = true; continue; }
-          const gi = ny * size + nx;
-          if (bset.has(gi)) continue;
-          if (board.grid[gi] !== -1) { stopped = true; continue; }
-          front.add(gi);
-        }
-
-        // ---- 相棒ブロックを選ぶ ----
-        const forbiddenAdj = addHalo(size, acells, new Set());
-        const ctx = { size, color, shapes, blocked, forbiddenAdj };
-        const partners = [];
-
-        // ストッパーが無い場合、相棒のひとつが B の進行方向側を塞ぐ必要がある
-        if (!stopped) {
-          if (front.size === 0) continue;
-          const q = findPartner(board, rng, ctx, front);
-          if (!q) { budget -= 3; continue; }
-          partners.push(q);
-          for (const [x, y] of q.cells) blocked.add(y * size + x);
-          addHalo(size, q.cells, forbiddenAdj);
-        }
-
-        // 残りの相棒は B の P に隣接していればどこでもよい
-        const want = 1 + weightedIndex(rng, opts.partnerWeights);
-        if (partners.length < want) {
-          const halo = addHalo(size, bcells, new Set());
-          for (const gi of bset) halo.delete(gi);
-          while (partners.length < want) {
-            const q = findPartner(board, rng, ctx, halo);
-            if (!q) break;
-            partners.push(q);
-            for (const [x, y] of q.cells) blocked.add(y * size + x);
-            addHalo(size, q.cells, forbiddenAdj);
-          }
-        }
-        budget -= 4;
-        if (partners.length === 0) continue;
-
-        // ---- 確定。盤面に追加する ----
-        const moving = board.addPiece(color, acells, placement.shape.name, placement.shape.parts);
-        let cells = placement.shape.size;
-        for (const q of partners) {
-          board.addPiece(color, q.cells, q.shape.name, q.shape.parts);
-          cells += q.shape.size;
-        }
-
-        return {
-          pieceId: moving.id,
-          dir,
-          distance: t,
-          color,
-          cleared: partners.length + 1,
-          cells,
-        };
+        if (ok) return { shape, cells };
       }
     }
   }
   return null;
 }
 
-/** 1 回分の生成試行 */
+/**
+ * いま消せる色の集合。
+ * 消去は必ず同色2個をまとめて取り除くだけなので、結果の盤面は「どの色が消えたか」
+ * だけで決まる。したがって「消せる色が1つしかない＝次の一手が実質1通り」になる。
+ */
+function clearableColors(board, limit = Infinity) {
+  const out = new Set();
+  for (const [id, piece] of board.pieces) {
+    if (out.has(piece.color)) continue; // この色はもう数えた
+    for (const dir of DIR_KEYS) {
+      const r = board.simulate(id, dir);
+      if (r && r.cleared.length > 0) { out.add(piece.color); break; }
+    }
+    if (out.size >= limit) break; // 呼び出し側が必要な数まで数えたら打ち切る
+  }
+  return out;
+}
+
+/** 見つけた候補を実際に盤面へ置く */
+function commitPair(board, color, cand) {
+  const moving = board.addPiece(color, cand.acells, cand.aname);
+  const mate = board.addPiece(color, cand.q.cells, cand.q.shape.name);
+  return {
+    movingId: moving.id,
+    mateId: mate.id,
+    step: { pieceId: moving.id, dir: cand.dir, distance: cand.t, color, kind: 'clear' },
+  };
+}
+
+/**
+ * 逆順構築の1ステップ。色 color のペアを盤面に足し、その手を返す。
+ * 探索は「開始点 A」から始める。A に置いたブロックが盤面に残るので、
+ * A を詰まった場所から順に試すと空きマスが断片化しにくい。
+ *
+ * requireForced のときは「置いた直後に消せる色がこの色だけ」になる配置を探す。
+ * ただし見つからないからといって生成全体を捨てはしない ―― 最初に見つかった
+ * 普通の配置を控えとして持っておき、最後にそれを使う。
+ */
+function placePair(board, rng, opts, color, requireForced) {
+  const size = board.size;
+  const placements = emptyPlacements(board);
+  for (const p of placements) p.score = contactScore(board, p.cells) + rng() * opts.packingJitter;
+  placements.sort((a, b) => b.score - a.score);
+
+  let fallback = null;
+  let checks = 0;
+
+  search:
+  for (const placement of placements) {
+    const acells = placement.cells;
+
+    for (const dir of shuffle(rng, DIR_KEYS.slice())) {
+      const d = DIRS[dir];
+
+      // A から d 方向へ何マス進めるか（＝経路が空である最大距離）
+      let maxT = 0;
+      for (let t = 1; t < size; t++) {
+        let ok = true;
+        for (const [x, y] of acells) {
+          const nx = x + d.x * t;
+          const ny = y + d.y * t;
+          if (nx < 0 || ny < 0 || nx >= size || ny >= size) { ok = false; break; }
+          if (board.grid[ny * size + nx] !== -1) { ok = false; break; }
+        }
+        if (!ok) break;
+        maxT = t;
+      }
+      if (maxT === 0) continue;
+
+      const t = 1 + Math.floor(Math.pow(rng(), opts.distanceBias) * maxT);
+      const bcells = acells.map(([x, y]) => [x + d.x * t, y + d.y * t]);
+
+      // 掃過セル（A から B までに P が占める全セル）。相棒はここに置けない
+      const blocked = new Set();
+      for (let i = 0; i <= t; i++) {
+        for (const [x, y] of acells) blocked.add((y + d.y * i) * size + (x + d.x * i));
+      }
+
+      // ストッパー: B+d に壁か既存ブロックがあるか
+      let stopped = false;
+      const front = new Set();
+      for (const [x, y] of bcells) {
+        const nx = x + d.x;
+        const ny = y + d.y;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) { stopped = true; continue; }
+        const gi = ny * size + nx;
+        if (blocked.has(gi)) continue;
+        if (board.grid[gi] !== -1) { stopped = true; continue; }
+        front.add(gi);
+      }
+
+      // 相棒は「B の P に隣接」かつ「A の P には隣接しない」
+      const forbidden = haloOf(size, acells);
+      const ctx = { size, blocked, forbidden };
+
+      // ストッパーが無いなら、相棒が進行方向側を塞ぐ役も兼ねる
+      const anchors = stopped ? haloOf(size, bcells) : front;
+      for (const gi of blocked) anchors.delete(gi);
+      if (anchors.size === 0) continue;
+
+      const q = findPartner(board, rng, ctx, anchors);
+      if (!q) continue;
+
+      const cand = { acells, aname: placement.shape.name, q, dir, t };
+      const placed = commitPair(board, color, cand);
+      if (!requireForced) return placed.step;
+
+      // 一本道を求めるレベルでは、この局面で消せる色がこの色だけであることを課す
+      if (clearableColors(board, 2).size <= 1) return placed.step;
+
+      board.removePiece(placed.movingId);
+      board.removePiece(placed.mateId);
+      if (!fallback) fallback = cand;
+      if (++checks >= opts.forcedChecks) break search;
+    }
+  }
+
+  if (fallback) return commitPair(board, color, fallback).step;
+  return null;
+}
+
+/**
+ * 仕込み手を1つ前に足す。
+ * 盤面のブロックを1つ選び、「滑らせれば今の位置にちょうど来る」手前の位置へ戻す。
+ * その手自体では何も消えない（同色は隣接していないため）が、
+ * 通さないと後の手が成立しない。
+ *
+ * @param {number[]} preferIds この順で優先して対象を選ぶ（次に動かす予定のブロックなど）
+ */
+function placeSetup(board, rng, opts) {
+  const size = board.size;
+  const candidates = [];
+
+  for (const id of board.pieces.keys()) {
+    const piece = board.pieces.get(id);
+    const partner = [...board.pieces.values()].find((p) => p.color === piece.color && p.id !== id);
+    const own = new Set(piece.cells.map(([x, y]) => y * size + x));
+
+    for (const dir of DIR_KEYS) {
+      const d = DIRS[dir];
+
+      // 今の位置に「ちょうど止まる」ためには、進行方向側が壁かブロックである必要がある
+      let stopped = false;
+      for (const [x, y] of piece.cells) {
+        const nx = x + d.x;
+        const ny = y + d.y;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) { stopped = true; break; }
+        const gi = ny * size + nx;
+        if (own.has(gi)) continue;
+        if (board.grid[gi] !== -1) { stopped = true; break; }
+      }
+      if (!stopped) continue;
+
+      // 手前へ何マス戻せるか（自分のセルは通過できる）
+      for (let t = 1; t < size; t++) {
+        let ok = true;
+        for (const [x, y] of piece.cells) {
+          const nx = x - d.x * t;
+          const ny = y - d.y * t;
+          if (nx < 0 || ny < 0 || nx >= size || ny >= size) { ok = false; break; }
+          const gi = ny * size + nx;
+          if (own.has(gi)) continue;
+          if (board.grid[gi] !== -1) { ok = false; break; }
+        }
+        if (!ok) break;
+
+        // 戻した先で相棒に触れていてはいけない（触れていたらその場で消えてしまう）
+        const from = piece.cells.map(([x, y]) => [x - d.x * t, y - d.y * t]);
+        if (partner) {
+          const halo = haloOf(size, from);
+          if (partner.cells.some(([x, y]) => halo.has(y * size + x))) continue;
+        }
+        candidates.push({ id, dir, t, color: piece.color });
+      }
+    }
+  }
+  if (candidates.length === 0) return null;
+
+  // 「動かした結果、すぐ消せる色が減る」候補を選ぶ。
+  // 消せる色が 0 になれば、その仕込み手を通さないと先へ進めない盤面になる。
+  shuffle(rng, candidates);
+  let best = null;
+  let bestN = Infinity;
+  for (const c of candidates.slice(0, 80)) {
+    board.movePiece(c.id, OPPOSITE[c.dir], c.t);
+    const n = clearableColors(board, bestN).size;
+    board.movePiece(c.id, c.dir, c.t);
+    if (n < bestN) {
+      bestN = n;
+      best = c;
+      if (n === 0) break;
+    }
+  }
+  if (!best) return null;
+
+  board.movePiece(best.id, OPPOSITE[best.dir], best.t);
+  return { pieceId: best.id, dir: best.dir, distance: best.t, color: best.color, kind: 'setup' };
+}
+
+/** 1回分の生成試行 */
 function attemptBuild(seed, opts) {
   const rng = makeRng(seed);
   const board = new Board(opts.size);
   const solution = [];
-  let misses = 0;
 
-  while (solution.length < opts.maxSteps && board.filledCells < opts.targetCells) {
-    const step = buildStep(board, rng, opts);
-    if (!step) {
-      misses++;
-      if (misses >= 2) break;
-      continue;
-    }
+  for (let c = 0; c < opts.colors; c++) {
+    const step = placePair(board, rng, opts, c, opts.forced);
+    if (!step) return null;
     // 逆順に作っているので、新しいステップほど「先の手」になる
+    solution.unshift(step);
+  }
+
+  for (let i = 0; i < opts.setupMoves; i++) {
+    const step = placeSetup(board, rng, opts);
+    if (!step) break;
     solution.unshift(step);
   }
 
@@ -1154,17 +940,111 @@ function attemptBuild(seed, opts) {
 }
 
 /**
- * 解けることが構造的に保証されたパズルを生成する。
- * @returns {{seed:number, snapshot:object, solution:Array, par:number, cells:number, pieces:number, size:number, colors:number}}
+ * 解の道筋を調べる。
+ *   clearAtStart : 初期盤面に「消せる手」がいくつあるか（0 なら仕込み手が必須）
+ *   forced       : どの局面でも「消せる手」の結果が実質1通りしかないか
  */
+function analyzeSolution(snapshot, solution, size) {
+  const board = new Board(size);
+  board.restore(snapshot);
+  let forced = true;
+  let clearAtStart = 0;
+  let branchPoints = 0;
+
+  for (let i = 0; i < solution.length; i++) {
+    const colors = clearableColors(board);
+    if (i === 0) clearAtStart = colors.size;
+    // 仕込み手の局面（消せる色が無い）は分岐とみなさない
+    if (colors.size > 1) {
+      forced = false;
+      branchPoints++;
+    }
+    board.applyMove(solution[i].pieceId, solution[i].dir);
+  }
+  return { forced, clearAtStart, branchPoints };
+}
+
+/** レベル番号からパズルを作る */
+function generateLevel(level, overrides = {}) {
+  const config = levelConfig(level);
+  const puzzle = generatePuzzle(levelSeed(config.level), {
+    size: config.size,
+    colors: config.colors,
+    setupMoves: config.setupMoves,
+    forced: config.forced,
+    attempts: config.attempts,
+    ...overrides,
+  });
+  return { ...puzzle, level: config.level, config };
+}
+
+/** generateLevel の非同期版（画面を固めずに生成する） */
+async function generateLevelAsync(level, overrides = {}, onProgress = null) {
+  const config = levelConfig(level);
+  const puzzle = await generatePuzzleAsync(levelSeed(config.level), {
+    size: config.size,
+    colors: config.colors,
+    setupMoves: config.setupMoves,
+    forced: config.forced,
+    attempts: config.attempts,
+    ...overrides,
+  }, onProgress);
+  return { ...puzzle, level: config.level, config };
+}
+
+function runAttempt(seed, opts, attempt) {
+  // 試行ごとにシードを派生させる（同じ seed なら常に同じ結果）
+  const derived = (seed + attempt * 0x9e3779b1) >>> 0;
+  const built = attemptBuild(derived, opts);
+  if (!built || built.solution.length === 0) return null;
+
+  const snapshot = built.board.snapshot();
+  if (!verifySolution(snapshot, built.solution, opts.size).ok) return null;
+
+  const analysis = analyzeSolution(snapshot, built.solution, opts.size);
+  return {
+    seed: seed >>> 0,
+    snapshot,
+    solution: built.solution,
+    par: built.solution.length,
+    cells: built.board.filledCells,
+    pieces: built.board.pieceCount,
+    size: opts.size,
+    colors: opts.colors,
+    setupMoves: built.solution.filter((s) => s.kind === 'setup').length,
+    analysis,
+  };
+}
+
+/** 望んだ性質をどれだけ満たしているか。大きいほど良い */
+function score(result, opts) {
+  let s = result.cells;
+  if (opts.setupMoves > 0) {
+    s += result.setupMoves * 40;
+    // 初手から消せる手が無い＝仕込みが必須。これが一番欲しい形
+    if (result.analysis.clearAtStart === 0) s += 200;
+  }
+  if (opts.forced && result.analysis.forced) s += 300;
+  return s;
+}
+
+function goodEnough(result, opts) {
+  if (opts.setupMoves > 0 && result.analysis.clearAtStart !== 0) return false;
+  if (opts.setupMoves > 0 && result.setupMoves < opts.setupMoves) return false;
+  if (opts.forced && !result.analysis.forced) return false;
+  return true;
+}
+
 function generatePuzzle(seed, options = {}) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   let best = null;
+  let bestScore = -Infinity;
 
   for (let attempt = 0; attempt < opts.attempts; attempt++) {
     const result = runAttempt(seed, opts, attempt);
     if (!result) continue;
-    if (!best || result.cells > best.cells) best = result;
+    const s = score(result, opts);
+    if (s > bestScore) { best = result; bestScore = s; }
     if (goodEnough(result, opts)) break;
   }
 
@@ -1174,102 +1054,46 @@ function generatePuzzle(seed, options = {}) {
 
 /**
  * generatePuzzle と同じものを、試行の合間にイベントループへ制御を返しながら作る。
- * 大きな連結ピースの盤面は生成に数百ミリ秒かかることがあるので、
  * UI 側はこちらを使って「生成中」を出しつつ画面を固めない。
  */
 async function generatePuzzleAsync(seed, options = {}, onProgress = null) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   let best = null;
+  let bestScore = -Infinity;
 
   for (let attempt = 0; attempt < opts.attempts; attempt++) {
     const result = runAttempt(seed, opts, attempt);
-    if (result && (!best || result.cells > best.cells)) best = result;
-    if (result && goodEnough(result, opts)) break;
+    if (result) {
+      const s = score(result, opts);
+      if (s > bestScore) { best = result; bestScore = s; }
+      if (goodEnough(result, opts)) break;
+    }
     if (onProgress) onProgress((attempt + 1) / opts.attempts);
-    // 2 試行ごとに 1 フレーム譲る
-    if (attempt % 2 === 1) await new Promise((r) => setTimeout(r, 0));
+    if (attempt % 4 === 3) await new Promise((r) => setTimeout(r, 0));
   }
 
   if (!best) throw new Error('パズルを生成できませんでした');
   return best;
 }
 
-/** 1 回分の試行を回して、検証を通った結果だけ返す */
-function runAttempt(seed, opts, attempt) {
-  // 試行ごとにシードを派生させる（同じ seed なら常に同じ結果）
-  const derived = (seed + attempt * 0x9e3779b1) >>> 0;
-  const { board, solution } = attemptBuild(derived, opts);
-  if (solution.length === 0) return null;
-
-  const snapshot = board.snapshot();
-  if (!verifySolution(snapshot, solution, opts.size).ok) return null;
-
-  return {
-    seed: seed >>> 0,
-    snapshot,
-    solution,
-    par: solution.length,
-    cells: board.filledCells,
-    pieces: board.pieceCount,
-    size: opts.size,
-    colors: opts.colors,
-  };
-}
-
-function goodEnough(result, opts) {
-  return result.cells >= opts.targetCells - opts.acceptSlack && result.par >= opts.minPar;
-}
-
-/**
- * レベル番号からパズルを作る。
- * レベル -> シード -> 決定論的な生成、という一本道なので、
- * 同じレベルなら、どの端末でも必ず同じ譜面になる。
- */
-function generateLevel(level, overrides = {}) {
-  const config = levelConfig(level);
-  const classes = buildLevelClasses(config);
-  const puzzle = generatePuzzle(levelSeed(config.level), levelOptions(config, classes, overrides));
-  return { ...puzzle, level: config.level, config };
-}
-
-/** generateLevel の非同期版（画面を固めずに生成する） */
-async function generateLevelAsync(level, overrides = {}, onProgress = null) {
-  const config = levelConfig(level);
-  const classes = buildLevelClasses(config);
-  const puzzle = await generatePuzzleAsync(
-    levelSeed(config.level),
-    levelOptions(config, classes, overrides),
-    onProgress,
-  );
-  return { ...puzzle, level: config.level, config };
-}
-
-function levelOptions(config, classes, overrides) {
-  return {
-    size: config.size,
-    colors: config.colors,
-    classes,
-    targetCells: config.targetCells,
-    minCells: config.minCells,
-    acceptSlack: config.acceptSlack,
-    maxSteps: config.maxSteps,
-    minPar: config.minPar,
-    partnerWeights: config.partnerWeights,
-    attempts: config.attempts,
-    ...overrides,
-  };
-}
-
 /**
  * 生成された解答手順を前から実行して、本当に全消しできるか確かめる。
  * 生成ロジックのバグをここで必ず捕まえる（テストからも使用）。
  */
-function verifySolution(snapshot, solution, size = BOARD_SIZE) {
+function verifySolution(snapshot, solution, size) {
   const board = new Board(size);
   board.restore(snapshot);
 
   if (board.hasSameColorContact()) {
     return { ok: false, reason: '初期盤面に同色接触がある' };
+  }
+  for (const p of board.pieces.values()) {
+    if (p.cells.length !== 4) return { ok: false, reason: 'テトロミノ以外のブロックがある' };
+  }
+  const counts = new Map();
+  for (const p of board.pieces.values()) counts.set(p.color, (counts.get(p.color) || 0) + 1);
+  for (const [color, n] of counts) {
+    if (n !== 2) return { ok: false, reason: `色 ${color} のブロックが ${n} 個（2個であるべき）` };
   }
 
   for (let i = 0; i < solution.length; i++) {
@@ -1277,17 +1101,14 @@ function verifySolution(snapshot, solution, size = BOARD_SIZE) {
     if (!board.pieces.has(step.pieceId)) {
       return { ok: false, reason: `手 ${i + 1}: ブロックが存在しない` };
     }
-    const before = board.pieceCount;
     const res = board.applyMove(step.pieceId, step.dir);
     if (!res) return { ok: false, reason: `手 ${i + 1}: 動かせない` };
     if (res.steps !== step.distance) {
       return { ok: false, reason: `手 ${i + 1}: 停止位置が想定と違う (${res.steps} != ${step.distance})` };
     }
-    if (res.cleared.length !== step.cleared) {
-      return { ok: false, reason: `手 ${i + 1}: 消去数が想定と違う (${res.cleared.length} != ${step.cleared})` };
-    }
-    if (board.pieceCount !== before - step.cleared) {
-      return { ok: false, reason: `手 ${i + 1}: 盤面のブロック数が合わない` };
+    const wantCleared = step.kind === 'setup' ? 0 : 2;
+    if (res.cleared.length !== wantCleared) {
+      return { ok: false, reason: `手 ${i + 1}: 消去数が想定と違う (${res.cleared.length} != ${wantCleared})` };
     }
     if (board.hasSameColorContact()) {
       return { ok: false, reason: `手 ${i + 1} の直後に同色接触が残っている` };
@@ -1300,17 +1121,15 @@ function verifySolution(snapshot, solution, size = BOARD_SIZE) {
   return { ok: true };
 }
 
-/** 生成器の内部関数（テスト用） */
-const __internals = { emptyPlacements, buildStep, attemptBuild };
-
 // ===== src/render.js =====
-// Canvas 描画。盤面・粘土ブロック・着地予測ゴースト・演出をすべてここで描く。
+// Canvas 描画。盤面・ブロック・着地予測ゴースト・演出をすべてここで描く。
 //
-// ブロックは「粘土」として描く:
-//   下に色付きのやわらかい影 → 斜めのグラデーションで塊感 → 内側の上左に光、
-//   下右に翳り → 表面に細かいざらつき（グレイン） → 縁取り線は引かない。
-// マットで、押したらへこみそうな質感を目指している。UI 側がガラスで退いているぶん、
-// ここだけが主役として前に出る。
+// ブロックは「色そのもの」で描く。影も光沢も模様も乗せない ―― 一色のベタ塗りに、
+// ほんのわずかな角丸だけ。マス同士のすき間も髪の毛ほどしか空けないので、
+// 盤面はタイルを敷き詰めたモザイクのように見える。
+// 同じブロックのマス同士はすき間なく繋がるので「どこまでが一緒に動くか」は形で読める。
+//
+// 後ろの盤面も同じ考えで、淡い色のマスを敷き詰めただけの平らな面にしている。
 
 /** roundRect は Safari 16.4 未満に無い。無ければ自前で足す */
 function installRoundRect() {
@@ -1344,78 +1163,73 @@ function installRoundRect() {
 }
 installRoundRect();
 
+// ---------------------------------------------------------------- 色
+
 /**
- * 6色の毛糸。織物の質感を乗せるので、彩度を高めにして色そのもので見分けられるようにする。
- * light=上端に当たる光 / base=素の色 / dark=下端の翳り / shadow=盤面に落ちる影
+ * 色は何色でも作れる。レベルが上がれば色数はいくらでも増えるので、
+ * 手で選んだ一覧ではなく「隣り合う番号どうしがいちばん離れて見える色相の並び」
+ * から手続き的に組み立てる。一覧を使い切ったら色相をずらし、
+ * 明度も段ごとに変えるので、同じ色相が戻ってきても別の色として読める。
  */
-const PALETTE = [
-  { name: '赤', base: '#d9453b', light: '#e8695c', dark: '#a52a25', shadow: '120,26,22' },
-  { name: '橙', base: '#e07b2c', light: '#ee9b4c', dark: '#a95315', shadow: '122,52,12' },
-  { name: '黄', base: '#e9b02b', light: '#f6c94f', dark: '#b07f12', shadow: '126,88,10' },
-  { name: '緑', base: '#3ebe33', light: '#63d456', dark: '#268c1e', shadow: '26,88,20' },
-  { name: '青', base: '#4c7fd6', light: '#6f9de6', dark: '#2f5aa6', shadow: '26,58,116' },
-  { name: '紫', base: '#b44bd1', light: '#c972e0', dark: '#8a2ea3', shadow: '84,24,104' },
-];
+const HUES = [4, 210, 46, 142, 288, 26, 190, 330, 96, 258, 168, 14, 308, 64, 228, 118, 348, 200, 78, 272];
 
-/** 盤面（タイルを並べる台）。糸の色が立つように暗くする */
-const TRAY = {
-  light: { frame: '#1e2740', hole: '#36406a', ring: '#9aa6cc' },
-  dark: { frame: '#0f1424', hole: '#232c4a', ring: '#3d4666' },
-};
+/** 色相ごとの見た目の明るさ補正（黄～緑は明るく見えるので少し暗く置く） */
+function toneFor(hue) {
+  const yellowness = Math.max(0, Math.cos(((hue - 55) * Math.PI) / 180));
+  return 1 - yellowness * 0.16;
+}
 
-/** 色覚サポート用の記号 */
-const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚'];
+function hsl(h, s, l) {
+  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const v = l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * v);
+  };
+  return [f(0), f(8), f(4)];
+}
+
+const hex = (rgb) => `#${rgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+
+const paletteCache = [];
+
+/**
+ * 色番号 -> 色。番号はいくつでもよい（無制限）。
+ * base=ブロックの色 / light=明るめ / dark=文字などに使う濃いめ / shadow="r,g,b"
+ */
+function colorFor(index) {
+  const i = Math.max(0, Math.floor(index) || 0);
+  if (paletteCache[i]) return paletteCache[i];
+
+  const lap = Math.floor(i / HUES.length);
+  const hue = (HUES[i % HUES.length] + lap * 23) % 360;
+  const tone = toneFor(hue);
+  // 周回ごとに明るさを振って、同じ色相帯でも別の色として見えるようにする
+  const shift = [0, 10, -8, 18][lap % 4];
+  const sat = 68 - (lap % 3) * 7;
+  const light = Math.max(30, Math.min(72, 55 * tone + shift));
+
+  const c = {
+    name: `色${i + 1}`,
+    base: hex(hsl(hue, sat, light)),
+    light: hex(hsl(hue, sat, Math.min(88, light + 13))),
+    dark: hex(hsl(hue, Math.min(90, sat + 10), Math.max(20, light - 22))),
+    shadow: hsl(hue, Math.min(90, sat + 10), Math.max(16, light - 30)).join(','),
+  };
+  paletteCache[i] = c;
+  return c;
+}
+
+/** 盤面（ブロックを並べる面）。影を落とさない、平らな一色 */
+const TRAY = { plate: '#dde2f0', hole: '#eef1f8' };
+
+/** 色覚サポート用の記号。色数が増えても足りるよう繰り返して使う */
+const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', '☰'];
 
 const UI_FONT = 'ui-rounded, -apple-system, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Hiragino Sans", system-ui, sans-serif';
 
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 const easeOutBack = (t) => 1 + 2.4 * Math.pow(t - 1, 3) + 1.6 * Math.pow(t - 1, 2);
-
-/**
- * 織物（刺繍）の地。斜め45度に走る糸の列を、繰り返して使えるタイルとして描く。
- * グレー #808080 を基準色にして overlay で重ねるので、どの色の上でも
- * 「明るい糸／暗い糸」として乗る。糸の間隔はマスの大きさに比例させる。
- */
-function makeWeave(cellPx) {
-  const spacing = Math.max(2, Math.round(cellPx / 14));
-  const size = spacing * 10; // 45度の縞が継ぎ目なく繰り返せるよう間隔の倍数にする
-  const c = document.createElement('canvas');
-  c.width = size;
-  c.height = size;
-  const g = c.getContext('2d');
-
-  g.fillStyle = '#808080';
-  g.fillRect(0, 0, size, size);
-
-  // 糸1本ぶん＝明るい面と暗い面の対
-  g.lineCap = 'butt';
-  for (let i = -size; i <= size * 2; i += spacing) {
-    g.strokeStyle = 'rgba(255,255,255,.6)';
-    g.lineWidth = Math.max(0.8, spacing * 0.34);
-    g.beginPath();
-    g.moveTo(i, size);
-    g.lineTo(i + size, 0);
-    g.stroke();
-
-    g.strokeStyle = 'rgba(0,0,0,.46)';
-    g.lineWidth = Math.max(0.8, spacing * 0.3);
-    g.beginPath();
-    g.moveTo(i + spacing * 0.46, size);
-    g.lineTo(i + spacing * 0.46 + size, 0);
-    g.stroke();
-  }
-
-  // 繊維のざらつき
-  const img = g.getImageData(0, 0, size, size);
-  for (let i = 0; i < img.data.length; i += 4) {
-    const n = (Math.random() - 0.5) * 20;
-    img.data[i] = Math.max(0, Math.min(255, img.data[i] + n));
-    img.data[i + 1] = Math.max(0, Math.min(255, img.data[i + 1] + n));
-    img.data[i + 2] = Math.max(0, Math.min(255, img.data[i + 2] + n));
-  }
-  g.putImageData(img, 0, 0);
-  return c;
-}
 
 class Renderer {
   constructor(canvas) {
@@ -1437,18 +1251,6 @@ class Renderer {
     this.time = 0;
 
     this.options = { symbols: false, ghost: true, calm: false };
-
-    this.weavePattern = null;
-    this.weaveFor = 0;
-
-    this.dark = false;
-    const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-    if (mq) {
-      this.dark = mq.matches;
-      const onChange = (e) => { this.dark = e.matches; };
-      if (mq.addEventListener) mq.addEventListener('change', onChange);
-      else if (mq.addListener) mq.addListener(onChange);
-    }
   }
 
   resize(size) {
@@ -1463,96 +1265,21 @@ class Renderer {
     this.viewW = w;
     this.viewH = h;
 
-    // 盤面は正方形。影がはみ出せるよう外周に余白を取る
-    const cell = Math.floor((Math.min(w, h) - 30) / this.size);
+    // 盤面は正方形。外周にわずかな縁だけ取る
+    const cell = Math.floor((Math.min(w, h) - 18) / this.size);
     this.cell = Math.max(8, cell);
     const boardPx = this.cell * this.size;
     this.ox = Math.floor((w - boardPx) / 2);
     this.oy = Math.floor((h - boardPx) / 2);
-    this.buildWeave();
   }
-
-  /** マスの大きさが変わったら、織物の目とタイルの絵を作り直す */
-  buildWeave() {
-    const key = `${this.cell}:${this.dpr}`;
-    if (this.weaveFor === key && this.weavePattern) return;
-    this.weaveFor = key;
-    this.weaveCanvas = makeWeave(this.cell);
-    this.weavePattern = this.ctx.createPattern(this.weaveCanvas, 'repeat');
-    this.buildTiles();
-  }
-
-  /** タイルの実寸。マスからすき間を除いた大きさ */
-  get tileGap() { return Math.max(1, Math.round(this.cell * 0.025)); }
-  get tileSize() { return this.cell - this.tileGap * 2; }
-  get tileRadius() { return Math.max(2, this.tileSize * 0.11); }
 
   /**
-   * 色ごとに 1 枚だけタイルを描いておき、盤面では貼るだけにする。
-   * 毎フレーム 100 枚以上をグラデーション＋クリップで描くと重いため。
+   * マスとマスのすき間。「ほんの少しだけ」＝ 1〜2px。
+   * 敷き詰まって見えることを優先し、マスが小さいときも 1px 以上は空けない。
    */
-  buildTiles() {
-    const size = this.tileSize;
-    const r = this.tileRadius;
-    const px = Math.max(4, Math.round(size * this.dpr));
-
-    this.tiles = PALETTE.map((c) => {
-      const cv = document.createElement('canvas');
-      cv.width = px;
-      cv.height = px;
-      const g = cv.getContext('2d');
-      g.scale(px / size, px / size); // 以降は CSS ピクセルで考える
-
-      const path = new Path2D();
-      path.roundRect(0, 0, size, size, r);
-
-      // 面。上端が明るく、下端が翳る
-      const grad = g.createLinearGradient(0, 0, 0, size);
-      grad.addColorStop(0, c.light);
-      grad.addColorStop(0.16, c.base);
-      grad.addColorStop(0.82, c.base);
-      grad.addColorStop(1, c.dark);
-      g.fillStyle = grad;
-      g.fill(path);
-
-      g.save();
-      g.clip(path);
-
-      // 織物の目
-      const pat = g.createPattern(this.weaveCanvas, 'repeat');
-      if (pat) {
-        g.globalAlpha = 0.34;
-        g.globalCompositeOperation = 'overlay';
-        g.fillStyle = pat;
-        g.fillRect(0, 0, size, size);
-        g.globalCompositeOperation = 'source-over';
-        g.globalAlpha = 1;
-      }
-
-      // 縁の立ち上がり。輪郭をずらして描き、クリップで内側半分だけ残す
-      const bevel = Math.max(1, Math.min(size * 0.075, 7));
-      g.lineWidth = bevel * 2;
-      g.save();
-      g.translate(0, bevel);
-      g.strokeStyle = 'rgba(255,255,255,.34)';
-      g.stroke(path);
-      g.restore();
-      g.save();
-      g.translate(0, -bevel);
-      g.strokeStyle = `rgba(${c.shadow},.5)`;
-      g.stroke(path);
-      g.restore();
-
-      g.restore();
-
-      // ふちの締め
-      g.lineWidth = Math.max(1, size * 0.025);
-      g.strokeStyle = 'rgba(10,14,28,.32)';
-      g.stroke(path);
-
-      return cv;
-    });
-  }
+  get tileGap() { return this.cell >= 34 ? 1.5 : 1; }
+  get tileSize() { return this.cell - this.tileGap * 2; }
+  get tileRadius() { return Math.max(1.5, this.tileSize * 0.14); }
 
   /** 画面座標 -> 盤面セル */
   toCell(clientX, clientY) {
@@ -1569,9 +1296,9 @@ class Renderer {
 
   // ---------------------------------------------------------------- 演出
 
-  /** 粘土のかけらが飛び散る */
+  /** 砕けた破片が飛び散る */
   burst(cells, colorIndex) {
-    const c = PALETTE[colorIndex];
+    const c = colorFor(colorIndex);
     const n = this.options.calm ? 3 : 8;
     for (const [cx, cy] of cells) {
       const p = this.cellCenter(cx, cy);
@@ -1603,7 +1330,7 @@ class Renderer {
       r: this.cell * 0.35,
       maxR: this.cell * (2 + strength * 1.4),
       life: 1,
-      color: PALETTE[colorIndex].shadow,
+      color: colorFor(colorIndex).shadow,
     });
   }
 
@@ -1667,7 +1394,10 @@ class Renderer {
     ctx.restore();
   }
 
-  /** 盤面＝粘土を並べるマット。空きマスはくぼみとして見せる */
+  /**
+   * 盤面。ブロックと同じ寸法・同じすき間の淡いマスを敷き詰めただけの平らな面。
+   * 影も枠線も付けない ―― 空きマスがそのまま「通路」として読めればいい。
+   */
   drawTray(board) {
     const ctx = this.ctx;
     const n = this.size;
@@ -1675,45 +1405,28 @@ class Renderer {
     const w = cell * n;
     const x0 = this.ox;
     const y0 = this.oy;
-    const pad = Math.max(3, cell * 0.07);
-    const dark = this.dark;
-
-    // 台。外周に明るいふちを回し、内側は濃紺。写真と同じ額縁の作り
-    const t = dark ? TRAY.dark : TRAY.light;
-    const ring = Math.max(3, cell * 0.09);
-    const radius = Math.max(10, cell * 0.3);
+    const pad = Math.max(2, cell * 0.06);
 
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(x0 - pad - ring, y0 - pad - ring, w + (pad + ring) * 2, w + (pad + ring) * 2, radius + ring);
-    ctx.fillStyle = t.ring;
-    ctx.shadowColor = dark ? 'rgba(0,0,0,.7)' : 'rgba(28,34,60,.26)';
-    ctx.shadowBlur = cell * 0.8;
-    ctx.shadowOffsetY = cell * 0.2;
+    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, Math.max(6, cell * 0.24));
+    ctx.fillStyle = TRAY.plate;
     ctx.fill();
     ctx.restore();
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
-    ctx.fillStyle = t.frame;
-    ctx.fill();
-    ctx.restore();
-
-    // 空きマス（＝通路）。台よりわずかに明るくして、通れる場所が読めるようにする
     const gap = this.tileGap;
     const size = this.tileSize;
     const tr = this.tileRadius;
     ctx.save();
-    ctx.fillStyle = t.hole;
+    ctx.fillStyle = TRAY.hole;
+    ctx.beginPath();
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         if (board && board.at(x, y) !== -1) continue;
-        ctx.beginPath();
         ctx.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
-        ctx.fill();
       }
     }
+    ctx.fill();
     ctx.restore();
   }
 
@@ -1734,7 +1447,7 @@ class Renderer {
           dy = -d.y * anim.steps * this.cell * (1 - p);
           this.drawTrail(piece, d, anim, p);
         } else if (anim.phase === 'land') {
-          // 進行方向につぶれて戻る（粘土がぶつかった手応え）
+          // 進行方向につぶれて戻る（ぶつかった手応え）
           squash = Math.sin(anim.t * Math.PI) * 0.16;
         }
       }
@@ -1753,7 +1466,7 @@ class Renderer {
 
   drawTrail(piece, d, anim, p) {
     const ctx = this.ctx;
-    const c = PALETTE[piece.color];
+    const c = colorFor(piece.color);
     const total = anim.steps * this.cell;
     const cell = this.cell;
     for (let i = 1; i <= 3; i++) {
@@ -1828,15 +1541,13 @@ class Renderer {
   }
 
   /**
-   * 粘土ブロック本体。
+   * ブロック本体。
    * @param {string} mode 'solid' | 'outline'
    * @param {string|null} axis つぶれる向き（着地アニメ用）
    */
   drawPiece(piece, dx = 0, dy = 0, alpha = 1, squash = 0, selected = false, mode = 'solid', axis = null) {
     const ctx = this.ctx;
     const cell = this.cell;
-    const gap = this.tileGap;
-    const size = this.tileSize;
     const rects = this.cellRects(piece, dx, dy);
     const box = this.bboxOf(rects);
 
@@ -1852,11 +1563,12 @@ class Renderer {
       ctx.translate(-cx, -cy);
     }
 
+    const c = colorFor(piece.color);
     const outline = this.outlineOf(rects, this.tileRadius);
 
     if (mode === 'outline') {
       ctx.lineWidth = Math.max(2, cell * 0.09);
-      ctx.strokeStyle = PALETTE[piece.color].light;
+      ctx.strokeStyle = c.light;
       ctx.setLineDash([cell * 0.26, cell * 0.2]);
       ctx.lineCap = 'round';
       ctx.stroke(outline);
@@ -1865,38 +1577,31 @@ class Renderer {
       return;
     }
 
-    // 1マス＝1枚の刺繍タイルを貼っていく。
-    // 同色は隣接しないという不変条件があるので、隣り合う同じ色のタイルは
-    // 必ず同じブロック ―― タイルを分けて描いても「どこまでが一緒に動くか」は色で読める。
-    const tile = this.tiles && this.tiles[piece.color];
-    if (tile) {
-      for (const [x, y] of piece.cells) {
-        ctx.drawImage(tile, this.ox + x * cell + gap + dx, this.oy + y * cell + gap + dy, size, size);
-      }
-    }
+    // ベタ塗り一色。同じブロックのマス同士は継ぎ目なく繋がり、
+    // 別のブロックとのあいだにだけ髪の毛ほどのすき間が残る。
+    ctx.fillStyle = c.base;
+    ctx.fill(this.pathOf(rects));
 
     // 色記号（色覚サポート）
     if (this.options.symbols && cell > 16) {
       const [ax, ay] = piece.cells[Math.floor(piece.cells.length / 2)];
       ctx.save();
-      ctx.globalAlpha = alpha * 0.34;
-      ctx.fillStyle = 'rgba(0,0,0,.9)';
+      ctx.globalAlpha = alpha * 0.38;
+      ctx.fillStyle = c.dark;
       ctx.font = `700 ${Math.floor(cell * 0.44)}px ${UI_FONT}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(SYMBOLS[piece.color], this.ox + (ax + 0.5) * cell + dx, this.oy + (ay + 0.55) * cell + dy);
+      ctx.fillText(SYMBOLS[piece.color % SYMBOLS.length], this.ox + (ax + 0.5) * cell + dx, this.oy + (ay + 0.55) * cell + dy);
       ctx.restore();
     }
 
-    // 選択中はブロック全体を白い光で囲む（動く単位を示す）
+    // 選択中はブロックの外周をなぞる（動く単位を示す）。光らせず、線だけ
     if (selected) {
       const pulse = 0.5 + 0.5 * Math.sin(this.time * 6.5);
       ctx.save();
-      ctx.globalAlpha = alpha * (0.5 + 0.4 * pulse);
-      ctx.lineWidth = Math.max(2, cell * 0.07);
+      ctx.globalAlpha = alpha * (0.55 + 0.45 * pulse);
+      ctx.lineWidth = Math.max(2, cell * 0.08);
       ctx.strokeStyle = '#ffffff';
-      ctx.shadowColor = 'rgba(255,255,255,.9)';
-      ctx.shadowBlur = cell * (0.3 + 0.3 * pulse);
       ctx.stroke(outline);
       ctx.restore();
     }
@@ -2424,43 +2129,43 @@ class Sound {
 
 // ===== src/game.js =====
 // ゲーム進行・アニメーション・UI 配線。
+//
+// 画面は3つ（ホーム / レベル一覧 / ゲーム）。同時に見えるのは常に1つだけ。
+// レベルは「ひとつ前をクリアするまで開かない」ので、進行状況は
+// 「解放済みレベル」と「レベルごとの星」だけで表せる。
 
-/**
- * 大量消去の段階評価（セル数）。
- * 色はライト／ダークどちらの背景でも読めるよう中間の明度に寄せてある
- * （縁取りは背景と反対色を敷くので、これで両方に耐える）。
- */
+/** 大量消去の段階評価（セル数）。明るい背景で読める中間の明度に寄せてある */
 const TIERS = [
   { cells: 20, label: 'ミラクル!!!', color: '#e0388f' },
   { cells: 16, label: 'ファンタスティック!!', color: '#e08a00' },
   { cells: 12, label: 'グレイト!', color: '#0f9d63' },
 ];
 
-const STORE_KEY = 'slidepop.v2';
+const STORE_KEY = 'slidepop.v3';
+
+/** レベル一覧の1ページに並べる数 */
+const PAGE_SIZE = 30;
 
 function tierOf(cells) {
   for (const t of TIERS) if (cells >= t.cells) return t;
   return null;
 }
 
-/** 盤面に実際に置かれているブロックの構成を一言で */
-function pieceKindLabel(board) {
-  const sizes = new Set();
-  for (const p of board.pieces.values()) sizes.add(p.cells.length);
-  const label = (n) => (n <= 4 ? 'テトロミノ' : n <= 8 ? '2個つなぎ' : '3個つなぎ');
-  const names = [...sizes].sort((a, b) => a - b).map(label);
-  return [...new Set(names)].join('＋');
+/**
+ * 手数の星評価。
+ *   ★★★ PAR 以内（保証解と同じかそれ以上）
+ *   ★★  PAR+2 以内
+ *   ★   クリア
+ */
+function starsFor(moves, par) {
+  if (moves <= par) return 3;
+  if (moves <= par + 2) return 2;
+  return 1;
 }
 
-/** レベル選択画面に出す、遊ぶ前のプレビュー文 */
+/** レベル一覧・ホームに出す、遊ぶ前のプレビュー文 */
 function levelPreview(level) {
-  const cfg = levelConfig(level);
-  const mix = cfg.mix;
-  const parts = [];
-  if (mix.single > 0.001) parts.push(`テトロミノ ${Math.round(mix.single * 100)}%`);
-  if (mix.double > 0.001) parts.push(`2個つなぎ ${Math.round(mix.double * 100)}%`);
-  if (mix.triple > 0.001) parts.push(`3個つなぎ ${Math.round(mix.triple * 100)}%`);
-  return `${cfg.size}×${cfg.size} ／ ${cfg.colors}色 ／ ${parts.join(' ・ ')}`;
+  return levelSummary(levelConfig(level));
 }
 
 function loadStore() {
@@ -2494,9 +2199,12 @@ class Game {
     this.history = [];
     this.moves = 0;
     this.hintsUsed = 0;
-    this.status = 'loading';
+    this.status = 'idle';
     this.level = 1;
     this.loadToken = 0;
+    this.screen = 'home';
+    /** レベル一覧のページ（0 始まり） */
+    this.page = 0;
 
     this.anim = null;
     this.invalid = null;
@@ -2523,16 +2231,49 @@ class Game {
     requestAnimationFrame((t) => this.loop(t));
   }
 
+  // ------------------------------------------------------------ 進行状況
+
+  /** 遊べる最大レベル。ひとつ前をクリアすると 1 つ増える */
+  get unlockedLevel() {
+    return Math.max(1, Math.floor(this.store.unlocked) || 1);
+  }
+
+  /** そのレベルが開いているか */
+  isUnlocked(level) {
+    return normalizeLevel(level) <= this.unlockedLevel;
+  }
+
+  /** そのレベルで取った星（0 = 未クリア） */
+  starsOf(level) {
+    return (this.store.stars || {})[String(normalizeLevel(level))] || 0;
+  }
+
+  /** 星の総数 */
+  get totalStars() {
+    return Object.values(this.store.stars || {}).reduce((a, b) => a + b, 0);
+  }
+
+  /** クリア済みレベル数 */
+  get clearedCount() {
+    return Object.keys(this.store.stars || {}).length;
+  }
+
   // ------------------------------------------------------------ パズル
 
   /**
    * レベルを読み込む。
-   * 大きな連結ピースの盤面は生成に少し時間がかかるので、非同期版を使って
+   * 上のレベルほど生成に時間がかかるので、非同期版を使って
    * 「生成中」を出しながら待つ（画面が固まらない）。
    */
   async load(level) {
     const lv = normalizeLevel(level);
+    if (!this.isUnlocked(lv)) {
+      this.showLevels(Math.floor((this.unlockedLevel - 1) / PAGE_SIZE));
+      this.toast(`レベル ${lv - 1} をクリアすると開きます`);
+      return;
+    }
     const token = ++this.loadToken;
+    this.showGame();
 
     this.status = 'loading';
     this.anim = null;
@@ -2585,15 +2326,10 @@ class Game {
     location.hash = `#L${lv}`;
   }
 
-  /** 到達したことのある最大レベル（未クリアでも「開いたことがある」で更新） */
-  get bestLevel() {
-    return Math.max(1, this.store.bestLevel || 1);
-  }
-
   showLoading(level) {
     const cfg = levelConfig(level);
     this.showOverlay({
-      badge: '🧊',
+      badge: '🧩',
       title: `レベル ${level}`,
       text: `${cfg.size}×${cfg.size} の盤面を組み立てています…`,
       stats: [],
@@ -2728,8 +2464,8 @@ class Game {
     const tier = tierOf(cells);
     let sub = tier ? tier.label : null;
     if (this.combo >= 2) sub = sub ? `${sub}  ${this.combo}コンボ` : `${this.combo}コンボ!`;
-    // 段階評価が無いときは、消えた粘土の色そのままで祝う
-    const textColor = tier ? tier.color : PALETTE[color].dark;
+    // 段階評価が無いときは、消えたブロックの色そのままで祝う
+    const textColor = tier ? tier.color : colorFor(color).dark;
     this.renderer.floatText(center.x, center.y, `${cells}個消し！`, sub, textColor);
 
     for (const id of group) this.board.removePiece(id);
@@ -2738,6 +2474,12 @@ class Game {
     this.afterMove();
   }
 
+  /**
+   * 手番の後始末。
+   * 「消せる手が無い」ことを敗北にはしない ―― 詰みかけて見える局面でも、
+   * 何も消さない手で通路を作れば必ず解ける（PAR は保証された手数）。
+   * 行き詰まったら「戻す」と「やり直す」がいつでも使える。
+   */
   afterMove() {
     this.updateHud();
     if (this.board.isEmpty) {
@@ -2745,12 +2487,6 @@ class Game {
       this.recordResult();
       this.sound.win();
       setTimeout(() => this.showWin(), 640);
-      return;
-    }
-    if (this.board.isDeadlock()) {
-      this.status = 'dead';
-      this.sound.dead();
-      setTimeout(() => this.showDead(), 380);
     }
   }
 
@@ -2776,7 +2512,9 @@ class Game {
     if (step) {
       this.hint = { pieceId: step.pieceId, dir: step.dir };
       this.hintsUsed++;
-      this.toast(`保証解の第${this.moves + 1}手：${step.cleared}個まとめて消えます`);
+      this.toast(step.kind === 'setup'
+        ? `保証解の第${this.moves + 1}手：これ自体は何も消えません（後の手のための仕込み）`
+        : `保証解の第${this.moves + 1}手：この色のペアが消えます`);
       this.updateHud();
       return;
     }
@@ -2785,11 +2523,11 @@ class Game {
       const best = moves[0];
       this.hint = { pieceId: best.id, dir: best.dir };
       this.hintsUsed++;
-      this.toast(`${best.cleared.length}個（${best.clearedCells}マス）消せる手があります`);
+      this.toast(`${best.clearedCells}マスぶん消せる手があります`);
       this.updateHud();
       return;
     }
-    this.toast('いま消せる手はありません。「戻す」で組み立て直しましょう');
+    this.toast('いま消せる手はありません。通路を作るか、「戻す」で組み立て直しましょう');
   }
 
   // ------------------------------------------------------------ 入力
@@ -2829,8 +2567,13 @@ class Game {
       if (k === 'z' || k === 'u' || k === 'backspace') { e.preventDefault(); this.undo(); }
       else if (k === 'h') { e.preventDefault(); this.showHint(); }
       else if (k === 'r') { e.preventDefault(); this.restart(); }
-      else if (k === 'l') { e.preventDefault(); this.openLevelPicker(); }
-      else if (k === 'escape') { this.selected = null; this.ghost = null; this.closeModals(); }
+      else if (k === 'l') { e.preventDefault(); this.showLevels(); }
+      else if (k === 'escape') {
+        this.selected = null;
+        this.ghost = null;
+        if (!this.anyModalOpen()) this.showHome();
+        this.closeModals();
+      }
     });
   }
 
@@ -2859,11 +2602,32 @@ class Game {
     d.btnUndo.addEventListener('click', () => this.undo());
     d.btnHint.addEventListener('click', () => this.showHint());
     d.btnRestart.addEventListener('click', () => this.restart());
-    d.btnLevels.addEventListener('click', () => this.openLevelPicker());
-    d.btnRules.addEventListener('click', () => this.openModal(d.modalRules));
-    d.btnSettings.addEventListener('click', () => this.openModal(d.modalSettings));
+    d.btnLevels.addEventListener('click', () => this.showLevels());
+    d.btnHome.addEventListener('click', () => this.showHome());
 
-    for (const modal of [d.modalRules, d.modalSettings, d.modalLevels]) {
+    // ホーム
+    d.btnStart.addEventListener('click', () => this.load(this.startLevel));
+    d.btnOpenLevels.addEventListener('click', () => this.showLevels());
+
+    // レベル一覧
+    d.btnLevelsBack.addEventListener('click', () => this.showHome());
+    d.btnLevelsJump.addEventListener('click', () => this.showLevels(this.pageOf(this.unlockedLevel)));
+    d.btnPagePrev.addEventListener('click', () => this.showLevels(this.page - 1));
+    d.btnPageNext.addEventListener('click', () => this.showLevels(this.page + 1));
+    d.levelGrid.addEventListener('click', (e) => {
+      const cell = e.target.closest && e.target.closest('[data-level]');
+      if (!cell) return;
+      this.load(parseInt(cell.dataset.level, 10));
+    });
+
+    for (const el of [d.btnRules, d.btnRules2]) {
+      if (el) el.addEventListener('click', () => this.openModal(d.modalRules));
+    }
+    for (const el of [d.btnSettings, d.btnSettings2]) {
+      if (el) el.addEventListener('click', () => this.openModal(d.modalSettings));
+    }
+
+    for (const modal of [d.modalRules, d.modalSettings]) {
       modal.addEventListener('click', (e) => {
         // 閉じるボタンの中身（SVG）が押されることもあるので closest で辿る
         if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) {
@@ -2891,41 +2655,102 @@ class Game {
       });
     }
 
-    const stepLevel = (delta) => {
-      const v = Math.max(1, (parseInt(d.levelInput.value, 10) || 1) + delta);
-      d.levelInput.value = String(v);
-      this.updateLevelPreview();
-    };
-    d.btnLevelPrev.addEventListener('click', () => stepLevel(-1));
-    d.btnLevelNext.addEventListener('click', () => stepLevel(1));
-    d.levelInput.addEventListener('input', () => this.updateLevelPreview());
-    d.levelInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') d.btnLevelGo.click();
-    });
-    d.btnLevelGo.addEventListener('click', () => {
-      const lv = Math.max(1, parseInt(d.levelInput.value, 10) || 1);
-      this.closeModals();
-      this.load(lv);
-    });
-    d.btnLevelBest.addEventListener('click', () => {
-      d.levelInput.value = String(this.bestLevel);
-      this.updateLevelPreview();
-      this.closeModals();
-      this.load(this.bestLevel);
-    });
     d.btnShare.addEventListener('click', () => this.share());
   }
 
-  openLevelPicker() {
-    this.dom.levelInput.value = String(this.level);
-    this.updateLevelPreview();
-    this.dom.btnLevelBest.disabled = this.bestLevel === this.level;
-    this.openModal(this.dom.modalLevels);
+  // ------------------------------------------------------------ 画面の切り替え
+
+  /** 「ゲームスタート」が始めるレベル。まだ挑戦中のものがあればそれを続ける */
+  get startLevel() {
+    const last = normalizeLevel(this.store.lastLevel || 1);
+    return this.isUnlocked(last) && this.starsOf(last) === 0 ? last : this.unlockedLevel;
   }
 
-  updateLevelPreview() {
-    const lv = Math.max(1, parseInt(this.dom.levelInput.value, 10) || 1);
-    this.dom.levelPreview.textContent = levelPreview(lv);
+  showScreen(name) {
+    const d = this.dom;
+    this.screen = name;
+    d.screenHome.hidden = name !== 'home';
+    d.screenLevels.hidden = name !== 'levels';
+    d.screenGame.hidden = name !== 'game';
+    // 隠れている間はキャンバスの実寸が 0 なので、見えてから測り直す
+    if (name === 'game') requestAnimationFrame(() => this.renderer.resize(this.board.size));
+  }
+
+  showHome() {
+    const d = this.dom;
+    this.showScreen('home');
+    // '#' が残らないように履歴ごと書き換える（対応していなければ諦める）
+    try {
+      history.replaceState(null, '', location.pathname + location.search);
+    } catch { /* file:// などでは無視 */ }
+
+    const lv = this.startLevel;
+    const continuing = this.starsOf(lv) === 0 && lv > 1 && lv === normalizeLevel(this.store.lastLevel);
+    d.btnStartLabel.textContent = continuing ? 'つづきから' : 'ゲームスタート';
+    d.btnStartSub.textContent = `レベル ${lv} ／ ${levelPreview(lv)}`;
+
+    d.homeProgress.innerHTML = '';
+    const chips = [
+      ['クリア', this.clearedCount],
+      ['星', this.totalStars],
+      ['最高レベル', this.unlockedLevel],
+    ];
+    for (const [k, n] of chips) {
+      const el = document.createElement('span');
+      el.innerHTML = `${k}<b>${n}</b>`;
+      d.homeProgress.appendChild(el);
+    }
+  }
+
+  pageOf(level) {
+    return Math.floor((normalizeLevel(level) - 1) / PAGE_SIZE);
+  }
+
+  /**
+   * レベル一覧。無限に続くのでページ送りで見せる。
+   * 開いていないレベルは押せず、クリア済みには取った星が残る。
+   */
+  showLevels(page = this.pageOf(this.level)) {
+    const d = this.dom;
+    this.page = Math.max(0, page);
+    this.showScreen('levels');
+
+    const from = this.page * PAGE_SIZE + 1;
+    const to = from + PAGE_SIZE - 1;
+    d.pageRange.textContent = `${from} – ${to}`;
+    d.btnPagePrev.disabled = this.page === 0;
+    d.levelsSubtitle.textContent = `${this.clearedCount} レベルクリア ／ 星 ${this.totalStars}`;
+
+    d.levelGrid.innerHTML = '';
+    for (let lv = from; lv <= to; lv++) {
+      const unlocked = this.isUnlocked(lv);
+      const stars = this.starsOf(lv);
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'level-cell';
+      if (!unlocked) cell.classList.add('locked');
+      else if (lv === this.unlockedLevel) cell.classList.add('current');
+      else if (stars > 0) cell.classList.add('done');
+
+      if (unlocked) {
+        cell.dataset.level = String(lv);
+        cell.innerHTML = `<span class="n">${lv}</span>`
+          + `<span class="stars${stars ? '' : ' none'}">${'★'.repeat(stars) || '☆☆☆'}</span>`;
+        cell.title = `レベル ${lv}：${levelPreview(lv)}`;
+      } else {
+        cell.disabled = true;
+        cell.setAttribute('aria-label', `レベル ${lv}（未開放）`);
+        cell.innerHTML = '<svg class="lock" viewBox="0 0 24 24" aria-hidden="true">'
+          + '<rect x="5" y="10.5" width="14" height="9.5" rx="2.6"/>'
+          + '<path d="M8.4 10.5V7.9a3.6 3.6 0 0 1 7.2 0v2.6"/></svg>'
+          + `<span class="stars none">${lv}</span>`;
+      }
+      d.levelGrid.appendChild(cell);
+    }
+  }
+
+  showGame() {
+    if (this.screen !== 'game') this.showScreen('game');
   }
 
   applySettings() {
@@ -2938,10 +2763,13 @@ class Game {
     el.hidden = false;
   }
 
+  anyModalOpen() {
+    return !this.dom.modalRules.hidden || !this.dom.modalSettings.hidden;
+  }
+
   closeModals() {
     this.dom.modalRules.hidden = true;
     this.dom.modalSettings.hidden = true;
-    this.dom.modalLevels.hidden = true;
   }
 
   async share() {
@@ -2970,8 +2798,8 @@ class Game {
   updateLegend() {
     const d = this.dom;
     if (!d.legend) return;
-    const counts = new Array(PALETTE.length).fill(0);
-    for (const p of this.board.pieces.values()) counts[p.color]++;
+    const counts = new Map();
+    for (const p of this.board.pieces.values()) counts.set(p.color, (counts.get(p.color) || 0) + 1);
 
     const colors = this.activeColors || [];
     if (d.legend.childElementCount !== colors.length) {
@@ -2979,18 +2807,23 @@ class Game {
       for (const i of colors) {
         const chip = document.createElement('div');
         chip.className = 'legend-chip';
-        chip.innerHTML = `<span class="legend-swatch" style="background:${PALETTE[i].base}"></span><span class="legend-n">0</span>`;
-        chip.title = `${PALETTE[i].name}の残りブロック数`;
+        chip.innerHTML = `<span class="legend-swatch" style="background:${colorFor(i).base}"></span><span class="legend-n">0</span>`;
+        chip.title = `${colorFor(i).name}の残りブロック数`;
         d.legend.appendChild(chip);
       }
-      d.legend.style.gridTemplateColumns = `repeat(${Math.max(1, colors.length)}, 1fr)`;
+      // 色数はレベルによって変わる。1行6個までで、行が均等に埋まる列数にする
+      const rows = Math.max(1, Math.ceil(colors.length / 6));
+      const cols = Math.max(1, Math.ceil(colors.length / rows));
+      d.legend.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+      d.legend.style.maxWidth = `${cols * 76}px`;
     }
     colors.forEach((color, i) => {
       const chip = d.legend.children[i];
       if (!chip) return;
-      chip.querySelector('.legend-n').textContent = String(counts[color]);
-      chip.classList.toggle('empty', counts[color] === 0);
-      chip.classList.toggle('lone', counts[color] === 1);
+      const n = counts.get(color) || 0;
+      chip.querySelector('.legend-n').textContent = String(n);
+      chip.classList.toggle('empty', n === 0);
+      chip.classList.toggle('lone', n === 1);
     });
   }
 
@@ -3000,13 +2833,7 @@ class Game {
     d.statPar.textContent = this.puzzle ? String(this.puzzle.par) : '-';
     d.statLeft.textContent = String(this.board.pieceCount);
     d.statLevel.textContent = String(this.level);
-    if (this.puzzle) {
-      // 盤面を空にしたあとは実物から読めないので、レベルの想定構成を出す
-      const kinds = pieceKindLabel(this.board) || levelFlavor(this.puzzle.config);
-      d.levelInfo.textContent = `${this.puzzle.size}×${this.puzzle.size} ／ ${kinds} ／ ${this.puzzle.colors}色`;
-    } else {
-      d.levelInfo.textContent = '\u00a0';
-    }
+    d.levelInfo.textContent = this.puzzle ? levelSummary(this.puzzle.config) : '\u00a0';
 
     const done = this.initialCells ? (this.initialCells - this.board.filledCells) / this.initialCells : 0;
     d.progressBar.style.width = `${Math.round(done * 100)}%`;
@@ -3024,45 +2851,49 @@ class Game {
 
   // ------------------------------------------------------------ 結果表示
 
+  /** クリアを記録する。星は最高記録だけを残し、次のレベルが開く */
   recordResult() {
     if (!this.puzzle) return;
     const key = String(this.level);
-    this.store.best = this.store.best || {};
-    const prev = this.store.best[key];
-    this.newRecord = prev == null || this.moves < prev;
-    if (this.newRecord) this.store.best[key] = this.moves;
-    this.store.cleared = (this.store.cleared || 0) + (prev == null ? 1 : 0);
-    // クリアしたら次のレベルが解放される
-    this.store.bestLevel = Math.max(this.store.bestLevel || 1, this.level + 1);
-    saveStore(this.store);
-  }
+    const stars = starsFor(this.moves, this.puzzle.par);
 
-  rankOf(moves, par) {
-    if (moves <= par) return { label: 'PERFECT', badge: '👑', gold: true };
-    if (moves <= par + 2) return { label: 'GREAT', badge: '🎉', gold: false };
-    if (moves <= par + 5) return { label: 'GOOD', badge: '✨', gold: false };
-    return { label: 'CLEAR', badge: '🎊', gold: false };
+    this.store.best = this.store.best || {};
+    this.store.stars = this.store.stars || {};
+    const prevBest = this.store.best[key];
+    const prevStars = this.store.stars[key] || 0;
+
+    this.newRecord = prevBest == null || this.moves < prevBest;
+    if (this.newRecord) this.store.best[key] = this.moves;
+    this.store.stars[key] = Math.max(prevStars, stars);
+
+    // クリアしたら次のレベルが開く
+    this.store.unlocked = Math.max(this.unlockedLevel, this.level + 1);
+    saveStore(this.store);
+
+    this.lastStars = stars;
+    this.newStars = stars > prevStars;
   }
 
   showWin() {
     const par = this.puzzle.par;
-    const rank = this.rankOf(this.moves, par);
+    const stars = this.lastStars;
     const best = (this.store.best || {})[String(this.level)];
     const next = levelConfig(this.level + 1);
-    const grew = next.size > this.puzzle.size;
-    const harder = next.mix.triple > this.puzzle.config.mix.triple + 0.001
-      || next.mix.double > this.puzzle.config.mix.double + 0.001;
+    const badges = { 3: '👑', 2: '🎉', 1: '🎊' };
 
-    let text = this.moves <= par
+    let text = stars === 3
       ? '保証解と同じかそれ以上。最初から最後まで読み切りました。'
-      : 'おめでとう！ より短い手順が必ず存在します。';
-    if (grew) text += ` 次は盤面が ${next.size}×${next.size} に広がります。`;
-    else if (harder) text += ' 次はブロックがもう少し複雑になります。';
+      : `おめでとう！ ${par}手で解ける手順が必ず存在します。`;
+    if (next.size > this.puzzle.size) text += ` 次は盤面が ${next.size}×${next.size} に広がります。`;
+    else if (next.colors > this.puzzle.colors) text += ` 次は色が ${next.colors} 色に増えます。`;
+    else if (next.setupMoves > this.puzzle.config.setupMoves) text += ' 次は仕込み手が増えます。';
+    else if (next.forced && !this.puzzle.config.forced) text += ' 次から手順は実質一本道になります。';
 
     this.showOverlay({
-      badge: rank.badge,
+      badge: badges[stars] || '🎊',
       title: `レベル ${this.level} クリア！`,
-      titleClass: rank.gold ? 'gold' : '',
+      titleClass: stars === 3 ? 'gold' : '',
+      stars,
       text,
       stats: [
         { k: 'あなた', n: this.moves },
@@ -3073,26 +2904,9 @@ class Game {
       actions: [
         { label: `レベル ${this.level + 1} へ`, primary: true, onClick: () => this.nextLevel() },
         { label: 'もう一度あそぶ', onClick: () => this.restart() },
+        { label: 'レベル一覧', onClick: () => this.showLevels() },
       ],
-      extra: rank.label + (this.newRecord ? '  ／ 自己ベスト更新!' : ''),
-    });
-  }
-
-  showDead() {
-    this.showOverlay({
-      badge: '🧊',
-      title: 'デッドロック',
-      text: 'どのブロックをどう滑らせても、同色を接触させられません。運ではなく手順の帰結です ―― 戻して読み直しましょう。',
-      stats: [
-        { k: '手数', n: this.moves },
-        { k: 'PAR', n: this.puzzle.par },
-        { k: '残り', n: this.board.pieceCount },
-      ],
-      actions: [
-        { label: '1手戻す', primary: true, onClick: () => this.undo() },
-        { label: '最初から', onClick: () => this.restart() },
-        { label: 'レベル選択', onClick: () => { this.hideOverlay(); this.openLevelPicker(); } },
-      ],
+      extra: this.newStars ? '自己ベスト更新!' : '',
     });
   }
 
@@ -3102,6 +2916,16 @@ class Game {
     d.overlayTitle.textContent = cfg.title || '';
     d.overlayTitle.className = cfg.titleClass || '';
     d.overlayText.textContent = cfg.text || '';
+
+    d.overlayStars.innerHTML = '';
+    if (cfg.stars) {
+      for (let i = 1; i <= 3; i++) {
+        const s = document.createElement('i');
+        s.textContent = '★';
+        if (i > cfg.stars) s.className = 'off';
+        d.overlayStars.appendChild(s);
+      }
+    }
 
     d.overlayExtra.textContent = cfg.extra || '';
 
@@ -3165,14 +2989,36 @@ class Game {
 }
 
 // ===== src/main.js =====
-// 起動。DOM を集めて Game に渡し、URL のハッシュから最初の問題を決める。
+// 起動。DOM を集めて Game に渡し、URL のハッシュから最初の画面を決める。
 
 const $ = (id) => document.getElementById(id);
 
 const dom = {
+  // 画面
+  screenHome: $('screen-home'),
+  screenLevels: $('screen-levels'),
+  screenGame: $('screen-game'),
+
   canvas: $('board'),
   toast: $('toast'),
 
+  // ホーム
+  btnStart: $('btn-start'),
+  btnStartLabel: $('btn-start-label'),
+  btnStartSub: $('btn-start-sub'),
+  btnOpenLevels: $('btn-open-levels'),
+  homeProgress: $('home-progress'),
+
+  // レベル一覧
+  levelGrid: $('level-grid'),
+  levelsSubtitle: $('levels-subtitle'),
+  pageRange: $('page-range'),
+  btnLevelsBack: $('btn-levels-back'),
+  btnLevelsJump: $('btn-levels-jump'),
+  btnPagePrev: $('btn-page-prev'),
+  btnPageNext: $('btn-page-next'),
+
+  // ゲーム
   statLevel: $('stat-level'),
   statMoves: $('stat-moves'),
   hudMoves: $('hud-moves'),
@@ -3185,6 +3031,7 @@ const dom = {
   overlay: $('overlay'),
   overlayBadge: $('overlay-badge'),
   overlayTitle: $('overlay-title'),
+  overlayStars: $('overlay-stars'),
   overlayText: $('overlay-text'),
   overlayExtra: $('overlay-extra'),
   overlayStats: $('overlay-stats'),
@@ -3194,23 +3041,20 @@ const dom = {
   btnHint: $('btn-hint'),
   btnRestart: $('btn-restart'),
   btnLevels: $('btn-levels'),
-  btnRules: $('btn-rules'),
-  btnSettings: $('btn-settings'),
+  btnHome: $('btn-home'),
 
+  // シート（ホームとゲーム、両方から開ける）
+  btnRules: $('btn-rules'),
+  btnRules2: $('btn-rules-2'),
+  btnSettings: $('btn-settings'),
+  btnSettings2: $('btn-settings-2'),
   modalRules: $('modal-rules'),
   modalSettings: $('modal-settings'),
-  modalLevels: $('modal-levels'),
   optSound: $('opt-sound'),
   optHaptics: $('opt-haptics'),
   optSymbols: $('opt-symbols'),
   optGhost: $('opt-ghost'),
   optCalm: $('opt-calm'),
-  levelInput: $('level-input'),
-  levelPreview: $('level-preview'),
-  btnLevelPrev: $('btn-level-prev'),
-  btnLevelNext: $('btn-level-next'),
-  btnLevelGo: $('btn-level-go'),
-  btnLevelBest: $('btn-level-best'),
   btnShare: $('btn-share'),
 };
 
@@ -3224,8 +3068,10 @@ function levelFromHash() {
   return Math.max(1, parseInt(m[1], 10));
 }
 
-// 優先順位: URL のレベル > 前回遊んでいたレベル > レベル1
-game.load(levelFromHash() || game.store.lastLevel || 1);
+// リンクでレベルを指定されたときだけ直行する。そうでなければホームから始める
+const linked = levelFromHash();
+if (linked) game.load(linked);
+else game.showHome();
 
 window.addEventListener('hashchange', () => {
   const lv = levelFromHash();
@@ -3238,7 +3084,7 @@ try {
     dom.modalRules.hidden = false;
     localStorage.setItem('slidepop.seenRules', '1');
   }
-} catch { /* 無視 */ }
+} catch { /* プライベートモードなどでは無視 */ }
 
 window.slidePop = game;
 

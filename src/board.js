@@ -9,11 +9,13 @@
 // 不変条件: どの手の直後も「同色ブロック同士は隣接していない」。
 // 触れた瞬間に消えるため、この性質は初期盤面から永久に保たれる。
 // この不変条件があるおかげで「動かしたブロックに触れた相手だけが消える」ことが確定する。
+//
+// 敗北条件は無い。盤面には同じ色がちょうど2個ずつしか無く、消せる手が
+// 見当たらない局面でも、何も消さない手で通路を作れば必ず解ける。
 
 import { DIRS, DIR_KEYS } from './shapes.js';
 
 export const BOARD_SIZE = 12;
-export const COLOR_COUNT = 6;
 
 export const EMPTY = -1;
 export const WALL = -2;
@@ -79,15 +81,13 @@ export class Board {
     return false;
   }
 
-  addPiece(color, cells, shape = '', parts = null) {
+  addPiece(color, cells, shape = '') {
     const id = this.nextId++;
     const piece = {
       id,
       color,
       cells: cells.map(([x, y]) => [x, y]),
       shape,
-      // cells と並びを揃えた「何番目のテトロミノ由来か」。連結ピースの継ぎ目描画に使う
-      parts: parts ? parts.slice() : cells.map(() => 0),
     };
     this.pieces.set(id, piece);
     for (const [x, y] of piece.cells) this.grid[y * this.size + x] = id;
@@ -278,26 +278,6 @@ export class Board {
     return out;
   }
 
-  /**
-   * デッドロック判定。
-   * 仕様上の敗北条件は「どの手でも同色接触が起きない」だが、
-   * 「消去しない手が通路をずらして次の手を生む」ケースを誤って敗北にしないよう、
-   * 2 手先まで見る（消去手が 2 手以内にひとつも無ければ詰み）。
-   */
-  isDeadlock() {
-    if (this.pieces.size === 0) return false;
-    if (this.findClearingMoves().length > 0) return false;
-    const moves = this.allMoves();
-    for (const m of moves) {
-      const snap = this.snapshot();
-      this.movePiece(m.id, m.dir, m.steps);
-      const found = this.findClearingMoves().length > 0;
-      this.restore(snap);
-      if (found) return false;
-    }
-    return true;
-  }
-
   /** 盤面の完全なスナップショット（Undo 用） */
   snapshot() {
     return {
@@ -306,7 +286,6 @@ export class Board {
         id: p.id,
         color: p.color,
         shape: p.shape,
-        parts: p.parts ? p.parts.slice() : null,
         cells: p.cells.map(([x, y]) => [x, y]),
       })),
     };
@@ -321,7 +300,6 @@ export class Board {
         id: p.id,
         color: p.color,
         shape: p.shape,
-        parts: p.parts ? p.parts.slice() : p.cells.map(() => 0),
         cells: p.cells.map(([x, y]) => [x, y]),
       };
       this.pieces.set(piece.id, piece);

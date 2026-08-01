@@ -132,17 +132,18 @@ test('不変条件: どの手の直後も同色は隣接していない', () => 
   assert.equal(b.hasSameColorContact(), false);
 });
 
-test('デッドロック判定', () => {
+test('同色ペアは、直接ぶつけられなくても通路を作れば消せる', () => {
   const b = new Board(4);
-  // 別色2つだけ。どう動かしても同色接触は起きない
-  put(b, 0, [[0, 0]]);
-  put(b, 1, [[3, 3]]);
-  assert.equal(b.isDeadlock(), true);
+  // 同色2つが対角。1手では触れないが、2手あれば必ず揃う（＝詰みではない）
+  const a = put(b, 0, [[0, 0]]);
+  const c = put(b, 0, [[3, 3]]);
+  assert.equal(b.findClearingMoves().length, 0);
 
-  const c = new Board(4);
-  put(c, 0, [[0, 0]]);
-  put(c, 0, [[3, 3]]);
-  assert.equal(c.isDeadlock(), false);
+  b.applyMove(a.id, 'down');            // 左下へ。まだ触れない
+  assert.equal(b.pieceCount, 2);
+  const res = b.applyMove(c.id, 'left'); // 左端まで滑って隣接 -> 2つとも消える
+  assert.equal(res.cleared.length, 2);
+  assert.equal(b.isEmpty, true);
 });
 
 test('スナップショットの保存と復元', () => {

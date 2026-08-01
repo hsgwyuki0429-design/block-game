@@ -1,49 +1,49 @@
 // ゲーム進行・アニメーション・UI 配線。
+//
+// 画面は3つ（ホーム / レベル一覧 / ゲーム）。同時に見えるのは常に1つだけ。
+// レベルは「ひとつ前をクリアするまで開かない」ので、進行状況は
+// 「解放済みレベル」と「レベルごとの星」だけで表せる。
 
 import { Board } from './board.js';
 import { DIRS } from './shapes.js';
 import { generateLevelAsync } from './generator.js';
-import { levelConfig, normalizeLevel, levelFlavor } from './levels.js';
-import { Renderer, PALETTE } from './render.js';
+import { levelConfig, normalizeLevel, levelSummary } from './levels.js';
+import { Renderer, colorFor } from './render.js';
 import { attachInput } from './input.js';
 import { Sound } from './audio.js';
 
-/**
- * 大量消去の段階評価（セル数）。
- * 色はライト／ダークどちらの背景でも読めるよう中間の明度に寄せてある
- * （縁取りは背景と反対色を敷くので、これで両方に耐える）。
- */
+/** 大量消去の段階評価（セル数）。明るい背景で読める中間の明度に寄せてある */
 const TIERS = [
   { cells: 20, label: 'ミラクル!!!', color: '#e0388f' },
   { cells: 16, label: 'ファンタスティック!!', color: '#e08a00' },
   { cells: 12, label: 'グレイト!', color: '#0f9d63' },
 ];
 
-const STORE_KEY = 'slidepop.v2';
+const STORE_KEY = 'slidepop.v3';
+
+/** レベル一覧の1ページに並べる数 */
+const PAGE_SIZE = 30;
 
 function tierOf(cells) {
   for (const t of TIERS) if (cells >= t.cells) return t;
   return null;
 }
 
-/** 盤面に実際に置かれているブロックの構成を一言で */
-function pieceKindLabel(board) {
-  const sizes = new Set();
-  for (const p of board.pieces.values()) sizes.add(p.cells.length);
-  const label = (n) => (n <= 4 ? 'テトロミノ' : n <= 8 ? '2個つなぎ' : '3個つなぎ');
-  const names = [...sizes].sort((a, b) => a - b).map(label);
-  return [...new Set(names)].join('＋');
+/**
+ * 手数の星評価。
+ *   ★★★ PAR 以内（保証解と同じかそれ以上）
+ *   ★★  PAR+2 以内
+ *   ★   クリア
+ */
+export function starsFor(moves, par) {
+  if (moves <= par) return 3;
+  if (moves <= par + 2) return 2;
+  return 1;
 }
 
-/** レベル選択画面に出す、遊ぶ前のプレビュー文 */
+/** レベル一覧・ホームに出す、遊ぶ前のプレビュー文 */
 export function levelPreview(level) {
-  const cfg = levelConfig(level);
-  const mix = cfg.mix;
-  const parts = [];
-  if (mix.single > 0.001) parts.push(`テトロミノ ${Math.round(mix.single * 100)}%`);
-  if (mix.double > 0.001) parts.push(`2個つなぎ ${Math.round(mix.double * 100)}%`);
-  if (mix.triple > 0.001) parts.push(`3個つなぎ ${Math.round(mix.triple * 100)}%`);
-  return `${cfg.size}×${cfg.size} ／ ${cfg.colors}色 ／ ${parts.join(' ・ ')}`;
+  return levelSummary(levelConfig(level));
 }
 
 function loadStore() {
@@ -77,9 +77,12 @@ export class Game {
     this.history = [];
     this.moves = 0;
     this.hintsUsed = 0;
-    this.status = 'loading';
+    this.status = 'idle';
     this.level = 1;
     this.loadToken = 0;
+    this.screen = 'home';
+    /** レベル一覧のページ（0 始まり） */
+    this.page = 0;
 
     this.anim = null;
     this.invalid = null;
@@ -106,16 +109,49 @@ export class Game {
     requestAnimationFrame((t) => this.loop(t));
   }
 
+  // ------------------------------------------------------------ 進行状況
+
+  /** 遊べる最大レベル。ひとつ前をクリアすると 1 つ増える */
+  get unlockedLevel() {
+    return Math.max(1, Math.floor(this.store.unlocked) || 1);
+  }
+
+  /** そのレベルが開いているか */
+  isUnlocked(level) {
+    return normalizeLevel(level) <= this.unlockedLevel;
+  }
+
+  /** そのレベルで取った星（0 = 未クリア） */
+  starsOf(level) {
+    return (this.store.stars || {})[String(normalizeLevel(level))] || 0;
+  }
+
+  /** 星の総数 */
+  get totalStars() {
+    return Object.values(this.store.stars || {}).reduce((a, b) => a + b, 0);
+  }
+
+  /** クリア済みレベル数 */
+  get clearedCount() {
+    return Object.keys(this.store.stars || {}).length;
+  }
+
   // ------------------------------------------------------------ パズル
 
   /**
    * レベルを読み込む。
-   * 大きな連結ピースの盤面は生成に少し時間がかかるので、非同期版を使って
+   * 上のレベルほど生成に時間がかかるので、非同期版を使って
    * 「生成中」を出しながら待つ（画面が固まらない）。
    */
   async load(level) {
     const lv = normalizeLevel(level);
+    if (!this.isUnlocked(lv)) {
+      this.showLevels(Math.floor((this.unlockedLevel - 1) / PAGE_SIZE));
+      this.toast(`レベル ${lv - 1} をクリアすると開きます`);
+      return;
+    }
     const token = ++this.loadToken;
+    this.showGame();
 
     this.status = 'loading';
     this.anim = null;
@@ -168,15 +204,10 @@ export class Game {
     location.hash = `#L${lv}`;
   }
 
-  /** 到達したことのある最大レベル（未クリアでも「開いたことがある」で更新） */
-  get bestLevel() {
-    return Math.max(1, this.store.bestLevel || 1);
-  }
-
   showLoading(level) {
     const cfg = levelConfig(level);
     this.showOverlay({
-      badge: '🧊',
+      badge: '🧩',
       title: `レベル ${level}`,
       text: `${cfg.size}×${cfg.size} の盤面を組み立てています…`,
       stats: [],
@@ -311,8 +342,8 @@ export class Game {
     const tier = tierOf(cells);
     let sub = tier ? tier.label : null;
     if (this.combo >= 2) sub = sub ? `${sub}  ${this.combo}コンボ` : `${this.combo}コンボ!`;
-    // 段階評価が無いときは、消えた粘土の色そのままで祝う
-    const textColor = tier ? tier.color : PALETTE[color].dark;
+    // 段階評価が無いときは、消えたブロックの色そのままで祝う
+    const textColor = tier ? tier.color : colorFor(color).dark;
     this.renderer.floatText(center.x, center.y, `${cells}個消し！`, sub, textColor);
 
     for (const id of group) this.board.removePiece(id);
@@ -321,6 +352,12 @@ export class Game {
     this.afterMove();
   }
 
+  /**
+   * 手番の後始末。
+   * 「消せる手が無い」ことを敗北にはしない ―― 詰みかけて見える局面でも、
+   * 何も消さない手で通路を作れば必ず解ける（PAR は保証された手数）。
+   * 行き詰まったら「戻す」と「やり直す」がいつでも使える。
+   */
   afterMove() {
     this.updateHud();
     if (this.board.isEmpty) {
@@ -328,12 +365,6 @@ export class Game {
       this.recordResult();
       this.sound.win();
       setTimeout(() => this.showWin(), 640);
-      return;
-    }
-    if (this.board.isDeadlock()) {
-      this.status = 'dead';
-      this.sound.dead();
-      setTimeout(() => this.showDead(), 380);
     }
   }
 
@@ -359,7 +390,9 @@ export class Game {
     if (step) {
       this.hint = { pieceId: step.pieceId, dir: step.dir };
       this.hintsUsed++;
-      this.toast(`保証解の第${this.moves + 1}手：${step.cleared}個まとめて消えます`);
+      this.toast(step.kind === 'setup'
+        ? `保証解の第${this.moves + 1}手：これ自体は何も消えません（後の手のための仕込み）`
+        : `保証解の第${this.moves + 1}手：この色のペアが消えます`);
       this.updateHud();
       return;
     }
@@ -368,11 +401,11 @@ export class Game {
       const best = moves[0];
       this.hint = { pieceId: best.id, dir: best.dir };
       this.hintsUsed++;
-      this.toast(`${best.cleared.length}個（${best.clearedCells}マス）消せる手があります`);
+      this.toast(`${best.clearedCells}マスぶん消せる手があります`);
       this.updateHud();
       return;
     }
-    this.toast('いま消せる手はありません。「戻す」で組み立て直しましょう');
+    this.toast('いま消せる手はありません。通路を作るか、「戻す」で組み立て直しましょう');
   }
 
   // ------------------------------------------------------------ 入力
@@ -412,8 +445,13 @@ export class Game {
       if (k === 'z' || k === 'u' || k === 'backspace') { e.preventDefault(); this.undo(); }
       else if (k === 'h') { e.preventDefault(); this.showHint(); }
       else if (k === 'r') { e.preventDefault(); this.restart(); }
-      else if (k === 'l') { e.preventDefault(); this.openLevelPicker(); }
-      else if (k === 'escape') { this.selected = null; this.ghost = null; this.closeModals(); }
+      else if (k === 'l') { e.preventDefault(); this.showLevels(); }
+      else if (k === 'escape') {
+        this.selected = null;
+        this.ghost = null;
+        if (!this.anyModalOpen()) this.showHome();
+        this.closeModals();
+      }
     });
   }
 
@@ -442,11 +480,32 @@ export class Game {
     d.btnUndo.addEventListener('click', () => this.undo());
     d.btnHint.addEventListener('click', () => this.showHint());
     d.btnRestart.addEventListener('click', () => this.restart());
-    d.btnLevels.addEventListener('click', () => this.openLevelPicker());
-    d.btnRules.addEventListener('click', () => this.openModal(d.modalRules));
-    d.btnSettings.addEventListener('click', () => this.openModal(d.modalSettings));
+    d.btnLevels.addEventListener('click', () => this.showLevels());
+    d.btnHome.addEventListener('click', () => this.showHome());
 
-    for (const modal of [d.modalRules, d.modalSettings, d.modalLevels]) {
+    // ホーム
+    d.btnStart.addEventListener('click', () => this.load(this.startLevel));
+    d.btnOpenLevels.addEventListener('click', () => this.showLevels());
+
+    // レベル一覧
+    d.btnLevelsBack.addEventListener('click', () => this.showHome());
+    d.btnLevelsJump.addEventListener('click', () => this.showLevels(this.pageOf(this.unlockedLevel)));
+    d.btnPagePrev.addEventListener('click', () => this.showLevels(this.page - 1));
+    d.btnPageNext.addEventListener('click', () => this.showLevels(this.page + 1));
+    d.levelGrid.addEventListener('click', (e) => {
+      const cell = e.target.closest && e.target.closest('[data-level]');
+      if (!cell) return;
+      this.load(parseInt(cell.dataset.level, 10));
+    });
+
+    for (const el of [d.btnRules, d.btnRules2]) {
+      if (el) el.addEventListener('click', () => this.openModal(d.modalRules));
+    }
+    for (const el of [d.btnSettings, d.btnSettings2]) {
+      if (el) el.addEventListener('click', () => this.openModal(d.modalSettings));
+    }
+
+    for (const modal of [d.modalRules, d.modalSettings]) {
       modal.addEventListener('click', (e) => {
         // 閉じるボタンの中身（SVG）が押されることもあるので closest で辿る
         if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) {
@@ -474,41 +533,102 @@ export class Game {
       });
     }
 
-    const stepLevel = (delta) => {
-      const v = Math.max(1, (parseInt(d.levelInput.value, 10) || 1) + delta);
-      d.levelInput.value = String(v);
-      this.updateLevelPreview();
-    };
-    d.btnLevelPrev.addEventListener('click', () => stepLevel(-1));
-    d.btnLevelNext.addEventListener('click', () => stepLevel(1));
-    d.levelInput.addEventListener('input', () => this.updateLevelPreview());
-    d.levelInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') d.btnLevelGo.click();
-    });
-    d.btnLevelGo.addEventListener('click', () => {
-      const lv = Math.max(1, parseInt(d.levelInput.value, 10) || 1);
-      this.closeModals();
-      this.load(lv);
-    });
-    d.btnLevelBest.addEventListener('click', () => {
-      d.levelInput.value = String(this.bestLevel);
-      this.updateLevelPreview();
-      this.closeModals();
-      this.load(this.bestLevel);
-    });
     d.btnShare.addEventListener('click', () => this.share());
   }
 
-  openLevelPicker() {
-    this.dom.levelInput.value = String(this.level);
-    this.updateLevelPreview();
-    this.dom.btnLevelBest.disabled = this.bestLevel === this.level;
-    this.openModal(this.dom.modalLevels);
+  // ------------------------------------------------------------ 画面の切り替え
+
+  /** 「ゲームスタート」が始めるレベル。まだ挑戦中のものがあればそれを続ける */
+  get startLevel() {
+    const last = normalizeLevel(this.store.lastLevel || 1);
+    return this.isUnlocked(last) && this.starsOf(last) === 0 ? last : this.unlockedLevel;
   }
 
-  updateLevelPreview() {
-    const lv = Math.max(1, parseInt(this.dom.levelInput.value, 10) || 1);
-    this.dom.levelPreview.textContent = levelPreview(lv);
+  showScreen(name) {
+    const d = this.dom;
+    this.screen = name;
+    d.screenHome.hidden = name !== 'home';
+    d.screenLevels.hidden = name !== 'levels';
+    d.screenGame.hidden = name !== 'game';
+    // 隠れている間はキャンバスの実寸が 0 なので、見えてから測り直す
+    if (name === 'game') requestAnimationFrame(() => this.renderer.resize(this.board.size));
+  }
+
+  showHome() {
+    const d = this.dom;
+    this.showScreen('home');
+    // '#' が残らないように履歴ごと書き換える（対応していなければ諦める）
+    try {
+      history.replaceState(null, '', location.pathname + location.search);
+    } catch { /* file:// などでは無視 */ }
+
+    const lv = this.startLevel;
+    const continuing = this.starsOf(lv) === 0 && lv > 1 && lv === normalizeLevel(this.store.lastLevel);
+    d.btnStartLabel.textContent = continuing ? 'つづきから' : 'ゲームスタート';
+    d.btnStartSub.textContent = `レベル ${lv} ／ ${levelPreview(lv)}`;
+
+    d.homeProgress.innerHTML = '';
+    const chips = [
+      ['クリア', this.clearedCount],
+      ['星', this.totalStars],
+      ['最高レベル', this.unlockedLevel],
+    ];
+    for (const [k, n] of chips) {
+      const el = document.createElement('span');
+      el.innerHTML = `${k}<b>${n}</b>`;
+      d.homeProgress.appendChild(el);
+    }
+  }
+
+  pageOf(level) {
+    return Math.floor((normalizeLevel(level) - 1) / PAGE_SIZE);
+  }
+
+  /**
+   * レベル一覧。無限に続くのでページ送りで見せる。
+   * 開いていないレベルは押せず、クリア済みには取った星が残る。
+   */
+  showLevels(page = this.pageOf(this.level)) {
+    const d = this.dom;
+    this.page = Math.max(0, page);
+    this.showScreen('levels');
+
+    const from = this.page * PAGE_SIZE + 1;
+    const to = from + PAGE_SIZE - 1;
+    d.pageRange.textContent = `${from} – ${to}`;
+    d.btnPagePrev.disabled = this.page === 0;
+    d.levelsSubtitle.textContent = `${this.clearedCount} レベルクリア ／ 星 ${this.totalStars}`;
+
+    d.levelGrid.innerHTML = '';
+    for (let lv = from; lv <= to; lv++) {
+      const unlocked = this.isUnlocked(lv);
+      const stars = this.starsOf(lv);
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'level-cell';
+      if (!unlocked) cell.classList.add('locked');
+      else if (lv === this.unlockedLevel) cell.classList.add('current');
+      else if (stars > 0) cell.classList.add('done');
+
+      if (unlocked) {
+        cell.dataset.level = String(lv);
+        cell.innerHTML = `<span class="n">${lv}</span>`
+          + `<span class="stars${stars ? '' : ' none'}">${'★'.repeat(stars) || '☆☆☆'}</span>`;
+        cell.title = `レベル ${lv}：${levelPreview(lv)}`;
+      } else {
+        cell.disabled = true;
+        cell.setAttribute('aria-label', `レベル ${lv}（未開放）`);
+        cell.innerHTML = '<svg class="lock" viewBox="0 0 24 24" aria-hidden="true">'
+          + '<rect x="5" y="10.5" width="14" height="9.5" rx="2.6"/>'
+          + '<path d="M8.4 10.5V7.9a3.6 3.6 0 0 1 7.2 0v2.6"/></svg>'
+          + `<span class="stars none">${lv}</span>`;
+      }
+      d.levelGrid.appendChild(cell);
+    }
+  }
+
+  showGame() {
+    if (this.screen !== 'game') this.showScreen('game');
   }
 
   applySettings() {
@@ -521,10 +641,13 @@ export class Game {
     el.hidden = false;
   }
 
+  anyModalOpen() {
+    return !this.dom.modalRules.hidden || !this.dom.modalSettings.hidden;
+  }
+
   closeModals() {
     this.dom.modalRules.hidden = true;
     this.dom.modalSettings.hidden = true;
-    this.dom.modalLevels.hidden = true;
   }
 
   async share() {
@@ -553,8 +676,8 @@ export class Game {
   updateLegend() {
     const d = this.dom;
     if (!d.legend) return;
-    const counts = new Array(PALETTE.length).fill(0);
-    for (const p of this.board.pieces.values()) counts[p.color]++;
+    const counts = new Map();
+    for (const p of this.board.pieces.values()) counts.set(p.color, (counts.get(p.color) || 0) + 1);
 
     const colors = this.activeColors || [];
     if (d.legend.childElementCount !== colors.length) {
@@ -562,18 +685,23 @@ export class Game {
       for (const i of colors) {
         const chip = document.createElement('div');
         chip.className = 'legend-chip';
-        chip.innerHTML = `<span class="legend-swatch" style="background:${PALETTE[i].base}"></span><span class="legend-n">0</span>`;
-        chip.title = `${PALETTE[i].name}の残りブロック数`;
+        chip.innerHTML = `<span class="legend-swatch" style="background:${colorFor(i).base}"></span><span class="legend-n">0</span>`;
+        chip.title = `${colorFor(i).name}の残りブロック数`;
         d.legend.appendChild(chip);
       }
-      d.legend.style.gridTemplateColumns = `repeat(${Math.max(1, colors.length)}, 1fr)`;
+      // 色数はレベルによって変わる。1行6個までで、行が均等に埋まる列数にする
+      const rows = Math.max(1, Math.ceil(colors.length / 6));
+      const cols = Math.max(1, Math.ceil(colors.length / rows));
+      d.legend.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+      d.legend.style.maxWidth = `${cols * 76}px`;
     }
     colors.forEach((color, i) => {
       const chip = d.legend.children[i];
       if (!chip) return;
-      chip.querySelector('.legend-n').textContent = String(counts[color]);
-      chip.classList.toggle('empty', counts[color] === 0);
-      chip.classList.toggle('lone', counts[color] === 1);
+      const n = counts.get(color) || 0;
+      chip.querySelector('.legend-n').textContent = String(n);
+      chip.classList.toggle('empty', n === 0);
+      chip.classList.toggle('lone', n === 1);
     });
   }
 
@@ -583,13 +711,7 @@ export class Game {
     d.statPar.textContent = this.puzzle ? String(this.puzzle.par) : '-';
     d.statLeft.textContent = String(this.board.pieceCount);
     d.statLevel.textContent = String(this.level);
-    if (this.puzzle) {
-      // 盤面を空にしたあとは実物から読めないので、レベルの想定構成を出す
-      const kinds = pieceKindLabel(this.board) || levelFlavor(this.puzzle.config);
-      d.levelInfo.textContent = `${this.puzzle.size}×${this.puzzle.size} ／ ${kinds} ／ ${this.puzzle.colors}色`;
-    } else {
-      d.levelInfo.textContent = '\u00a0';
-    }
+    d.levelInfo.textContent = this.puzzle ? levelSummary(this.puzzle.config) : '\u00a0';
 
     const done = this.initialCells ? (this.initialCells - this.board.filledCells) / this.initialCells : 0;
     d.progressBar.style.width = `${Math.round(done * 100)}%`;
@@ -607,45 +729,49 @@ export class Game {
 
   // ------------------------------------------------------------ 結果表示
 
+  /** クリアを記録する。星は最高記録だけを残し、次のレベルが開く */
   recordResult() {
     if (!this.puzzle) return;
     const key = String(this.level);
-    this.store.best = this.store.best || {};
-    const prev = this.store.best[key];
-    this.newRecord = prev == null || this.moves < prev;
-    if (this.newRecord) this.store.best[key] = this.moves;
-    this.store.cleared = (this.store.cleared || 0) + (prev == null ? 1 : 0);
-    // クリアしたら次のレベルが解放される
-    this.store.bestLevel = Math.max(this.store.bestLevel || 1, this.level + 1);
-    saveStore(this.store);
-  }
+    const stars = starsFor(this.moves, this.puzzle.par);
 
-  rankOf(moves, par) {
-    if (moves <= par) return { label: 'PERFECT', badge: '👑', gold: true };
-    if (moves <= par + 2) return { label: 'GREAT', badge: '🎉', gold: false };
-    if (moves <= par + 5) return { label: 'GOOD', badge: '✨', gold: false };
-    return { label: 'CLEAR', badge: '🎊', gold: false };
+    this.store.best = this.store.best || {};
+    this.store.stars = this.store.stars || {};
+    const prevBest = this.store.best[key];
+    const prevStars = this.store.stars[key] || 0;
+
+    this.newRecord = prevBest == null || this.moves < prevBest;
+    if (this.newRecord) this.store.best[key] = this.moves;
+    this.store.stars[key] = Math.max(prevStars, stars);
+
+    // クリアしたら次のレベルが開く
+    this.store.unlocked = Math.max(this.unlockedLevel, this.level + 1);
+    saveStore(this.store);
+
+    this.lastStars = stars;
+    this.newStars = stars > prevStars;
   }
 
   showWin() {
     const par = this.puzzle.par;
-    const rank = this.rankOf(this.moves, par);
+    const stars = this.lastStars;
     const best = (this.store.best || {})[String(this.level)];
     const next = levelConfig(this.level + 1);
-    const grew = next.size > this.puzzle.size;
-    const harder = next.mix.triple > this.puzzle.config.mix.triple + 0.001
-      || next.mix.double > this.puzzle.config.mix.double + 0.001;
+    const badges = { 3: '👑', 2: '🎉', 1: '🎊' };
 
-    let text = this.moves <= par
+    let text = stars === 3
       ? '保証解と同じかそれ以上。最初から最後まで読み切りました。'
-      : 'おめでとう！ より短い手順が必ず存在します。';
-    if (grew) text += ` 次は盤面が ${next.size}×${next.size} に広がります。`;
-    else if (harder) text += ' 次はブロックがもう少し複雑になります。';
+      : `おめでとう！ ${par}手で解ける手順が必ず存在します。`;
+    if (next.size > this.puzzle.size) text += ` 次は盤面が ${next.size}×${next.size} に広がります。`;
+    else if (next.colors > this.puzzle.colors) text += ` 次は色が ${next.colors} 色に増えます。`;
+    else if (next.setupMoves > this.puzzle.config.setupMoves) text += ' 次は仕込み手が増えます。';
+    else if (next.forced && !this.puzzle.config.forced) text += ' 次から手順は実質一本道になります。';
 
     this.showOverlay({
-      badge: rank.badge,
+      badge: badges[stars] || '🎊',
       title: `レベル ${this.level} クリア！`,
-      titleClass: rank.gold ? 'gold' : '',
+      titleClass: stars === 3 ? 'gold' : '',
+      stars,
       text,
       stats: [
         { k: 'あなた', n: this.moves },
@@ -656,26 +782,9 @@ export class Game {
       actions: [
         { label: `レベル ${this.level + 1} へ`, primary: true, onClick: () => this.nextLevel() },
         { label: 'もう一度あそぶ', onClick: () => this.restart() },
+        { label: 'レベル一覧', onClick: () => this.showLevels() },
       ],
-      extra: rank.label + (this.newRecord ? '  ／ 自己ベスト更新!' : ''),
-    });
-  }
-
-  showDead() {
-    this.showOverlay({
-      badge: '🧊',
-      title: 'デッドロック',
-      text: 'どのブロックをどう滑らせても、同色を接触させられません。運ではなく手順の帰結です ―― 戻して読み直しましょう。',
-      stats: [
-        { k: '手数', n: this.moves },
-        { k: 'PAR', n: this.puzzle.par },
-        { k: '残り', n: this.board.pieceCount },
-      ],
-      actions: [
-        { label: '1手戻す', primary: true, onClick: () => this.undo() },
-        { label: '最初から', onClick: () => this.restart() },
-        { label: 'レベル選択', onClick: () => { this.hideOverlay(); this.openLevelPicker(); } },
-      ],
+      extra: this.newStars ? '自己ベスト更新!' : '',
     });
   }
 
@@ -685,6 +794,16 @@ export class Game {
     d.overlayTitle.textContent = cfg.title || '';
     d.overlayTitle.className = cfg.titleClass || '';
     d.overlayText.textContent = cfg.text || '';
+
+    d.overlayStars.innerHTML = '';
+    if (cfg.stars) {
+      for (let i = 1; i <= 3; i++) {
+        const s = document.createElement('i');
+        s.textContent = '★';
+        if (i > cfg.stars) s.className = 'off';
+        d.overlayStars.appendChild(s);
+      }
+    }
 
     d.overlayExtra.textContent = cfg.extra || '';
 
@@ -747,4 +866,4 @@ export class Game {
   }
 }
 
-export { PALETTE, DIRS };
+export { colorFor, DIRS };

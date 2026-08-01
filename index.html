@@ -3,35 +3,96 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#eef0fb" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0b0b0f" media="(prefers-color-scheme: dark)">
-<meta name="description" content="SLIDE POP! ― 凍った盤面を滑らせて、同色をぶつけて、盤面を空にする空間推理パズル。">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta name="description" content="SLIDE POP! ― 盤面を滑らせて、同色をぶつけて、盤面を空にする空間推理パズル。">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>SLIDE POP!</title>
-<link rel="stylesheet" href="styles.css?v=f6b2c62f75">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef0fb'/><rect x='4' y='5' width='11' height='11' rx='4' fill='%236bb6f7'/><rect x='17' y='5' width='11' height='11' rx='4' fill='%23ff7b8a'/><rect x='4' y='18' width='24' height='9' rx='4' fill='%23b49bf0'/></svg>">
+<link rel="stylesheet" href="styles.css?v=25050a1b44">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
 
-<div id="app">
+<!-- ============================================================ ホーム -->
+<section class="screen screen-home" id="screen-home">
+  <div class="home-inner">
+    <div class="home-mark" aria-hidden="true">
+      <i style="--c:#3f8ede"></i><i style="--c:#d94a41"></i>
+      <i style="--c:#4fa83f"></i><i style="--c:#e0a52c"></i>
+    </div>
+    <h1 class="home-title">SLIDE&nbsp;POP!</h1>
+    <p class="home-lead">滑らせて、ぶつけて、盤面を空にする。</p>
 
-  <!-- 大きなタイトル（現在地） -->
+    <div class="home-progress" id="home-progress"></div>
+
+    <div class="home-actions">
+      <button class="btn btn-primary btn-hero" id="btn-start" type="button">
+        <span id="btn-start-label">ゲームスタート</span>
+        <small id="btn-start-sub">レベル 1</small>
+      </button>
+      <button class="btn btn-plain" id="btn-open-levels" type="button">レベル一覧</button>
+    </div>
+
+    <div class="home-links">
+      <button class="link-btn" id="btn-rules" type="button">あそびかた</button>
+      <button class="link-btn" id="btn-settings" type="button">設定</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ レベル一覧 -->
+<section class="screen screen-levels" id="screen-levels" hidden>
   <header class="nav">
+    <button class="circle-btn" id="btn-levels-back" type="button" aria-label="ホームへ戻る">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+    </button>
+    <div class="nav-title">
+      <h1 class="title">レベル</h1>
+      <p class="subtitle" id="levels-subtitle">&nbsp;</p>
+    </div>
+    <button class="circle-btn" id="btn-levels-jump" type="button" aria-label="いま挑戦中のレベルへ">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.6 14.4 9l5.9.5-4.5 3.9 1.4 5.8L12 16.1 6.8 19.2l1.4-5.8L3.7 9.5 9.6 9z"/></svg>
+    </button>
+  </header>
+
+  <div class="page-pick">
+    <button class="pager" id="btn-page-prev" type="button" aria-label="前のページ">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+    </button>
+    <span class="page-range" id="page-range">1 – 30</span>
+    <button class="pager" id="btn-page-next" type="button" aria-label="次のページ">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 5.5 6.5 6.5-6.5 6.5"/></svg>
+    </button>
+  </div>
+
+  <div class="level-grid" id="level-grid"></div>
+
+  <p class="muted center levels-note">
+    レベルは無限に続きます。ひとつ前のレベルをクリアすると次が開きます。
+  </p>
+</section>
+
+<!-- ============================================================ ゲーム -->
+<section class="screen screen-game" id="screen-game" hidden>
+
+  <header class="nav">
+    <button class="circle-btn" id="btn-home" type="button" aria-label="ホームへ戻る">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+    </button>
     <div class="nav-title">
       <h1 class="title">レベル <span id="stat-level">1</span></h1>
       <p class="subtitle" id="level-info">&nbsp;</p>
     </div>
     <div class="nav-actions">
-      <button class="circle-btn" id="btn-rules" type="button" aria-label="ルール">
+      <button class="circle-btn" id="btn-rules-2" type="button" aria-label="ルール">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.3 9.1a2.75 2.75 0 1 1 3.6 2.6c-.7.25-1.05.8-1.05 1.5v.7"/><circle cx="11.9" cy="17.3" r="1.15" class="fill"/></svg>
       </button>
-      <button class="circle-btn" id="btn-settings" type="button" aria-label="設定">
+      <button class="circle-btn" id="btn-settings-2" type="button" aria-label="設定">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.6v2.1M12 18.3v2.1M20.4 12h-2.1M5.7 12H3.6M17.9 6.1l-1.5 1.5M7.6 16.4l-1.5 1.5M17.9 17.9l-1.5-1.5M7.6 7.6 6.1 6.1"/></svg>
       </button>
     </div>
   </header>
 
-  <!-- 状況（カプセル型セグメント） -->
   <div class="segments">
     <div class="seg" id="hud-moves"><span class="k">手数</span><span class="v" id="stat-moves">0</span></div>
     <div class="seg"><span class="k">PAR</span><span class="v" id="stat-par">–</span></div>
@@ -43,15 +104,14 @@
   <!-- 色ごとの残りブロック数（同色ペアを見つけるための補助） -->
   <div class="legend" id="legend" aria-label="色ごとの残りブロック数"></div>
 
-  <!-- コンテンツ（主役） -->
   <main class="board-wrap">
     <canvas id="board" aria-label="ゲーム盤面"></canvas>
-    <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <div class="overlay" id="overlay" hidden>
       <div class="overlay-card">
         <div class="overlay-badge" id="overlay-badge"></div>
         <h2 id="overlay-title"></h2>
+        <div class="overlay-stars" id="overlay-stars"></div>
         <p id="overlay-text"></p>
         <div class="overlay-extra" id="overlay-extra"></div>
         <div class="overlay-stats" id="overlay-stats"></div>
@@ -60,30 +120,33 @@
     </div>
   </main>
 
-</div>
+  <!-- 下に浮くツールバー。盤面はこの下を通り、ガラス越しに透けて見える -->
+  <nav class="dock">
+    <div class="dock-bar">
+      <button class="dock-item" id="btn-undo" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.2 9h10.3a4.5 4.5 0 0 1 0 9H9"/><path d="M7.7 5.5 4.2 9l3.5 3.5"/></svg>
+        <span>戻す</span>
+      </button>
+      <button class="dock-item" id="btn-hint" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.2 16.4a5.5 5.5 0 1 1 5.6 0v1.2a1.6 1.6 0 0 1-1.6 1.6h-2.4a1.6 1.6 0 0 1-1.6-1.6z"/><path d="M10.4 21.3h3.2"/></svg>
+        <span>ヒント</span>
+      </button>
+      <button class="dock-item" id="btn-restart" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.4-5.3"/><path d="M19.2 4.6V9h-4.4"/></svg>
+        <span>やり直す</span>
+      </button>
+    </div>
+    <button class="dock-circle" id="btn-levels" type="button" aria-label="レベル一覧">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="2.3"/><rect x="13" y="4" width="7" height="7" rx="2.3"/><rect x="4" y="13" width="7" height="7" rx="2.3"/><rect x="13" y="13" width="7" height="7" rx="2.3"/></svg>
+    </button>
+  </nav>
 
-<!-- 下に浮くツールバー。コンテンツはこの下を通り、ガラス越しに透けて見える -->
-<nav class="dock">
-  <div class="dock-bar">
-    <button class="dock-item" id="btn-undo" type="button">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.2 9h10.3a4.5 4.5 0 0 1 0 9H9"/><path d="M7.7 5.5 4.2 9l3.5 3.5"/></svg>
-      <span>戻す</span>
-    </button>
-    <button class="dock-item" id="btn-hint" type="button">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.2 16.4a5.5 5.5 0 1 1 5.6 0v1.2a1.6 1.6 0 0 1-1.6 1.6h-2.4a1.6 1.6 0 0 1-1.6-1.6z"/><path d="M10.4 21.3h3.2"/></svg>
-      <span>ヒント</span>
-    </button>
-    <button class="dock-item" id="btn-restart" type="button">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.4-5.3"/><path d="M19.2 4.6V9h-4.4"/></svg>
-      <span>やり直す</span>
-    </button>
-  </div>
-  <button class="dock-circle" id="btn-levels" type="button" aria-label="レベル選択">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="2.3"/><rect x="13" y="4" width="7" height="7" rx="2.3"/><rect x="4" y="13" width="7" height="7" rx="2.3"/><rect x="13" y="13" width="7" height="7" rx="2.3"/></svg>
-  </button>
-</nav>
+</section>
 
-<!-- ルール -->
+<!-- どの画面からでも出せるよう、トーストは画面の外に置く -->
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- ============================================================ ルール -->
 <div class="sheet" id="modal-rules" hidden>
   <div class="sheet-card">
     <div class="grabber"></div>
@@ -103,9 +166,9 @@
     <section class="rule">
       <div class="rule-num">2</div>
       <div>
-        <h3>同色接触消去 ― 触れた瞬間、全部消える</h3>
-        <p>滑り終えた直後、上下左右で<b>同じ色のブロックが触れていれば、繋がったグループ全体が消えます</b>。列を揃える必要はありません。<br>
-        消える単位は「ブロック」。1個のブロックは自分だけでは消えません（＝必ず2個以上）。</p>
+        <h3>同色接触消去 ― 触れた瞬間、消える</h3>
+        <p>滑り終えた直後、上下左右で<b>同じ色のブロックが触れていれば、その2個が消えます</b>。列を揃える必要はありません。<br>
+        同じ色のブロックは盤面に<b>ちょうど2個ずつ</b>。だから「消す＝その色を1組ぶん片づける」ことになります。</p>
       </div>
     </section>
 
@@ -118,34 +181,29 @@
     </section>
 
     <div class="card">
-      <h3>最大の快感 ―「橋渡し」</h3>
-      <p>離れた2つの同色グループの<b>あいだにブロックを滑り込ませ、3つ以上を一度に繋いで消す</b>手。消えるグループは必ず「動かしたブロック」を経由して繋がります（動かしていない同色同士は決して隣接しないため）。動くブロックは常にハブ ―― この星型構造が見えた瞬間、盤面の見え方が変わります。</p>
+      <h3>PAR と星</h3>
+      <p>すべてのレベルは「解の逆順構築」で作られていて、<b>必ず全消しできること</b>が構造的に保証されています。PAR はその保証された手数。</p>
+      <p><b class="stars-inline">★★★</b> PAR 以内 ／ <b class="stars-inline">★★</b> PAR+2 以内 ／ <b class="stars-inline">★</b> クリア<br>
+      <span class="muted">星はレベル一覧に残ります。詰まっても<b>戻す</b>はいつでもフェアです。</span></p>
     </div>
 
     <div class="card">
       <h3>レベル ― 1 から無限に</h3>
-      <p>レベル1は <b>4×4 にテトロミノ2個、1手</b>。上がるほど盤面が広がり（<b>最大 12×12</b>）、ブロックは
-      <b>テトロミノ → 2個つなぎ → 3個つなぎ</b> と複雑になっていきます。<br>
+      <p>レベル1は <b>4×4 に1色2個、1手</b>。上がるほど盤面が広がり（<b>最大 12×12</b>）、色数もブロックの数も増えていきます。<br>
+      さらに上では<b>「そこだけ見ても意味がわからない仕込み手」</b>や、<b>手順が実質1通りしかない一本道</b>が混ざります。<br>
       <span class="muted">同じレベルなら、どの端末でも必ず同じ盤面です。</span></p>
-    </div>
-
-    <div class="card">
-      <h3>勝敗</h3>
-      <p><b>勝利</b>：盤面のブロックを全て消す。<br>
-      <b>詰み</b>：どう動かしても同色接触を作れない状態。運ではなく手順の帰結なので、<b>戻す</b>はいつでもフェアです。</p>
-      <p class="muted">すべてのレベルは「解の逆順構築」で作られており、<b>必ず全消しできること</b>が構造的に保証されています。PAR は保証された解の手数です。</p>
     </div>
 
     <div class="card">
       <h3>操作</h3>
       <p>ブロックをスワイプ。またはタップで選んで<b>矢印キー</b>。<br>
       ドラッグ中は<b>着地予測ゴースト</b>が停止位置を教えてくれます。<br>
-      <span class="muted">Z=戻す / H=ヒント / R=やり直す / L=レベル選択</span></p>
+      <span class="muted">Z=戻す / H=ヒント / R=やり直す / L=レベル一覧 / Esc=ホーム</span></p>
     </div>
   </div>
 </div>
 
-<!-- 設定 -->
+<!-- ============================================================ 設定 -->
 <div class="sheet" id="modal-settings" hidden>
   <div class="sheet-card sheet-narrow">
     <div class="grabber"></div>
@@ -177,41 +235,11 @@
       </label>
     </div>
 
-    <button class="btn btn-plain" id="btn-share" type="button">このレベルのリンクをコピー</button>
+    <button class="btn btn-plain" id="btn-share" type="button">いま挑戦中のレベルのリンクをコピー</button>
     <p class="muted center">同じレベルなら、どの端末でも必ず同じ盤面になります。</p>
   </div>
 </div>
 
-<!-- レベル選択 -->
-<div class="sheet" id="modal-levels" hidden>
-  <div class="sheet-card sheet-narrow">
-    <div class="grabber"></div>
-    <button class="sheet-close" data-close type="button" aria-label="閉じる">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
-    </button>
-    <h2>レベル</h2>
-
-    <div class="level-pick">
-      <button class="stepper" id="btn-level-prev" type="button" aria-label="前のレベル">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg>
-      </button>
-      <input type="number" id="level-input" min="1" step="1" value="1" inputmode="numeric" aria-label="レベル番号">
-      <button class="stepper" id="btn-level-next" type="button" aria-label="次のレベル">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12"/></svg>
-      </button>
-    </div>
-    <p class="level-preview" id="level-preview">&nbsp;</p>
-
-    <button class="btn btn-primary" id="btn-level-go" type="button">このレベルで遊ぶ</button>
-    <button class="btn btn-plain" id="btn-level-best" type="button">最高到達レベルへ</button>
-
-    <p class="muted center">
-      レベルは無限に続きます。上がるほど盤面が広がり（最大 12×12）、ブロックは
-      テトロミノ → 2個つなぎ → 3個つなぎ と複雑になっていきます。
-    </p>
-  </div>
-</div>
-
-<script defer src="app.js?v=f6b2c62f75"></script>
+<script defer src="app.js?v=25050a1b44"></script>
 </body>
 </html>
