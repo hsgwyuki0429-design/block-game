@@ -40,7 +40,8 @@
 import { Board, BLOCKER } from './board.js';
 import { DIRS, DIR_KEYS, OPPOSITE, PIECES, BLOCKER_SHAPES } from './shapes.js';
 import { makeRng, shuffle } from './rng.js';
-import { levelConfig, levelSeed } from './levels.js';
+import { levelConfig, levelSeed, normalizeLevel } from './levels.js';
+import { LEVEL_DATA } from './levelData.js';
 
 export const DEFAULT_OPTIONS = {
   size: 8,
@@ -952,36 +953,72 @@ export function analyzeSolution(snapshot, solution, size) {
   return { forced, clearAtStart, branchPoints, blindMoves, dryStreak };
 }
 
-/** レベル番号からパズルを作る */
-export function generateLevel(level, overrides = {}) {
-  const config = levelConfig(level);
-  const puzzle = generatePuzzle(levelSeed(config.level), {
-    size: config.size,
-    colors: config.colors,
-    blockers: config.blockers,
-    chainMoves: config.chainMoves,
-    setupMoves: config.setupMoves,
-    forced: config.forced,
-    attempts: config.attempts,
-    ...overrides,
-  });
-  return { ...puzzle, level: config.level, config };
+/**
+ * レベル番号 -> データに焼いてあるパズル。
+ *
+ * 以前はその場で逆順構築していたが、それでは「解ける手順がある」ことしか
+ * 保証できず、実際にはもっと短く解けてしまっていた（PAR 106手の盤面が20手）。
+ * いまは tools/levels.mjs が事前に「到達できる盤面を全部展開して、ゴールから
+ * いちばん遠い配置」を選んである。**PAR は厳密な最短手数**で、近道は存在しない。
+ *
+ * データを使い切ったら先頭に戻る（レベルは無限に続くが、譜面は繰り返す）。
+ */
+export function levelPuzzle(level) {
+  const lv = normalizeLevel(level);
+  const data = LEVEL_DATA[(lv - 1) % LEVEL_DATA.length];
+  const board = new Board(data.size);
+  // ブロックはデータの順に入れる。id が生成時と同じ並びになるので手順がそのまま使える
+  for (const p of data.pieces) {
+    const w = Math.max(...p.s.map((c) => c[0])) - Math.min(...p.s.map((c) => c[0])) + 1;
+    const h = Math.max(...p.s.map((c) => c[1])) - Math.min(...p.s.map((c) => c[1])) + 1;
+    board.addPiece(p.c, p.s, `${w}x${h}`);
+  }
+  const snapshot = board.snapshot();
+  const solution = data.solution.map(([pieceId, dir, distance], i) => ({
+    pieceId,
+    dir,
+    distance,
+    color: board.pieces.get(pieceId).color,
+    kind: i === data.solution.length - 1 ? 'clear' : 'chain',
+  }));
+
+  const colors = new Set();
+  let blockers = 0;
+  for (const piece of board.pieces.values()) {
+    if (piece.color === BLOCKER) blockers++;
+    else colors.add(piece.color);
+  }
+  const analysis = analyzeSolution(snapshot, solution, data.size);
+
+  return {
+    seed: lv,
+    snapshot,
+    solution,
+    par: solution.length,
+    cells: board.filledCells,
+    pieces: board.pieceCount,
+    size: data.size,
+    colors: colors.size,
+    blockers,
+    chainMoves: solution.length - 1,
+    setupMoves: 0,
+    /** 厳密な最短手数（これより短い解き方は存在しない） */
+    optimal: data.optimal,
+    analysis,
+    level: lv,
+    config: levelConfig(lv),
+  };
 }
 
-/** generateLevel の非同期版（画面を固めずに生成する） */
+/** レベル番号からパズルを作る */
+export function generateLevel(level) {
+  return levelPuzzle(level);
+}
+
+/** generateLevel の非同期版（画面を固めないための形だけ合わせてある） */
 export async function generateLevelAsync(level, overrides = {}, onProgress = null) {
-  const config = levelConfig(level);
-  const puzzle = await generatePuzzleAsync(levelSeed(config.level), {
-    size: config.size,
-    colors: config.colors,
-    blockers: config.blockers,
-    chainMoves: config.chainMoves,
-    setupMoves: config.setupMoves,
-    forced: config.forced,
-    attempts: config.attempts,
-    ...overrides,
-  }, onProgress);
-  return { ...puzzle, level: config.level, config };
+  if (onProgress) onProgress(1);
+  return levelPuzzle(level);
 }
 
 function runAttempt(seed, opts, attempt) {

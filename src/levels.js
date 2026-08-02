@@ -24,6 +24,7 @@
 // という順で難しくなる。
 
 import { hashSeed } from './rng.js';
+import { LEVEL_DATA } from './levelData.js';
 
 
 export const MIN_SIZE = 8;
@@ -186,52 +187,50 @@ export function formatTime(seconds) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
+/** レベル -> 焼いてあるデータ（使い切ったら先頭に戻る） */
+export function levelData(level) {
+  return LEVEL_DATA[(normalizeLevel(level) - 1) % LEVEL_DATA.length];
+}
+
 /** レベルの各種パラメータ */
 export function levelConfig(level) {
   const lv = normalizeLevel(level);
-  const colors = colorsForLevel(lv);
-  const size = boardSizeForColors(colors);
-  const chainMoves = chainMovesForLevel(lv);
-  const setupMoves = setupMovesForLevel(lv);
+  const d = levelData(lv);
+  const colors = 1;
   return {
     level: lv,
     colors,
-    size,
-    chainMoves,
-    chainDepth: chainDepthForLevel(lv),
-    blockers: blockersForLevel(lv),
-    setupMoves,
+    size: d.size,
+    blockers: d.pieces.length - 2,
+    fill: d.fill,
+    /** 厳密な最短手数。推定ではない */
+    par: d.optimal,
+    pieces: 2,
+    chainDepth: d.optimal,
+    chainMoves: d.optimal - 1,
+    setupMoves: 0,
     forced: false,
-    /** ブロック数（色数×2） */
-    pieces: colors * 2,
-    /**
-     * 手数の見込み（色数＋追い込み手＋仕込み手）。
-     * 実際の手数は生成してみないと決まらない（巻き戻せる場所が尽きれば浅く、
-     * 初手を塞ぐために足りなければ深くなる）ので、あくまで一覧に出す目安。
-     */
-    par: colors + chainMoves + setupMoves,
-    /** 盤面の埋め率（色つき＋灰色） */
-    fill: (colors * 2 * EST_PIECE_CELLS + blockersForLevel(lv) * 2.5) / (size * size),
-    /** 生成の試行回数 */
-    attempts: attemptsForLevel(lv),
+    attempts: 1,
   };
 }
 
 /** レベルの内容を一言で（見出しの下に出す補足）。遊ぶ前でも出せる */
 export function levelSummary(config) {
-  const parts = [`${config.size}×${config.size}`, `${config.colors}色`];
-  parts.push(`追い込み${config.chainDepth}手`);
-  if (config.blockers > 0) parts.push(`灰${config.blockers}個`);
-  if (config.setupMoves > 0) parts.push(`仕込み${config.setupMoves}手`);
-  if (config.fill >= 0.6) parts.push(`埋め率${Math.round(config.fill * 100)}%`);
-  return parts.join('・');
+  return [
+    `${config.size}×${config.size}`,
+    `最短${config.par}手`,
+    `灰${config.blockers}個`,
+    `埋め率${Math.round(config.fill * 100)}%`,
+  ].join('・');
 }
 
 /** 実際に生成できたパズルの要約（ゲーム画面の見出し下に出す） */
 export function puzzleSummary(puzzle) {
-  const parts = [`${puzzle.size}×${puzzle.size}`, `${puzzle.colors}色`, `PAR ${puzzle.par}手`];
-  if (puzzle.blockers > 0) parts.push(`灰${puzzle.blockers}個`);
   const fill = puzzle.cells / (puzzle.size * puzzle.size);
-  if (fill >= 0.6) parts.push(`埋め率${Math.round(fill * 100)}%`);
-  return parts.join('・');
+  return [
+    `${puzzle.size}×${puzzle.size}`,
+    `最短${puzzle.par}手`,
+    `灰${puzzle.blockers}個`,
+    `埋め率${Math.round(fill * 100)}%`,
+  ].join('・');
 }

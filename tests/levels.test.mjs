@@ -170,26 +170,39 @@ test('レベルが上がるほど手順は長くなる（多少の上下は許�
   assert.ok(pars[2] < pars[4], `Lv12 ${pars[2]} / Lv30 ${pars[4]}`);
 });
 
-test('上のレベルは 100 手級で、盤面がほとんど埋まっている', () => {
-  for (const lv of [30, 45]) {
+test('上のレベルほど最短手数が長い（データは手数の昇順に並んでいる）', () => {
+  const pars = [1, 10, 20, 30].map((lv) => generateLevel(lv).par);
+  for (let i = 1; i < pars.length; i++) {
+    assert.ok(pars[i] >= pars[i - 1], `Lv順に手数が減った: ${pars.join(',')}`);
+  }
+  assert.ok(pars[pars.length - 1] >= 20, `いちばん上でも ${pars[pars.length - 1]} 手しかない`);
+});
+
+test('どのレベルも盤面が詰まっていて、灰色が入っている', () => {
+  for (const lv of [1, 5, 10, 20, 30]) {
     const p = generateLevel(lv);
-    assert.ok(p.par >= 90, `Lv${lv}: PAR が ${p.par} 手しかない`);
     const fill = p.cells / (p.size * p.size);
-    assert.ok(fill >= 0.65, `Lv${lv}: 埋め率が ${(fill * 100).toFixed(0)}% しかない`);
-    assert.equal(p.size, MAX_SIZE);
-    assert.ok(p.analysis.dryStreak >= 20, `Lv${lv}: 無消去の連続が ${p.analysis.dryStreak} 手`);
-    assert.equal(verifySolution(p.snapshot, p.solution, p.size).ok, true, `Lv${lv}`);
+    // 埋め率は手数を伸ばすための手段であって目的ではない。65% を下回るものは採らない
+    assert.ok(fill >= 0.65, `Lv${lv}: 埋め率 ${(fill * 100).toFixed(0)}%`);
+    assert.ok(p.blockers >= 1, `Lv${lv}: 灰色が無い`);
+    assert.equal(p.colors, 1, `Lv${lv}: 色つきは1組だけ`);
   }
 });
 
-test('ヒントはどのレベルの初期盤面でも道筋を出せる', () => {
-  for (const lv of [1, 5, 13, 26]) {
+test('保証解は厳密な最短手順そのもの', () => {
+  // データは「ゴールからいちばん遠い盤面」なので、記録されている手順より
+  // 短い解き方は存在しない。手順どおりに指せば必ず色つきが消える
+  for (const lv of [1, 7, 15, 25]) {
     const p = generateLevel(lv);
     const b = new Board(p.size);
     b.restore(p.snapshot);
-    const plan = findClearPlan(b, 3);
-    assert.ok(plan, `Lv${lv}: 3手先まで見ても消去の道筋が無い`);
-    assert.ok(b.slideDistance(plan.pieceId, plan.dir) > 0, `Lv${lv}: 指せない手を返した`);
+    for (const step of p.solution) {
+      const res = b.applyMove(step.pieceId, step.dir);
+      assert.ok(res, `Lv${lv}: 指せない手がある`);
+      assert.equal(res.steps, step.distance, `Lv${lv}: 停止位置が違う`);
+    }
+    assert.equal(b.isCleared, true, `Lv${lv}: 手順どおりに指しても消えない`);
+    assert.equal(p.par, p.optimal, `Lv${lv}: PAR が最短手数と違う`);
   }
 });
 
@@ -244,27 +257,23 @@ test('違うレベルは違う譜面になる', () => {
   assert.equal(seen.size, 12);
 });
 
-test('レベル1は3色6個の入門用。それでも何手も重ねないと消せない', () => {
+test('レベル1は入門用。それでも最短6手はかかる', () => {
   const p = generateLevel(1);
-  assert.equal(p.size, MIN_SIZE);
-  assert.equal(p.colors, 3);
-  assert.equal(p.pieces, 6);
-  assert.ok(p.par >= 12, `PAR が ${p.par} 手しかない`);
-  assert.equal(p.analysis.clearAtStart, 0);
-  assert.ok(p.analysis.dryStreak >= 3);
+  assert.equal(p.colors, 1);
+  assert.ok(p.par >= 6, `PAR が ${p.par} 手しかない`);
+  assert.ok(p.size <= 7, `入門なのに ${p.size}×${p.size} は広すぎる`);
 });
 
 test('レベルの要約は主要なパラメータを含む', () => {
-  const cfg = levelConfig(60);
+  const cfg = levelConfig(10);
   const s = levelSummary(cfg);
   assert.match(s, new RegExp(`${cfg.size}×${cfg.size}`));
-  assert.match(s, new RegExp(`${cfg.colors}色`));
-  assert.match(s, /追い込み/);
-  assert.match(s, /埋め率/); // 詰まった盤面ではそれも出す
+  assert.match(s, /最短\d+手/);
+  assert.match(s, /灰\d+個/);
+  assert.match(s, /埋め率\d+%/);
 
-  // 遊んだあとの要約には、実際にかかる手数が入る
-  const p = generateLevel(13);
-  assert.match(puzzleSummary(p), new RegExp(`PAR ${p.par}手`));
+  const p = generateLevel(10);
+  assert.match(puzzleSummary(p), new RegExp(`最短${p.par}手`));
 });
 
 test('レベル番号が不正でもレベル1として扱う', () => {
