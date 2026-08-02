@@ -512,17 +512,19 @@ function codeToSeed(code) {
 //   ・仕込み手（一見関係ないブロックを先に退かす手）が混ざる
 // という順で難しくなる。
 
-const MIN_SIZE = 6;
+const MIN_SIZE = 7;
 const MAX_SIZE = 12;
 /**
  * 色数の上限。最大盤面 12×12 に「9色 × 2個 × 4マス = 72マス」で埋め率 50%。
- * 追い込み手はブロックが滑る「滑走路」を必要とするので、以前より空きを多めに残す。
+ * 追い込み手はブロックが滑る「滑走路」を必要とするので、空きを多めに残す。
  */
 const MAX_COLORS = 9;
-/** 追い込み手の総数の上限。これ以上増やしても手順が長いだけで頭は使わない */
-const MAX_CHAIN_MOVES = 14;
+/** 追い込み手の総数の上限 */
+const MAX_CHAIN_MOVES = 42;
 /** 1組を消すまでに重ねるスライドの上限（追い込み手の深さ） */
-const MAX_CHAIN_DEPTH = 3;
+const MAX_CHAIN_DEPTH = 8;
+/** 仕込み手の上限 */
+const MAX_SETUP_MOVES = 12;
 
 /** 目標の埋め率。これを基準に色数から盤面サイズを決める */
 const FILL = 0.5;
@@ -538,7 +540,7 @@ function normalizeLevel(level) {
 /** レベル -> 色数（＝ブロックのペア数＝消去の回数） */
 function colorsForLevel(level) {
   const lv = normalizeLevel(level);
-  return clamp(2 + Math.floor((lv - 1) / 3), 2, MAX_COLORS);
+  return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_COLORS);
 }
 
 /** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
@@ -555,11 +557,13 @@ function boardSizeForLevel(level) {
 /**
  * レベル -> 追い込みの深さ。
  * 「1組を消すまでに、そのブロックを平均で何手ぶん滑らせる必要があるか」。
- * 1 でも「置いてすぐぶつけられる」状態ではなくなる（必ず1手は寄り道が要る）。
+ *
+ * レベル1でも 3 手から始める。「1手ずらせば届く」形は、見つけて押すだけで
+ * 終わってしまい読む余地が無いので、入門レベルにも置かない。
  */
 function chainDepthForLevel(level) {
   const lv = normalizeLevel(level);
-  return clamp(1 + Math.floor((lv - 1) / 4), 1, MAX_CHAIN_DEPTH);
+  return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_CHAIN_DEPTH);
 }
 
 /**
@@ -579,7 +583,7 @@ function chainMovesForLevel(level) {
  */
 function setupMovesForLevel(level) {
   const lv = normalizeLevel(level);
-  return clamp(Math.floor((lv - 4) / 5), 0, 4);
+  return clamp(Math.floor((lv - 3) / 2), 0, MAX_SETUP_MOVES);
 }
 
 /** レベル -> 生成シード。この一本道が「どの端末でも同じ譜面」を担保する */
@@ -718,8 +722,18 @@ const DEFAULT_OPTIONS = {
   forcedChecks: 90,
   /** 追い込み1手あたりに評価する巻き戻し候補の数 */
   chainTries: 40,
-  /** 初手の消し手を潰すために、あとから足してよい追い込み手の上限 */
-  openingPushes: 8,
+  /** 仕込み手1手あたりに評価する巻き戻し候補の数 */
+  setupTries: 240,
+  /** 初手の消し手を潰すために、1回の掃除で足してよい手の上限 */
+  openingPushes: 10,
+  /** ペアを1組置くたびに行う掃除の上限（ここは軽く。深追いすると手数が水増しになる） */
+  openingPushesInline: 1,
+  /** 「消せる色が減らない手」が何手続いたら諦めるか */
+  openingStale: 2,
+  /** 初手を塞ぐ1手あたりに評価する巻き戻し候補の数 */
+  openingTries: 400,
+  /** 追い込み手の達成率がこれを超えれば「狙いどおり」とみなして試行を打ち切る */
+  chainQuota: 0.75,
 };
 
 /** セル群の上下左右の隣接セルを Set に集める（盤外は無視） */
@@ -1055,7 +1069,7 @@ function retractCandidates(board, id) {
  * これが満たされる限り、消すには必ずもう1手ぶん滑らせる必要がある。
  * 次に、長く滑る候補を好む（盤面の端から端まで動くほど読む範囲が広がる）。
  */
-function retractOnce(board, rng, opts, id, seen) {
+function retractOnce(board, rng, opts, id, seen, guard = Infinity) {
   const piece = board.pieces.get(id);
   if (!piece) return null;
   const cands = retractCandidates(board, id);
@@ -1066,12 +1080,18 @@ function retractOnce(board, rng, opts, id, seen) {
   let bestScore = -Infinity;
   for (const c of cands.slice(0, opts.chainTries)) {
     board.movePiece(id, OPPOSITE[c.dir], c.t);
-    const revisits = seen.has(board.fingerprint());
-    const stillClearable = revisits ? false : colorClearable(board, piece.color);
-    board.movePiece(id, c.dir, c.t);
-
     // 一度通った局面へ戻す手は採らない。行って戻るだけの往復が解に混ざってしまう
-    if (revisits) continue;
+    let ok = !seen.has(board.fingerprint());
+    let stillClearable = false;
+    if (ok) {
+      stillClearable = colorClearable(board, piece.color);
+      // guard を渡されたら「盤面全体で消せる色」をそこまでに抑える候補しか認めない。
+      // せっかく塞いだ初手を、深さを稼ぐついでに開けてしまわないための歯止め
+      if (Number.isFinite(guard) && clearableColors(board, guard + 1).size > guard) ok = false;
+    }
+    board.movePiece(id, c.dir, c.t);
+    if (!ok) continue;
+
     const s = (stillClearable ? 0 : 100) + c.t * 4 + rng() * 6;
     if (s > bestScore) { bestScore = s; best = c; }
   }
@@ -1106,6 +1126,37 @@ function retractPair(board, rng, opts, movingId, mateId, hops, seen) {
   return steps;
 }
 
+/**
+ * 追い込みを後から足す。
+ *
+ * 逆順構築では、最初に置くペアほど「まだ何も無い盤面」で巻き戻すことになる。
+ * 止まる先が壁しか無いので、そこで稼げる深さには限りがある。ところが全部置き
+ * 終えた盤面には**ストッパーが増えている** ―― さっきは戻せなかったブロックも、
+ * いまならもう1手ぶん戻せる。
+ *
+ * ここで足した手はプレイ順では前に来るので、「先にこれを動かしておかないと、
+ * あとでぶつけに行けない」という形になる。ペアごとの道のりが互いに割り込み、
+ * 1組ずつ順番に片づける解き方ができなくなる。
+ */
+function deepenChains(board, rng, opts, solution, seen, want) {
+  const ids = [...board.pieces.keys()];
+  if (ids.length === 0) return 0;
+  // ここに来る時点で初手は塞いである。深さを稼ぐために開け直しては本末転倒なので、
+  // 「消せる色をいまより増やさない」ことを条件に付ける
+  const guard = clearableColors(board).size;
+  let added = 0;
+  let idle = 0;
+  while (added < want && idle < ids.length * 3) {
+    const id = ids[Math.floor(rng() * ids.length)];
+    const step = retractOnce(board, rng, opts, id, seen, guard);
+    if (!step) { idle++; continue; }
+    solution.unshift(step);
+    added++;
+    idle = 0;
+  }
+  return added;
+}
+
 /** 追い込み手の総数を色ごとに配る。先に置く色（＝最後に消す色）ほど深くする */
 function hopPlan(colors, total) {
   const plan = new Array(Math.max(0, colors)).fill(0);
@@ -1124,38 +1175,67 @@ function hopPlan(colors, total) {
  * 狙いは clearAtStart === 0 ―― 第1手からすでに、何を動かしても消えない盤面。
  * 足した手は解の先頭に積む（この時点の盤面がそのまま初期盤面なので、常に成立する）。
  */
-function pushBackOpenings(board, rng, opts, solution, seen) {
-  let added = 0;
-  while (added < opts.openingPushes) {
+function pushBackOpenings(board, rng, opts, solution, seen, budget = opts.openingPushes) {
+  let stale = 0;
+  for (let added = 0; added < budget; added++) {
     const open = clearableColors(board);
     if (open.size === 0) return;
+    const step = closeOneOpening(board, rng, opts, seen, open);
+    if (!step) return; // どうにも動かせない。best-effort でここまで
+    solution.unshift(step);
 
-    let moved = false;
-    for (const color of open) {
-      if (added >= opts.openingPushes) break;
-      const ids = [...board.pieces.values()].filter((p) => p.color === color).map((p) => p.id);
-      for (const id of shuffle(rng, ids)) {
-        const step = retractOnce(board, rng, opts, id, seen);
-        if (!step) continue;
-        solution.unshift(step);
-        added++;
-        moved = true;
-        break;
-      }
+    // 打った結果、消せる色が減らなかったら「回り道」。何手も続くようなら諦めて
+    // 別の試行に賭ける ―― 減らない手を積むのは、難しさではなく水増しにしかならない
+    if (clearableColors(board, open.size).size >= open.size) {
+      if (++stale > opts.openingStale) return;
+    } else {
+      stale = 0;
     }
-
-    // 当の色を動かせないこともある（周りが詰まっていて戻す先が無い）。
-    // そのときは他のブロックを退かして、ぶつかり先のストッパーごと崩しにいく
-    if (!moved && added < opts.openingPushes) {
-      const step = placeSetup(board, rng, opts, seen);
-      if (step) {
-        solution.unshift(step);
-        added++;
-        moved = true;
-      }
-    }
-    if (!moved) return; // どうにも動かせない。best-effort でここまで
   }
+}
+
+/**
+ * 「いま消せる色」の数を確実に1つ以上減らす手を、1手ぶん打つ。
+ *
+ * 当の色のブロックを奥へ動かせば、その色は消せなくなる ―― けれど動かした先が
+ * 別の色のストッパーになって、そちらが開いてしまうことがある。だから採否は
+ * **必ず盤面全体の「消せる色の数」で判定する**。減らない手は打たない。
+ *
+ * こうすると1手ごとに数が単調に減るので、多くても色数ぶんの手で 0 に到達する。
+ * 候補は「開いている色のブロック」を先に、続けて残り全部を見る（開いた原因が
+ * ストッパー側にあるときは、そちらを退かすほうが早い）。
+ */
+function closeOneOpening(board, rng, opts, seen, open) {
+  const priority = [];
+  const rest = [];
+  for (const p of board.pieces.values()) (open.has(p.color) ? priority : rest).push(p.id);
+  const order = [...shuffle(rng, priority), ...shuffle(rng, rest)];
+
+  let best = null;
+  let bestScore = -Infinity;
+  let checked = 0;
+  for (const id of order) {
+    for (const c of shuffle(rng, retractCandidates(board, id))) {
+      if (checked++ >= opts.openingTries) break;
+      board.movePiece(id, OPPOSITE[c.dir], c.t);
+      // 一度通った局面へは戻さない（往復が手順に混ざる）
+      const n = seen.has(board.fingerprint()) ? Infinity : clearableColors(board, open.size + 1).size;
+      board.movePiece(id, c.dir, c.t);
+
+      if (n > open.size) continue; // 開く色が増える手は採らない
+      // 減る手を強く優先しつつ、同数でも採る ―― 「1手では減らないが、動かせば
+      // 次の1手で減らせる」形があるので、横ばいを禁じると手前で行き詰まる
+      const s = (open.size - n) * 100 + rng() * 10;
+      if (s > bestScore) { bestScore = s; best = c; }
+      if (n === 0) break;
+    }
+    if (bestScore >= 100 * open.size || checked >= opts.openingTries) break;
+  }
+  if (!best) return null;
+
+  board.movePiece(best.id, OPPOSITE[best.dir], best.t);
+  seen.add(board.fingerprint());
+  return { pieceId: best.id, dir: best.dir, distance: best.t, color: best.color, kind: 'setup' };
 }
 
 /**
@@ -1167,7 +1247,7 @@ function pushBackOpenings(board, rng, opts, solution, seen) {
  * 追い込み手との違いは「対象を選ばないこと」。次に消したいブロックとは限らない
  * ので、盤面のどこを触ればよいのか自体が読みどころになる。
  */
-function placeSetup(board, rng, opts, seen) {
+function placeSetup(board, rng, opts, seen, maxClearable = Infinity) {
   const candidates = [];
   for (const id of board.pieces.keys()) {
     for (const c of retractCandidates(board, id)) candidates.push(c);
@@ -1179,7 +1259,7 @@ function placeSetup(board, rng, opts, seen) {
   shuffle(rng, candidates);
   let best = null;
   let bestN = Infinity;
-  for (const c of candidates.slice(0, 80)) {
+  for (const c of candidates.slice(0, opts.setupTries)) {
     board.movePiece(c.id, OPPOSITE[c.dir], c.t);
     const revisits = seen.has(board.fingerprint());
     const n = revisits ? Infinity : clearableColors(board, bestN).size;
@@ -1190,7 +1270,8 @@ function placeSetup(board, rng, opts, seen) {
       if (n === 0) break;
     }
   }
-  if (!best) return null;
+  // 呼び出し側が「ここまで減らなければ意味が無い」と言っているときは打たない
+  if (!best || bestN > maxClearable) return null;
 
   board.movePiece(best.id, OPPOSITE[best.dir], best.t);
   seen.add(board.fingerprint());
@@ -1216,15 +1297,31 @@ function attemptBuild(seed, opts) {
     // ぶつける場所から手前へ何度も巻き戻す ―― ここで「スライドの重ね」が生まれる
     const chain = retractPair(board, rng, opts, placed.movingId, placed.mateId, plan[c], seen);
     for (const step of chain) solution.unshift(step);
+
+    // いま置いたペアが、別の色の通路を変えて「消せる形」を作ってしまうことがある。
+    // 盤面がまだ空いているこの段階なら戻す先が豊富なので、その場で塞いでおく。
+    // 全部置き終えてからまとめて塞ごうとしても、動かす余地が残っていない
+    pushBackOpenings(board, rng, opts, solution, seen, opts.openingPushesInline);
   }
 
+  // ① 取りこぼしがあれば、この時点でもう一度塞ぐ
+  pushBackOpenings(board, rng, opts, solution, seen);
+
+  // ② 盤面が埋まったぶんストッパーも増えている。届かなかった深さをここで取り返す
+  //    （塞いだ状態は崩さない）
+  const got = solution.filter((s) => s.kind === 'chain').length;
+  if (got < opts.chainMoves) {
+    deepenChains(board, rng, opts, solution, seen, opts.chainMoves - got);
+  }
+
+  // ③ 仕込み手。消せる色を増やす向きには打たない
   for (let i = 0; i < opts.setupMoves; i++) {
-    const step = placeSetup(board, rng, opts, seen);
+    const step = placeSetup(board, rng, opts, seen, clearableColors(board).size);
     if (!step) break;
     solution.unshift(step);
   }
 
-  // 仕込み手で通路が変わり、また消せるようになった色があれば奥へ押し戻す
+  // ④ それでも開いた色が残っていれば、最後にもう一度押し戻す
   pushBackOpenings(board, rng, opts, solution, seen);
 
   return { board, solution };
@@ -1325,9 +1422,10 @@ function runAttempt(seed, opts, attempt) {
  */
 function score(result, opts) {
   let s = result.cells;
-  // 初手から消せる手が無い＝まず通路を作る読みから入る。これが一番欲しい形
-  if (result.analysis.clearAtStart === 0) s += 400;
-  else s -= result.analysis.clearAtStart * 60;
+  // 初手から消せる手が無い＝まず通路を作る読みから入る。これが一番欲しい形。
+  // 追い込みの深さより優先する（深くても初手で消せたら台無しなので、桁を分ける）
+  if (result.analysis.clearAtStart === 0) s += 4000;
+  else s -= result.analysis.clearAtStart * 1500;
   s += Math.min(result.chainMoves, opts.chainMoves) * 45;
   s += result.analysis.dryStreak * 12;
   if (opts.setupMoves > 0) s += Math.min(result.setupMoves, opts.setupMoves) * 40;
@@ -1335,9 +1433,14 @@ function score(result, opts) {
   return s;
 }
 
+/**
+ * 狙いどおりの盤面か。ここが真になった時点で試行を打ち切る。
+ * 追い込み手は「目標ちょうど」を求めない ―― 深いほど巻き戻せる場所は尽きやすく、
+ * 100% を条件にすると毎回すべての試行を回すことになって生成が遅いだけになる。
+ */
 function goodEnough(result, opts) {
   if (result.analysis.clearAtStart !== 0) return false;
-  if (result.chainMoves < opts.chainMoves) return false;
+  if (result.chainMoves < opts.chainMoves * opts.chainQuota) return false;
   if (opts.setupMoves > 0 && result.setupMoves < opts.setupMoves) return false;
   if (opts.forced && !result.analysis.forced) return false;
   return true;
@@ -2599,8 +2702,10 @@ class Sound {
 // ゲーム進行・アニメーション・UI 配線。
 //
 // 画面は3つ（ホーム / レベル一覧 / ゲーム）。同時に見えるのは常に1つだけ。
-// レベルは「ひとつ前をクリアするまで開かない」ので、進行状況は
-// 「解放済みレベル」と「レベルごとの星」だけで表せる。
+//
+// レベルに鍵はかかっていない。どのレベルにもいつでも入れる ―― 1つ詰まったら
+// 先へ行って戻ってくればいいし、いきなり上から始めてもいい。進行状況は
+// 「到達レベル」と「レベルごとの星・自己ベスト」だけで表せる。
 //
 // 星は「解けるまでの時間」で決まる（手数ではない）。盤面を読むのに使った時間
 // だけを数えたいので、時計は下の条件がすべて満たされている間だけ進む。
@@ -2629,10 +2734,12 @@ function levelPreview(level) {
  * 「どこまで開いていたか」だけを残す ―― 進みが巻き戻るのがいちばん理不尽なので。
  */
 function migrateLegacy(data) {
-  if (data.unlocked) return data;
+  // 鍵をかけていた頃の「解放済みレベル」は、いまは「到達レベル」の意味で使う
+  if (data.reached == null && data.unlocked) data.reached = data.unlocked;
+  if (data.reached != null) return data;
   try {
     const old = JSON.parse(localStorage.getItem(LEGACY_KEY) || '{}');
-    if (old.unlocked) data.unlocked = old.unlocked;
+    if (old.unlocked) data.reached = old.unlocked;
     if (old.settings) data.settings = { ...old.settings, ...(data.settings || {}) };
   } catch { /* 読めなければ最初から */ }
   return data;
@@ -2709,14 +2816,13 @@ class Game {
 
   // ------------------------------------------------------------ 進行状況
 
-  /** 遊べる最大レベル。ひとつ前をクリアすると 1 つ増える */
-  get unlockedLevel() {
-    return Math.max(1, Math.floor(this.store.unlocked) || 1);
-  }
-
-  /** そのレベルが開いているか */
-  isUnlocked(level) {
-    return normalizeLevel(level) <= this.unlockedLevel;
+  /**
+   * 到達レベル ―― まだクリアしていない、いちばん手前のレベル。
+   * 鍵ではない。どのレベルにもいつでも入れる。これは「つづきから」の行き先と、
+   * レベル一覧でいまいる場所を示すためだけに使う。
+   */
+  get reachedLevel() {
+    return Math.max(1, Math.floor(this.store.reached) || 1);
   }
 
   /** そのレベルで取った星（0 = 未クリア） */
@@ -2749,11 +2855,6 @@ class Game {
    */
   async load(level) {
     const lv = normalizeLevel(level);
-    if (!this.isUnlocked(lv)) {
-      this.showLevels(Math.floor((this.unlockedLevel - 1) / PAGE_SIZE));
-      this.toast(`レベル ${lv - 1} をクリアすると開きます`);
-      return;
-    }
     const token = ++this.loadToken;
     this.showGame();
 
@@ -3138,7 +3239,7 @@ class Game {
 
     // レベル一覧
     d.btnLevelsBack.addEventListener('click', () => this.showHome());
-    d.btnLevelsJump.addEventListener('click', () => this.showLevels(this.pageOf(this.unlockedLevel)));
+    d.btnLevelsJump.addEventListener('click', () => this.showLevels(this.pageOf(this.reachedLevel)));
     d.btnPagePrev.addEventListener('click', () => this.showLevels(this.page - 1));
     d.btnPageNext.addEventListener('click', () => this.showLevels(this.page + 1));
     d.levelGrid.addEventListener('click', (e) => {
@@ -3251,7 +3352,7 @@ class Game {
   /** 「ゲームスタート」が始めるレベル。まだ挑戦中のものがあればそれを続ける */
   get startLevel() {
     const last = normalizeLevel(this.store.lastLevel || 1);
-    return this.isUnlocked(last) && this.starsOf(last) === 0 ? last : this.unlockedLevel;
+    return this.starsOf(last) === 0 ? last : this.reachedLevel;
   }
 
   showScreen(name) {
@@ -3283,7 +3384,7 @@ class Game {
     const chips = [
       ['クリア', this.clearedCount],
       ['星', this.totalStars],
-      ['最高レベル', this.unlockedLevel],
+      ['到達レベル', this.reachedLevel],
     ];
     for (const [k, n] of chips) {
       const el = document.createElement('span');
@@ -3313,32 +3414,21 @@ class Game {
 
     d.levelGrid.innerHTML = '';
     for (let lv = from; lv <= to; lv++) {
-      const unlocked = this.isUnlocked(lv);
       const stars = this.starsOf(lv);
+      const best = this.bestTimeOf(lv);
       const cell = document.createElement('button');
       cell.type = 'button';
       cell.className = 'level-cell';
-      if (!unlocked) cell.classList.add('locked');
-      else if (lv === this.unlockedLevel) cell.classList.add('current');
+      if (lv === this.reachedLevel) cell.classList.add('current');
       else if (stars > 0) cell.classList.add('done');
 
-      if (unlocked) {
-        cell.dataset.level = String(lv);
-        const best = this.bestTimeOf(lv);
-        cell.innerHTML = `<span class="n">${lv}</span>`
-          + `<span class="stars${stars ? '' : ' none'}">${'★'.repeat(stars) || '☆☆☆'}</span>`
-          + (best != null ? `<span class="cell-time">${formatTime(best)}</span>` : '');
-        cell.title = best != null
-          ? `レベル ${lv}：${levelPreview(lv)}／自己ベスト ${formatTime(best)}`
-          : `レベル ${lv}：${levelPreview(lv)}`;
-      } else {
-        cell.disabled = true;
-        cell.setAttribute('aria-label', `レベル ${lv}（未開放）`);
-        cell.innerHTML = '<svg class="lock" viewBox="0 0 24 24" aria-hidden="true">'
-          + '<rect x="5" y="10.5" width="14" height="9.5" rx="2.6"/>'
-          + '<path d="M8.4 10.5V7.9a3.6 3.6 0 0 1 7.2 0v2.6"/></svg>'
-          + `<span class="stars none">${lv}</span>`;
-      }
+      cell.dataset.level = String(lv);
+      cell.innerHTML = `<span class="n">${lv}</span>`
+        + `<span class="stars${stars ? '' : ' none'}">${'★'.repeat(stars) || '☆☆☆'}</span>`
+        + (best != null ? `<span class="cell-time">${formatTime(best)}</span>` : '');
+      cell.title = best != null
+        ? `レベル ${lv}：${levelPreview(lv)}／自己ベスト ${formatTime(best)}`
+        : `レベル ${lv}：${levelPreview(lv)}`;
       d.levelGrid.appendChild(cell);
     }
   }
@@ -3478,8 +3568,8 @@ class Game {
     if (this.newRecord) this.store.best[key] = seconds;
     this.store.stars[key] = Math.max(prevStars, stars);
 
-    // クリアしたら次のレベルが開く
-    this.store.unlocked = Math.max(this.unlockedLevel, this.level + 1);
+    // 到達レベルを進める（鍵ではない。「つづきから」の行き先になるだけ）
+    this.store.reached = Math.max(this.reachedLevel, this.level + 1);
     saveStore(this.store);
 
     this.clearTime = seconds;
