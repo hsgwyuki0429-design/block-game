@@ -515,18 +515,31 @@ function codeToSeed(code) {
 const MIN_SIZE = 7;
 const MAX_SIZE = 12;
 /**
- * 色数の上限。最大盤面 12×12 に「9色 × 2個 × 4マス = 72マス」で埋め率 50%。
- * 追い込み手はブロックが滑る「滑走路」を必要とするので、空きを多めに残す。
+ * 色数の上限。最大盤面 12×12 に「12色 × 2個 × 4マス = 96マス」で埋め率 67%
+ * ―― 144 マスのうち空きは 48 マスだけ。
+ *
+ * 盤面が 12×12 で頭打ちになったあとは、色数を増やすことがそのまま
+ * **埋め率を上げること**になる。難易度の最後のひと押しはここから取っている。
+ *
+ * ここが上限なのは「初期盤面では何をどう動かしても消えない」を守れる限界だから。
+ * 追い込みも初手の掃除もブロックを手前へ戻す操作なので、戻す先の空きが要る。
+ * 実測（1試行あたりの成立率）: 56%→8% / 67%→8% / 72%→0%（しかもペアを置く場所
+ * 自体が見つからず、試行の4割が生成に失敗する）。72% は「詰まっている」のではなく
+ * 「動かせない」。
  */
-const MAX_COLORS = 9;
+const MAX_COLORS = 12;
 /** 追い込み手の総数の上限 */
-const MAX_CHAIN_MOVES = 42;
+const MAX_CHAIN_MOVES = 64;
 /** 1組を消すまでに重ねるスライドの上限（追い込み手の深さ） */
 const MAX_CHAIN_DEPTH = 8;
 /** 仕込み手の上限 */
-const MAX_SETUP_MOVES = 12;
+const MAX_SETUP_MOVES = 20;
 
-/** 目標の埋め率。これを基準に色数から盤面サイズを決める */
+/**
+ * 目標の埋め率。これを基準に色数から盤面サイズを決める。
+ * 盤面が MAX_SIZE で頭打ちになると、以降は色数がそのまま埋め率になる
+ * （9色=50% / 11色=61% / 13色=72%）。
+ */
 const FILL = 0.5;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -541,6 +554,13 @@ function normalizeLevel(level) {
 function colorsForLevel(level) {
   const lv = normalizeLevel(level);
   return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_COLORS);
+}
+
+/** レベル -> 盤面の埋め率（ブロックが占めるマスの割合） */
+function fillForLevel(level) {
+  const colors = colorsForLevel(level);
+  const size = boardSizeForColors(colors);
+  return (colors * 8) / (size * size);
 }
 
 /** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
@@ -584,6 +604,13 @@ function chainMovesForLevel(level) {
 function setupMovesForLevel(level) {
   const lv = normalizeLevel(level);
   return clamp(Math.floor((lv - 3) / 2), 0, MAX_SETUP_MOVES);
+}
+
+/** レベル -> 生成の試行回数。詰まった盤面ほど当たりを引くまで回数が要る */
+function attemptsForLevel(level) {
+  // 詰まった盤面では「初手が塞がった」当たりを引く確率が1割ほどまで落ちるので、
+  // 試行回数を増やして引き当てにいく（1回の試行は 50ms 前後）
+  return colorsForLevel(level) >= 10 ? 96 : 48;
 }
 
 /** レベル -> 生成シード。この一本道が「どの端末でも同じ譜面」を担保する */
@@ -646,8 +673,10 @@ function levelConfig(level) {
      * 初手を塞ぐために足りなければ深くなる）ので、あくまで一覧に出す目安。
      */
     par: colors + chainMoves + setupMoves,
+    /** 盤面の埋め率（ブロックが占めるマスの割合） */
+    fill: (colors * 8) / (size * size),
     /** 生成の試行回数 */
-    attempts: 48,
+    attempts: attemptsForLevel(lv),
   };
 }
 
@@ -656,13 +685,15 @@ function levelSummary(config) {
   const parts = [`${config.size}×${config.size}`, `${config.colors}色`];
   parts.push(`追い込み${config.chainDepth}手`);
   if (config.setupMoves > 0) parts.push(`仕込み${config.setupMoves}手`);
+  if (config.fill >= 0.6) parts.push(`埋め率${Math.round(config.fill * 100)}%`);
   return parts.join('・');
 }
 
 /** 実際に生成できたパズルの要約（ゲーム画面の見出し下に出す） */
 function puzzleSummary(puzzle) {
   const parts = [`${puzzle.size}×${puzzle.size}`, `${puzzle.colors}色`, `PAR ${puzzle.par}手`];
-  if (puzzle.setupMoves > 0) parts.push(`仕込み${puzzle.setupMoves}手`);
+  const fill = puzzle.cells / (puzzle.size * puzzle.size);
+  if (fill >= 0.6) parts.push(`埋め率${Math.round(fill * 100)}%`);
   return parts.join('・');
 }
 
@@ -718,7 +749,7 @@ const DEFAULT_OPTIONS = {
   distanceBias: 0.85,
   /** 配置優先度のゆらぎ。0 だと常に最も詰まった場所へ置く（＝単調になる） */
   packingJitter: 3,
-  /** 一本道の判定を1ステップで何回まで試すか（探索が指数的に伸びるのを防ぐ） */
+  /** 1ステップで何回まで置き直しを試すか（探索が指数的に伸びるのを防ぐ） */
   forcedChecks: 90,
   /** 追い込み1手あたりに評価する巻き戻し候補の数 */
   chainTries: 40,
@@ -920,7 +951,7 @@ function commitPair(board, color, cand) {
  * ただし見つからないからといって生成全体を捨てはしない ―― 最初に見つかった
  * 普通の配置を控えとして持っておき、最後にそれを使う。
  */
-function placePair(board, rng, opts, color, requireForced) {
+function placePair(board, rng, opts, color, requireForced, requireRetractable = false) {
   const size = board.size;
   const placements = emptyPlacements(board);
   for (const p of placements) p.score = contactScore(board, p.cells) + rng() * opts.packingJitter;
@@ -987,10 +1018,16 @@ function placePair(board, rng, opts, color, requireForced) {
 
       const cand = { acells, aname: placement.shape.name, q, dir, t };
       const placed = commitPair(board, color, cand);
-      if (!requireForced) return placed;
 
+      // 追い込みを掛ける予定なら、巻き戻せる置き方を選ぶ。
+      // 埋め率の高い盤面では「置けはするが1歩も戻せない」場所が増え、そこに
+      // 置いたペアは初手からぶつけられる形のまま残ってしまう
+      const canRetract = !requireRetractable
+        || retractCandidates(board, placed.movingId).length > 0
+        || retractCandidates(board, placed.mateId).length > 0;
       // 一本道を求めるレベルでは、この局面で消せる色がこの色だけであることを課す
-      if (clearableColors(board, 2).size <= 1) return placed;
+      const lineOk = !requireForced || clearableColors(board, 2).size <= 1;
+      if (canRetract && lineOk) return placed;
 
       board.removePiece(placed.movingId);
       board.removePiece(placed.mateId);
@@ -1079,21 +1116,28 @@ function retractOnce(board, rng, opts, id, seen, guard = Infinity) {
   let best = null;
   let bestScore = -Infinity;
   for (const c of cands.slice(0, opts.chainTries)) {
+    // 乱数は候補ごとに必ず1回引く（枝刈りで引く回数が変わると決定論が崩れる）
+    const jitter = rng() * 6;
     board.movePiece(id, OPPOSITE[c.dir], c.t);
+
     // 一度通った局面へ戻す手は採らない。行って戻るだけの往復が解に混ざってしまう
     let ok = !seen.has(board.fingerprint());
-    let stillClearable = false;
+    let s = -Infinity;
     if (ok) {
-      stillClearable = colorClearable(board, piece.color);
+      // 軽い判定（この色だけを見る）で点を出し、いまの最高点に届かない候補は
+      // ここで捨てる。盤面全体を数える guard は残った候補にだけ掛ける ――
+      // 追い込み1手あたり数十回まわるので、ここの枝刈りが生成時間を決める
+      s = (colorClearable(board, piece.color) ? 0 : 100) + c.t * 4 + jitter;
+      if (s <= bestScore) ok = false;
       // guard を渡されたら「盤面全体で消せる色」をそこまでに抑える候補しか認めない。
       // せっかく塞いだ初手を、深さを稼ぐついでに開けてしまわないための歯止め
-      if (Number.isFinite(guard) && clearableColors(board, guard + 1).size > guard) ok = false;
+      else if (Number.isFinite(guard) && clearableColors(board, guard + 1).size > guard) ok = false;
     }
     board.movePiece(id, c.dir, c.t);
     if (!ok) continue;
 
-    const s = (stillClearable ? 0 : 100) + c.t * 4 + rng() * 6;
-    if (s > bestScore) { bestScore = s; best = c; }
+    bestScore = s;
+    best = c;
   }
   if (!best) return null;
 
@@ -1289,7 +1333,7 @@ function attemptBuild(seed, opts) {
   const seen = new Set();
 
   for (let c = 0; c < opts.colors; c++) {
-    const placed = placePair(board, rng, opts, c, opts.forced);
+    const placed = placePair(board, rng, opts, c, opts.forced, plan[c] > 0);
     if (!placed) return null;
     // 逆順に作っているので、新しいステップほど「先の手」になる
     solution.unshift(placed.step);
@@ -1480,7 +1524,9 @@ async function generatePuzzleAsync(seed, options = {}, onProgress = null) {
       if (goodEnough(result, opts)) break;
     }
     if (onProgress) onProgress((attempt + 1) / opts.attempts);
-    if (attempt % 4 === 3) await new Promise((r) => setTimeout(r, 0));
+    // 詰まった盤面では1試行が 50ms 近くかかる。2回ごとに制御を返して、
+    // 「組み立て中」の表示が止まって見えないようにする
+    if (attempt % 2 === 1) await new Promise((r) => setTimeout(r, 0));
   }
 
   if (!best) throw new Error('パズルを生成できませんでした');
@@ -1583,7 +1629,18 @@ installRoundRect();
  * から手続き的に組み立てる。一覧を使い切ったら色相をずらし、
  * 明度も段ごとに変えるので、同じ色相が戻ってきても別の色として読める。
  */
-const HUES = [4, 210, 46, 142, 288, 26, 190, 330, 96, 258, 168, 14, 308, 64, 228, 118, 348, 200, 78, 272];
+/*
+ * 色相の並び。「先頭から N 個取っても互いに離れている」ように並べてある
+ * （すでに選んだどれからも遠いものを順に選ぶ貪欲順）。レベルによって使う色数が
+ * 3〜12 と変わるので、どこで切っても見分けがつくことが要る。
+ *
+ * 並べ替えの物差しは色相の角度ではなく **Lab 空間での距離（ΔE）**。色相を等間隔に
+ * 並べても、緑は 90°〜160° がまとめて「緑」に見えるのに対し、赤〜橙は数十度でも
+ * 別の色に見える ―― 角度で揃えると緑ばかりが並んで見分けられなくなる。
+ *
+ * 12色での最小 ΔE: 素直な並びで 15、色相角で並べ替えても 15、この並びで 31。
+ */
+const HUES = [190, 4, 272, 118, 46, 330, 210, 168, 78, 228, 26, 308, 142, 348, 200, 64, 96, 288, 14, 258];
 
 /** 色相ごとの見た目の明るさ補正（黄～緑は明るく見えるので少し暗く置く） */
 function toneFor(hue) {
@@ -2872,7 +2929,11 @@ class Game {
 
     let puzzle;
     try {
-      puzzle = await generateLevelAsync(lv);
+      // 詰まった盤面ほど「当たり」を引くまで試行が要る（最大で数秒）。
+      // 何回目を試しているかを出して、止まって見えないようにする
+      puzzle = await generateLevelAsync(lv, {}, (ratio) => {
+        if (token === this.loadToken) this.showLoading(lv, ratio);
+      });
     } catch (err) {
       console.error(err);
       if (token !== this.loadToken) return;
@@ -2910,12 +2971,14 @@ class Game {
     location.hash = `#L${lv}`;
   }
 
-  showLoading(level) {
+  showLoading(level, ratio = 0) {
     const cfg = levelConfig(level);
+    const tried = Math.round(ratio * cfg.attempts);
     this.showOverlay({
       badge: '🧩',
       title: `レベル ${level}`,
-      text: `${cfg.size}×${cfg.size} の盤面を組み立てています…`,
+      text: `${cfg.size}×${cfg.size}・${cfg.colors}色 の盤面を組み立てています…`
+        + (tried > 0 ? `（${tried} 通り目）` : ''),
       stats: [],
       actions: [],
     });

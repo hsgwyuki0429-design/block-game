@@ -54,7 +54,7 @@ export const DEFAULT_OPTIONS = {
   distanceBias: 0.85,
   /** 配置優先度のゆらぎ。0 だと常に最も詰まった場所へ置く（＝単調になる） */
   packingJitter: 3,
-  /** 一本道の判定を1ステップで何回まで試すか（探索が指数的に伸びるのを防ぐ） */
+  /** 1ステップで何回まで置き直しを試すか（探索が指数的に伸びるのを防ぐ） */
   forcedChecks: 90,
   /** 追い込み1手あたりに評価する巻き戻し候補の数 */
   chainTries: 40,
@@ -256,7 +256,7 @@ function commitPair(board, color, cand) {
  * ただし見つからないからといって生成全体を捨てはしない ―― 最初に見つかった
  * 普通の配置を控えとして持っておき、最後にそれを使う。
  */
-function placePair(board, rng, opts, color, requireForced) {
+function placePair(board, rng, opts, color, requireForced, requireRetractable = false) {
   const size = board.size;
   const placements = emptyPlacements(board);
   for (const p of placements) p.score = contactScore(board, p.cells) + rng() * opts.packingJitter;
@@ -323,10 +323,16 @@ function placePair(board, rng, opts, color, requireForced) {
 
       const cand = { acells, aname: placement.shape.name, q, dir, t };
       const placed = commitPair(board, color, cand);
-      if (!requireForced) return placed;
 
+      // 追い込みを掛ける予定なら、巻き戻せる置き方を選ぶ。
+      // 埋め率の高い盤面では「置けはするが1歩も戻せない」場所が増え、そこに
+      // 置いたペアは初手からぶつけられる形のまま残ってしまう
+      const canRetract = !requireRetractable
+        || retractCandidates(board, placed.movingId).length > 0
+        || retractCandidates(board, placed.mateId).length > 0;
       // 一本道を求めるレベルでは、この局面で消せる色がこの色だけであることを課す
-      if (clearableColors(board, 2).size <= 1) return placed;
+      const lineOk = !requireForced || clearableColors(board, 2).size <= 1;
+      if (canRetract && lineOk) return placed;
 
       board.removePiece(placed.movingId);
       board.removePiece(placed.mateId);
@@ -415,21 +421,28 @@ function retractOnce(board, rng, opts, id, seen, guard = Infinity) {
   let best = null;
   let bestScore = -Infinity;
   for (const c of cands.slice(0, opts.chainTries)) {
+    // 乱数は候補ごとに必ず1回引く（枝刈りで引く回数が変わると決定論が崩れる）
+    const jitter = rng() * 6;
     board.movePiece(id, OPPOSITE[c.dir], c.t);
+
     // 一度通った局面へ戻す手は採らない。行って戻るだけの往復が解に混ざってしまう
     let ok = !seen.has(board.fingerprint());
-    let stillClearable = false;
+    let s = -Infinity;
     if (ok) {
-      stillClearable = colorClearable(board, piece.color);
+      // 軽い判定（この色だけを見る）で点を出し、いまの最高点に届かない候補は
+      // ここで捨てる。盤面全体を数える guard は残った候補にだけ掛ける ――
+      // 追い込み1手あたり数十回まわるので、ここの枝刈りが生成時間を決める
+      s = (colorClearable(board, piece.color) ? 0 : 100) + c.t * 4 + jitter;
+      if (s <= bestScore) ok = false;
       // guard を渡されたら「盤面全体で消せる色」をそこまでに抑える候補しか認めない。
       // せっかく塞いだ初手を、深さを稼ぐついでに開けてしまわないための歯止め
-      if (Number.isFinite(guard) && clearableColors(board, guard + 1).size > guard) ok = false;
+      else if (Number.isFinite(guard) && clearableColors(board, guard + 1).size > guard) ok = false;
     }
     board.movePiece(id, c.dir, c.t);
     if (!ok) continue;
 
-    const s = (stillClearable ? 0 : 100) + c.t * 4 + rng() * 6;
-    if (s > bestScore) { bestScore = s; best = c; }
+    bestScore = s;
+    best = c;
   }
   if (!best) return null;
 
@@ -625,7 +638,7 @@ function attemptBuild(seed, opts) {
   const seen = new Set();
 
   for (let c = 0; c < opts.colors; c++) {
-    const placed = placePair(board, rng, opts, c, opts.forced);
+    const placed = placePair(board, rng, opts, c, opts.forced, plan[c] > 0);
     if (!placed) return null;
     // 逆順に作っているので、新しいステップほど「先の手」になる
     solution.unshift(placed.step);
@@ -816,7 +829,9 @@ export async function generatePuzzleAsync(seed, options = {}, onProgress = null)
       if (goodEnough(result, opts)) break;
     }
     if (onProgress) onProgress((attempt + 1) / opts.attempts);
-    if (attempt % 4 === 3) await new Promise((r) => setTimeout(r, 0));
+    // 詰まった盤面では1試行が 50ms 近くかかる。2回ごとに制御を返して、
+    // 「組み立て中」の表示が止まって見えないようにする
+    if (attempt % 2 === 1) await new Promise((r) => setTimeout(r, 0));
   }
 
   if (!best) throw new Error('パズルを生成できませんでした');

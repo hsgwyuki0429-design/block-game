@@ -10,7 +10,7 @@ import { Board } from '../src/board.js';
 import { generateLevel, verifySolution, clearableColors, findClearPlan } from '../src/generator.js';
 import {
   levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
-  colorsForLevel, chainDepthForLevel, chainMovesForLevel, setupMovesForLevel,
+  colorsForLevel, chainDepthForLevel, chainMovesForLevel, setupMovesForLevel, fillForLevel,
   targetTimes, starsForTime, formatTime,
   MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES, MAX_SETUP_MOVES,
 } from '../src/levels.js';
@@ -45,10 +45,22 @@ test('色数はレベル1で3色、上がるほど増え、上限で頭打ち', 
   assert.equal(colorsForLevel(1000), MAX_COLORS);
 });
 
-test('色数の上限は最大盤面に収まる（色数×2ブロック×4マス）', () => {
-  // 追い込み手は「滑走路」を要る。半分は空けておく
-  assert.ok(MAX_COLORS * 8 <= MAX_SIZE * MAX_SIZE * 0.55, '最大色数が盤面に対して詰まりすぎ');
+test('盤面が頭打ちになったあとは、色数がそのまま埋め率になる', () => {
   assert.equal(boardSizeForColors(MAX_COLORS), MAX_SIZE);
+  // 上限でも空きは残す。追い込み手も初手の掃除も「戻す先の空き」が要る
+  const topFill = (MAX_COLORS * 8) / (MAX_SIZE * MAX_SIZE);
+  assert.ok(topFill >= 0.6, `最大でも埋め率が ${(topFill * 100).toFixed(0)}% しかない`);
+  assert.ok(topFill <= 0.7, `埋め率 ${(topFill * 100).toFixed(0)}% は詰まりすぎ（生成が破綻する）`);
+
+  // 埋め率は下がらない
+  let prev = 0;
+  for (let lv = 1; lv <= 200; lv++) {
+    const f = fillForLevel(lv);
+    assert.ok(f >= prev - 0.05, `Lv${lv}: 埋め率が大きく下がった`);
+    assert.ok(f > 0.4 && f <= topFill + 1e-9);
+    prev = Math.max(prev, f);
+  }
+  assert.ok(fillForLevel(1000) > fillForLevel(1), 'いちばん上でも盤面が詰まらない');
 });
 
 test('追い込みはレベル1から深い', () => {
@@ -160,6 +172,18 @@ test('レベルが上がるほど手順は長くなる（多少の上下は許�
   assert.ok(pars[2] < pars[4], `Lv12 ${pars[2]} / Lv30 ${pars[4]}`);
 });
 
+test('上のレベルは 100 手級で、盤面がほとんど埋まっている', () => {
+  for (const lv of [30, 45]) {
+    const p = generateLevel(lv);
+    assert.ok(p.par >= 90, `Lv${lv}: PAR が ${p.par} 手しかない`);
+    const fill = p.cells / (p.size * p.size);
+    assert.ok(fill >= 0.65, `Lv${lv}: 埋め率が ${(fill * 100).toFixed(0)}% しかない`);
+    assert.equal(p.size, MAX_SIZE);
+    assert.ok(p.analysis.dryStreak >= 20, `Lv${lv}: 無消去の連続が ${p.analysis.dryStreak} 手`);
+    assert.equal(verifySolution(p.snapshot, p.solution, p.size).ok, true, `Lv${lv}`);
+  }
+});
+
 test('ヒントはどのレベルの初期盤面でも道筋を出せる', () => {
   for (const lv of [1, 5, 13, 26]) {
     const p = generateLevel(lv);
@@ -238,6 +262,7 @@ test('レベルの要約は主要なパラメータを含む', () => {
   assert.match(s, new RegExp(`${cfg.size}×${cfg.size}`));
   assert.match(s, new RegExp(`${cfg.colors}色`));
   assert.match(s, /追い込み/);
+  assert.match(s, /埋め率/); // 詰まった盤面ではそれも出す
 
   // 遊んだあとの要約には、実際にかかる手数が入る
   const p = generateLevel(13);

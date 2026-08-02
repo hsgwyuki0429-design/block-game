@@ -182,7 +182,11 @@ export class Game {
 
     let puzzle;
     try {
-      puzzle = await generateLevelAsync(lv);
+      // 詰まった盤面ほど「当たり」を引くまで試行が要る（最大で数秒）。
+      // 何回目を試しているかを出して、止まって見えないようにする
+      puzzle = await generateLevelAsync(lv, {}, (ratio) => {
+        if (token === this.loadToken) this.showLoading(lv, ratio);
+      });
     } catch (err) {
       console.error(err);
       if (token !== this.loadToken) return;
@@ -220,12 +224,14 @@ export class Game {
     location.hash = `#L${lv}`;
   }
 
-  showLoading(level) {
+  showLoading(level, ratio = 0) {
     const cfg = levelConfig(level);
+    const tried = Math.round(ratio * cfg.attempts);
     this.showOverlay({
       badge: '🧩',
       title: `レベル ${level}`,
-      text: `${cfg.size}×${cfg.size} の盤面を組み立てています…`,
+      text: `${cfg.size}×${cfg.size}・${cfg.colors}色 の盤面を組み立てています…`
+        + (tried > 0 ? `（${tried} 通り目）` : ''),
       stats: [],
       actions: [],
     });
