@@ -40,13 +40,18 @@ export const MAX_SIZE = 12;
  * 自体が見つからず、試行の4割が生成に失敗する）。72% は「詰まっている」のではなく
  * 「動かせない」。
  */
-export const MAX_COLORS = 12;
+export const MAX_COLORS = 10;
 /** 追い込み手の総数の上限 */
 export const MAX_CHAIN_MOVES = 64;
 /** 1組を消すまでに重ねるスライドの上限（追い込み手の深さ） */
 export const MAX_CHAIN_DEPTH = 8;
 /** 仕込み手の上限 */
 export const MAX_SETUP_MOVES = 20;
+/**
+ * 灰色ブロック（どの色とも消えない邪魔者）の上限。
+ * 色つきブロックと合わせて埋め率 75% 前後に収まるところで止めてある。
+ */
+export const MAX_BLOCKERS = 8;
 
 /**
  * 目標の埋め率。これを基準に色数から盤面サイズを決める。
@@ -69,11 +74,21 @@ export function colorsForLevel(level) {
   return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_COLORS);
 }
 
-/** レベル -> 盤面の埋め率（ブロックが占めるマスの割合） */
+/**
+ * レベル -> 灰色ブロックの数。
+ * 消えないので盤面は最後まで迷路のまま ―― 色つきが減っても通路が広がらない。
+ */
+export function blockersForLevel(level) {
+  const lv = normalizeLevel(level);
+  return clamp(Math.floor((lv - 2) / 3), 0, MAX_BLOCKERS);
+}
+
+/** レベル -> 盤面の埋め率（色つき＋灰色が占めるマスの割合の目安） */
 export function fillForLevel(level) {
   const colors = colorsForLevel(level);
   const size = boardSizeForColors(colors);
-  return (colors * 8) / (size * size);
+  // 色つきは1個あたり平均4マス×2個、灰色は平均3.5マス
+  return (colors * 8 + blockersForLevel(level) * 3.5) / (size * size);
 }
 
 /** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
@@ -176,6 +191,7 @@ export function levelConfig(level) {
     size,
     chainMoves,
     chainDepth: chainDepthForLevel(lv),
+    blockers: blockersForLevel(lv),
     setupMoves,
     forced: false,
     /** ブロック数（色数×2） */
@@ -186,8 +202,8 @@ export function levelConfig(level) {
      * 初手を塞ぐために足りなければ深くなる）ので、あくまで一覧に出す目安。
      */
     par: colors + chainMoves + setupMoves,
-    /** 盤面の埋め率（ブロックが占めるマスの割合） */
-    fill: (colors * 8) / (size * size),
+    /** 盤面の埋め率（色つき＋灰色） */
+    fill: (colors * 8 + blockersForLevel(lv) * 3.5) / (size * size),
     /** 生成の試行回数 */
     attempts: attemptsForLevel(lv),
   };
@@ -197,6 +213,7 @@ export function levelConfig(level) {
 export function levelSummary(config) {
   const parts = [`${config.size}×${config.size}`, `${config.colors}色`];
   parts.push(`追い込み${config.chainDepth}手`);
+  if (config.blockers > 0) parts.push(`灰${config.blockers}個`);
   if (config.setupMoves > 0) parts.push(`仕込み${config.setupMoves}手`);
   if (config.fill >= 0.6) parts.push(`埋め率${Math.round(config.fill * 100)}%`);
   return parts.join('・');
@@ -205,6 +222,7 @@ export function levelSummary(config) {
 /** 実際に生成できたパズルの要約（ゲーム画面の見出し下に出す） */
 export function puzzleSummary(puzzle) {
   const parts = [`${puzzle.size}×${puzzle.size}`, `${puzzle.colors}色`, `PAR ${puzzle.par}手`];
+  if (puzzle.blockers > 0) parts.push(`灰${puzzle.blockers}個`);
   const fill = puzzle.cells / (puzzle.size * puzzle.size);
   if (fill >= 0.6) parts.push(`埋め率${Math.round(fill * 100)}%`);
   return parts.join('・');

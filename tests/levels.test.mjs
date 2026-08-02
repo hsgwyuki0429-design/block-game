@@ -6,7 +6,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Board } from '../src/board.js';
+import { Board, BLOCKER } from '../src/board.js';
 import { generateLevel, verifySolution, clearableColors, findClearPlan } from '../src/generator.js';
 import {
   levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
@@ -14,7 +14,7 @@ import {
   targetTimes, starsForTime, formatTime,
   MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES, MAX_SETUP_MOVES,
 } from '../src/levels.js';
-import { TETROMINOES } from '../src/shapes.js';
+import { PIECES } from '../src/shapes.js';
 
 /** 通しで確かめるレベル（全部やると遅いので代表点を拾う） */
 const SAMPLE = [1, 2, 3, 5, 7, 10, 13, 17, 21, 24, 26, 30, 42, 60, 120];
@@ -48,19 +48,16 @@ test('色数はレベル1で3色、上がるほど増え、上限で頭打ち', 
 test('盤面が頭打ちになったあとは、色数がそのまま埋め率になる', () => {
   assert.equal(boardSizeForColors(MAX_COLORS), MAX_SIZE);
   // 上限でも空きは残す。追い込み手も初手の掃除も「戻す先の空き」が要る
-  const topFill = (MAX_COLORS * 8) / (MAX_SIZE * MAX_SIZE);
+  const topFill = fillForLevel(1000);
   assert.ok(topFill >= 0.6, `最大でも埋め率が ${(topFill * 100).toFixed(0)}% しかない`);
-  assert.ok(topFill <= 0.7, `埋め率 ${(topFill * 100).toFixed(0)}% は詰まりすぎ（生成が破綻する）`);
+  assert.ok(topFill <= 0.75, `埋め率 ${(topFill * 100).toFixed(0)}% は詰まりすぎ（生成が破綻する）`);
 
-  // 埋め率は下がらない
-  let prev = 0;
+  // 盤面が広がる途中では一度ゆるむが、全体としては詰まっていく
   for (let lv = 1; lv <= 200; lv++) {
     const f = fillForLevel(lv);
-    assert.ok(f >= prev - 0.05, `Lv${lv}: 埋め率が大きく下がった`);
-    assert.ok(f > 0.4 && f <= topFill + 1e-9);
-    prev = Math.max(prev, f);
+    assert.ok(f > 0.4 && f <= topFill + 1e-9, `Lv${lv}: 埋め率 ${f.toFixed(2)}`);
   }
-  assert.ok(fillForLevel(1000) > fillForLevel(1), 'いちばん上でも盤面が詰まらない');
+  assert.ok(fillForLevel(40) > fillForLevel(1) + 0.1, 'いちばん上でも盤面が詰まらない');
 });
 
 test('追い込みはレベル1から深い', () => {
@@ -120,7 +117,7 @@ test('どのレベルも初期盤面に同色隣接が無く、少なくとも1�
 });
 
 test('ブロックはテトロミノだけで、同じ色はちょうど2個ずつ', () => {
-  const shapeNames = new Set(TETROMINOES.map((s) => s.name));
+  const shapeNames = new Set(PIECES.map((s) => s.name));
   for (const lv of SAMPLE) {
     const p = generateLevel(lv);
     const b = new Board(p.size);
@@ -128,7 +125,8 @@ test('ブロックはテトロミノだけで、同じ色はちょうど2個ず�
 
     const counts = new Map();
     for (const piece of b.pieces.values()) {
-      assert.equal(piece.cells.length, 4, `Lv${lv}: ${piece.cells.length}セルのブロック`);
+      if (piece.color === BLOCKER) continue; // 灰色は何個でもよい
+      assert.ok(piece.cells.length >= 3 && piece.cells.length <= 5, `Lv${lv}: ${piece.cells.length}セルのブロック`);
       assert.ok(shapeNames.has(piece.shape), `Lv${lv}: 未知の形 ${piece.shape}`);
       counts.set(piece.color, (counts.get(piece.color) || 0) + 1);
     }

@@ -20,6 +20,16 @@ export const BOARD_SIZE = 12;
 export const EMPTY = -1;
 export const WALL = -2;
 
+/**
+ * 灰色ブロックの色番号。
+ * どの色とも消えない、ただの邪魔者。押せば普通に滑るが、盤上から消えることは無い。
+ *
+ * これがあると「消えた跡に空きマスが増える」流れが最後まで続かない ――
+ * 終盤になっても盤面は迷路のままで、同じ色の2個を寄せる道のりが短くならない。
+ * 勝利条件は「盤面が空になること」ではなく「色つきブロックが全部消えること」。
+ */
+export const BLOCKER = -9;
+
 export class Board {
   constructor(size = BOARD_SIZE) {
     this.size = size;
@@ -55,6 +65,18 @@ export class Board {
 
   get isEmpty() {
     return this.pieces.size === 0;
+  }
+
+  /** 色つきブロック（灰色を除く）の数 */
+  get coloredCount() {
+    let n = 0;
+    for (const p of this.pieces.values()) if (p.color !== BLOCKER) n++;
+    return n;
+  }
+
+  /** クリア判定。灰色は残っていてよい */
+  get isCleared() {
+    return this.coloredCount === 0;
   }
 
   /** 与えられたセル群がすべて盤内かつ空きか */
@@ -171,6 +193,8 @@ export class Board {
     const start = this.pieces.get(movedId);
     if (!start) return [];
     const color = start.color;
+    // 灰色はどれだけ触れ合っても消えない
+    if (color === BLOCKER) return [movedId];
     const seen = new Set([movedId]);
     const stack = [[movedId, movedCells]];
     while (stack.length) {
