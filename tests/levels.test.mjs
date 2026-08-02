@@ -12,7 +12,7 @@ import {
   levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
   colorsForLevel, chainDepthForLevel, chainMovesForLevel, setupMovesForLevel,
   targetTimes, starsForTime, formatTime,
-  MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES,
+  MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES, MAX_SETUP_MOVES,
 } from '../src/levels.js';
 import { TETROMINOES } from '../src/shapes.js';
 
@@ -32,14 +32,14 @@ test('盤面はレベル1で最小、上がるほど広がり、12×12で頭打�
   }
 });
 
-test('色数はレベル1で2色、上がるほど増え、上限で頭打ち', () => {
-  assert.equal(colorsForLevel(1), 2);
+test('色数はレベル1で3色、上がるほど増え、上限で頭打ち', () => {
+  assert.equal(colorsForLevel(1), 3);
 
   let prev = 0;
   for (let lv = 1; lv <= 300; lv++) {
     const n = colorsForLevel(lv);
     assert.ok(n >= prev, `Lv${lv}: 色数が減った`);
-    assert.ok(n >= 2 && n <= MAX_COLORS);
+    assert.ok(n >= 3 && n <= MAX_COLORS);
     prev = n;
   }
   assert.equal(colorsForLevel(1000), MAX_COLORS);
@@ -51,10 +51,10 @@ test('色数の上限は最大盤面に収まる（色数×2ブロック×4マ�
   assert.equal(boardSizeForColors(MAX_COLORS), MAX_SIZE);
 });
 
-test('追い込みはレベル1から入り、上がるほど深くなる', () => {
-  // レベル1でも「置いてすぐぶつけられる」形にはしない
-  assert.ok(chainDepthForLevel(1) >= 1);
-  assert.ok(chainMovesForLevel(1) >= colorsForLevel(1));
+test('追い込みはレベル1から深い', () => {
+  // レベル1でも「1手ずらせば届く」形にはしない。3手ぶん寄せさせる
+  assert.ok(chainDepthForLevel(1) >= 3, `レベル1の追い込みが ${chainDepthForLevel(1)} 手しかない`);
+  assert.ok(chainMovesForLevel(1) >= colorsForLevel(1) * 3);
 
   let prev = 0;
   for (let lv = 1; lv <= 300; lv++) {
@@ -74,9 +74,11 @@ test('仕込み手は、あるレベルから先で加わる', () => {
   for (let lv = 1; lv <= 300; lv++) {
     const n = setupMovesForLevel(lv);
     assert.ok(n >= prev, `Lv${lv}: 仕込み手が減った`);
+    assert.ok(n <= MAX_SETUP_MOVES);
     prev = n;
   }
   assert.ok(setupMovesForLevel(100) > 0, '上のレベルで仕込み手が入らない');
+  assert.equal(setupMovesForLevel(1000), MAX_SETUP_MOVES);
 });
 
 test('PAR の見込みは 色数 + 追い込み手 + 仕込み手', () => {
@@ -137,17 +139,18 @@ test('初期盤面ではどのブロックを動かしても何も消えない',
     assert.equal(clearableColors(b).size, p.analysis.clearAtStart, `Lv${lv}`);
     if (p.analysis.clearAtStart === 0) blocked++;
   }
-  assert.ok(blocked >= SAMPLE.length - 2, `初手が塞がった盤面が ${blocked}/${SAMPLE.length} しかない`);
+  assert.ok(blocked >= SAMPLE.length - 1, `初手が塞がった盤面が ${blocked}/${SAMPLE.length} しかない`);
 });
 
-test('どのレベルも「消すには何手か重ねる」手順になっている', () => {
+test('どのレベルも「消すには何手も重ねる」手順になっている', () => {
   for (const lv of SAMPLE) {
     const p = generateLevel(lv);
-    // 何も消さない手が解に必ず混ざる（＝1手で消えるだけの盤面ではない）
+    // 何も消さない手が、消去1回あたり平均3手は挟まる
     const quiet = p.solution.filter((s) => s.kind !== 'clear').length;
-    assert.ok(quiet >= p.colors, `Lv${lv}: 何も消さない手が ${quiet} 手しかない`);
-    assert.ok(p.par > p.colors, `Lv${lv}: PAR が色数と同じ（＝1手ずつ消えるだけ）`);
-    assert.ok(p.analysis.dryStreak >= 1, `Lv${lv}`);
+    assert.ok(quiet >= p.colors * 3, `Lv${lv}: 何も消さない手が ${quiet} 手しかない`);
+    assert.ok(p.par >= p.colors * 4, `Lv${lv}: PAR ${p.par} が色数 ${p.colors} に対して短い`);
+    // 消えない手が続けて何手も要る（＝1手先だけ見ても進めない）
+    assert.ok(p.analysis.dryStreak >= 3, `Lv${lv}: 無消去の連続が ${p.analysis.dryStreak} 手`);
   }
 });
 
@@ -219,13 +222,14 @@ test('違うレベルは違う譜面になる', () => {
   assert.equal(seen.size, 12);
 });
 
-test('レベル1は2色4個の入門用。それでも一手では消えない', () => {
+test('レベル1は3色6個の入門用。それでも何手も重ねないと消せない', () => {
   const p = generateLevel(1);
   assert.equal(p.size, MIN_SIZE);
-  assert.equal(p.colors, 2);
-  assert.equal(p.pieces, 4);
-  assert.ok(p.par >= 3, `PAR が ${p.par} 手しかない`);
+  assert.equal(p.colors, 3);
+  assert.equal(p.pieces, 6);
+  assert.ok(p.par >= 12, `PAR が ${p.par} 手しかない`);
   assert.equal(p.analysis.clearAtStart, 0);
+  assert.ok(p.analysis.dryStreak >= 3);
 });
 
 test('レベルの要約は主要なパラメータを含む', () => {

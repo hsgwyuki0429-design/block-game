@@ -25,17 +25,19 @@
 
 import { hashSeed } from './rng.js';
 
-export const MIN_SIZE = 6;
+export const MIN_SIZE = 7;
 export const MAX_SIZE = 12;
 /**
  * 色数の上限。最大盤面 12×12 に「9色 × 2個 × 4マス = 72マス」で埋め率 50%。
- * 追い込み手はブロックが滑る「滑走路」を必要とするので、以前より空きを多めに残す。
+ * 追い込み手はブロックが滑る「滑走路」を必要とするので、空きを多めに残す。
  */
 export const MAX_COLORS = 9;
-/** 追い込み手の総数の上限。これ以上増やしても手順が長いだけで頭は使わない */
-export const MAX_CHAIN_MOVES = 14;
+/** 追い込み手の総数の上限 */
+export const MAX_CHAIN_MOVES = 42;
 /** 1組を消すまでに重ねるスライドの上限（追い込み手の深さ） */
-export const MAX_CHAIN_DEPTH = 3;
+export const MAX_CHAIN_DEPTH = 8;
+/** 仕込み手の上限 */
+export const MAX_SETUP_MOVES = 12;
 
 /** 目標の埋め率。これを基準に色数から盤面サイズを決める */
 const FILL = 0.5;
@@ -51,7 +53,7 @@ export function normalizeLevel(level) {
 /** レベル -> 色数（＝ブロックのペア数＝消去の回数） */
 export function colorsForLevel(level) {
   const lv = normalizeLevel(level);
-  return clamp(2 + Math.floor((lv - 1) / 3), 2, MAX_COLORS);
+  return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_COLORS);
 }
 
 /** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
@@ -68,11 +70,13 @@ export function boardSizeForLevel(level) {
 /**
  * レベル -> 追い込みの深さ。
  * 「1組を消すまでに、そのブロックを平均で何手ぶん滑らせる必要があるか」。
- * 1 でも「置いてすぐぶつけられる」状態ではなくなる（必ず1手は寄り道が要る）。
+ *
+ * レベル1でも 3 手から始める。「1手ずらせば届く」形は、見つけて押すだけで
+ * 終わってしまい読む余地が無いので、入門レベルにも置かない。
  */
 export function chainDepthForLevel(level) {
   const lv = normalizeLevel(level);
-  return clamp(1 + Math.floor((lv - 1) / 4), 1, MAX_CHAIN_DEPTH);
+  return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_CHAIN_DEPTH);
 }
 
 /**
@@ -92,7 +96,7 @@ export function chainMovesForLevel(level) {
  */
 export function setupMovesForLevel(level) {
   const lv = normalizeLevel(level);
-  return clamp(Math.floor((lv - 4) / 5), 0, 4);
+  return clamp(Math.floor((lv - 3) / 2), 0, MAX_SETUP_MOVES);
 }
 
 /** レベル -> 生成シード。この一本道が「どの端末でも同じ譜面」を担保する */

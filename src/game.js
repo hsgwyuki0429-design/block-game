@@ -1,8 +1,10 @@
 // ゲーム進行・アニメーション・UI 配線。
 //
 // 画面は3つ（ホーム / レベル一覧 / ゲーム）。同時に見えるのは常に1つだけ。
-// レベルは「ひとつ前をクリアするまで開かない」ので、進行状況は
-// 「解放済みレベル」と「レベルごとの星」だけで表せる。
+//
+// レベルに鍵はかかっていない。どのレベルにもいつでも入れる ―― 1つ詰まったら
+// 先へ行って戻ってくればいいし、いきなり上から始めてもいい。進行状況は
+// 「到達レベル」と「レベルごとの星・自己ベスト」だけで表せる。
 //
 // 星は「解けるまでの時間」で決まる（手数ではない）。盤面を読むのに使った時間
 // だけを数えたいので、時計は下の条件がすべて満たされている間だけ進む。
@@ -42,10 +44,12 @@ export function levelPreview(level) {
  * 「どこまで開いていたか」だけを残す ―― 進みが巻き戻るのがいちばん理不尽なので。
  */
 function migrateLegacy(data) {
-  if (data.unlocked) return data;
+  // 鍵をかけていた頃の「解放済みレベル」は、いまは「到達レベル」の意味で使う
+  if (data.reached == null && data.unlocked) data.reached = data.unlocked;
+  if (data.reached != null) return data;
   try {
     const old = JSON.parse(localStorage.getItem(LEGACY_KEY) || '{}');
-    if (old.unlocked) data.unlocked = old.unlocked;
+    if (old.unlocked) data.reached = old.unlocked;
     if (old.settings) data.settings = { ...old.settings, ...(data.settings || {}) };
   } catch { /* 読めなければ最初から */ }
   return data;
@@ -122,14 +126,13 @@ export class Game {
 
   // ------------------------------------------------------------ 進行状況
 
-  /** 遊べる最大レベル。ひとつ前をクリアすると 1 つ増える */
-  get unlockedLevel() {
-    return Math.max(1, Math.floor(this.store.unlocked) || 1);
-  }
-
-  /** そのレベルが開いているか */
-  isUnlocked(level) {
-    return normalizeLevel(level) <= this.unlockedLevel;
+  /**
+   * 到達レベル ―― まだクリアしていない、いちばん手前のレベル。
+   * 鍵ではない。どのレベルにもいつでも入れる。これは「つづきから」の行き先と、
+   * レベル一覧でいまいる場所を示すためだけに使う。
+   */
+  get reachedLevel() {
+    return Math.max(1, Math.floor(this.store.reached) || 1);
   }
 
   /** そのレベルで取った星（0 = 未クリア） */
@@ -162,11 +165,6 @@ export class Game {
    */
   async load(level) {
     const lv = normalizeLevel(level);
-    if (!this.isUnlocked(lv)) {
-      this.showLevels(Math.floor((this.unlockedLevel - 1) / PAGE_SIZE));
-      this.toast(`レベル ${lv - 1} をクリアすると開きます`);
-      return;
-    }
     const token = ++this.loadToken;
     this.showGame();
 
@@ -551,7 +549,7 @@ export class Game {
 
     // レベル一覧
     d.btnLevelsBack.addEventListener('click', () => this.showHome());
-    d.btnLevelsJump.addEventListener('click', () => this.showLevels(this.pageOf(this.unlockedLevel)));
+    d.btnLevelsJump.addEventListener('click', () => this.showLevels(this.pageOf(this.reachedLevel)));
     d.btnPagePrev.addEventListener('click', () => this.showLevels(this.page - 1));
     d.btnPageNext.addEventListener('click', () => this.showLevels(this.page + 1));
     d.levelGrid.addEventListener('click', (e) => {
@@ -664,7 +662,7 @@ export class Game {
   /** 「ゲームスタート」が始めるレベル。まだ挑戦中のものがあればそれを続ける */
   get startLevel() {
     const last = normalizeLevel(this.store.lastLevel || 1);
-    return this.isUnlocked(last) && this.starsOf(last) === 0 ? last : this.unlockedLevel;
+    return this.starsOf(last) === 0 ? last : this.reachedLevel;
   }
 
   showScreen(name) {
@@ -696,7 +694,7 @@ export class Game {
     const chips = [
       ['クリア', this.clearedCount],
       ['星', this.totalStars],
-      ['最高レベル', this.unlockedLevel],
+      ['到達レベル', this.reachedLevel],
     ];
     for (const [k, n] of chips) {
       const el = document.createElement('span');
@@ -726,32 +724,21 @@ export class Game {
 
     d.levelGrid.innerHTML = '';
     for (let lv = from; lv <= to; lv++) {
-      const unlocked = this.isUnlocked(lv);
       const stars = this.starsOf(lv);
+      const best = this.bestTimeOf(lv);
       const cell = document.createElement('button');
       cell.type = 'button';
       cell.className = 'level-cell';
-      if (!unlocked) cell.classList.add('locked');
-      else if (lv === this.unlockedLevel) cell.classList.add('current');
+      if (lv === this.reachedLevel) cell.classList.add('current');
       else if (stars > 0) cell.classList.add('done');
 
-      if (unlocked) {
-        cell.dataset.level = String(lv);
-        const best = this.bestTimeOf(lv);
-        cell.innerHTML = `<span class="n">${lv}</span>`
-          + `<span class="stars${stars ? '' : ' none'}">${'★'.repeat(stars) || '☆☆☆'}</span>`
-          + (best != null ? `<span class="cell-time">${formatTime(best)}</span>` : '');
-        cell.title = best != null
-          ? `レベル ${lv}：${levelPreview(lv)}／自己ベスト ${formatTime(best)}`
-          : `レベル ${lv}：${levelPreview(lv)}`;
-      } else {
-        cell.disabled = true;
-        cell.setAttribute('aria-label', `レベル ${lv}（未開放）`);
-        cell.innerHTML = '<svg class="lock" viewBox="0 0 24 24" aria-hidden="true">'
-          + '<rect x="5" y="10.5" width="14" height="9.5" rx="2.6"/>'
-          + '<path d="M8.4 10.5V7.9a3.6 3.6 0 0 1 7.2 0v2.6"/></svg>'
-          + `<span class="stars none">${lv}</span>`;
-      }
+      cell.dataset.level = String(lv);
+      cell.innerHTML = `<span class="n">${lv}</span>`
+        + `<span class="stars${stars ? '' : ' none'}">${'★'.repeat(stars) || '☆☆☆'}</span>`
+        + (best != null ? `<span class="cell-time">${formatTime(best)}</span>` : '');
+      cell.title = best != null
+        ? `レベル ${lv}：${levelPreview(lv)}／自己ベスト ${formatTime(best)}`
+        : `レベル ${lv}：${levelPreview(lv)}`;
       d.levelGrid.appendChild(cell);
     }
   }
@@ -891,8 +878,8 @@ export class Game {
     if (this.newRecord) this.store.best[key] = seconds;
     this.store.stars[key] = Math.max(prevStars, stars);
 
-    // クリアしたら次のレベルが開く
-    this.store.unlocked = Math.max(this.unlockedLevel, this.level + 1);
+    // 到達レベルを進める（鍵ではない。「つづきから」の行き先になるだけ）
+    this.store.reached = Math.max(this.reachedLevel, this.level + 1);
     saveStore(this.store);
 
     this.clearTime = seconds;
