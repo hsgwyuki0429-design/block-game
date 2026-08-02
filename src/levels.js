@@ -28,18 +28,31 @@ import { hashSeed } from './rng.js';
 export const MIN_SIZE = 7;
 export const MAX_SIZE = 12;
 /**
- * 色数の上限。最大盤面 12×12 に「9色 × 2個 × 4マス = 72マス」で埋め率 50%。
- * 追い込み手はブロックが滑る「滑走路」を必要とするので、空きを多めに残す。
+ * 色数の上限。最大盤面 12×12 に「12色 × 2個 × 4マス = 96マス」で埋め率 67%
+ * ―― 144 マスのうち空きは 48 マスだけ。
+ *
+ * 盤面が 12×12 で頭打ちになったあとは、色数を増やすことがそのまま
+ * **埋め率を上げること**になる。難易度の最後のひと押しはここから取っている。
+ *
+ * ここが上限なのは「初期盤面では何をどう動かしても消えない」を守れる限界だから。
+ * 追い込みも初手の掃除もブロックを手前へ戻す操作なので、戻す先の空きが要る。
+ * 実測（1試行あたりの成立率）: 56%→8% / 67%→8% / 72%→0%（しかもペアを置く場所
+ * 自体が見つからず、試行の4割が生成に失敗する）。72% は「詰まっている」のではなく
+ * 「動かせない」。
  */
-export const MAX_COLORS = 9;
+export const MAX_COLORS = 12;
 /** 追い込み手の総数の上限 */
-export const MAX_CHAIN_MOVES = 42;
+export const MAX_CHAIN_MOVES = 64;
 /** 1組を消すまでに重ねるスライドの上限（追い込み手の深さ） */
 export const MAX_CHAIN_DEPTH = 8;
 /** 仕込み手の上限 */
-export const MAX_SETUP_MOVES = 12;
+export const MAX_SETUP_MOVES = 20;
 
-/** 目標の埋め率。これを基準に色数から盤面サイズを決める */
+/**
+ * 目標の埋め率。これを基準に色数から盤面サイズを決める。
+ * 盤面が MAX_SIZE で頭打ちになると、以降は色数がそのまま埋め率になる
+ * （9色=50% / 11色=61% / 13色=72%）。
+ */
 const FILL = 0.5;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -54,6 +67,13 @@ export function normalizeLevel(level) {
 export function colorsForLevel(level) {
   const lv = normalizeLevel(level);
   return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_COLORS);
+}
+
+/** レベル -> 盤面の埋め率（ブロックが占めるマスの割合） */
+export function fillForLevel(level) {
+  const colors = colorsForLevel(level);
+  const size = boardSizeForColors(colors);
+  return (colors * 8) / (size * size);
 }
 
 /** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
@@ -97,6 +117,13 @@ export function chainMovesForLevel(level) {
 export function setupMovesForLevel(level) {
   const lv = normalizeLevel(level);
   return clamp(Math.floor((lv - 3) / 2), 0, MAX_SETUP_MOVES);
+}
+
+/** レベル -> 生成の試行回数。詰まった盤面ほど当たりを引くまで回数が要る */
+export function attemptsForLevel(level) {
+  // 詰まった盤面では「初手が塞がった」当たりを引く確率が1割ほどまで落ちるので、
+  // 試行回数を増やして引き当てにいく（1回の試行は 50ms 前後）
+  return colorsForLevel(level) >= 10 ? 96 : 48;
 }
 
 /** レベル -> 生成シード。この一本道が「どの端末でも同じ譜面」を担保する */
@@ -159,8 +186,10 @@ export function levelConfig(level) {
      * 初手を塞ぐために足りなければ深くなる）ので、あくまで一覧に出す目安。
      */
     par: colors + chainMoves + setupMoves,
+    /** 盤面の埋め率（ブロックが占めるマスの割合） */
+    fill: (colors * 8) / (size * size),
     /** 生成の試行回数 */
-    attempts: 48,
+    attempts: attemptsForLevel(lv),
   };
 }
 
@@ -169,12 +198,14 @@ export function levelSummary(config) {
   const parts = [`${config.size}×${config.size}`, `${config.colors}色`];
   parts.push(`追い込み${config.chainDepth}手`);
   if (config.setupMoves > 0) parts.push(`仕込み${config.setupMoves}手`);
+  if (config.fill >= 0.6) parts.push(`埋め率${Math.round(config.fill * 100)}%`);
   return parts.join('・');
 }
 
 /** 実際に生成できたパズルの要約（ゲーム画面の見出し下に出す） */
 export function puzzleSummary(puzzle) {
   const parts = [`${puzzle.size}×${puzzle.size}`, `${puzzle.colors}色`, `PAR ${puzzle.par}手`];
-  if (puzzle.setupMoves > 0) parts.push(`仕込み${puzzle.setupMoves}手`);
+  const fill = puzzle.cells / (puzzle.size * puzzle.size);
+  if (fill >= 0.6) parts.push(`埋め率${Math.round(fill * 100)}%`);
   return parts.join('・');
 }
