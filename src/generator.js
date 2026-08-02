@@ -37,14 +37,17 @@
 // 狙いは clearAtStart === 0 ―― 初期盤面では、どのブロックをどう動かしても
 // 何も消えない。まず通路を作る読みから入る盤面になる。
 
-import { Board } from './board.js';
-import { DIRS, DIR_KEYS, OPPOSITE, TETROMINOES } from './shapes.js';
+import { Board, BLOCKER } from './board.js';
+import { DIRS, DIR_KEYS, OPPOSITE, PIECES, BLOCKER_SHAPES } from './shapes.js';
 import { makeRng, shuffle } from './rng.js';
-import { levelConfig, levelSeed } from './levels.js';
+import { levelConfig, levelSeed, normalizeLevel } from './levels.js';
+import { LEVEL_DATA } from './levelData.js';
 
 export const DEFAULT_OPTIONS = {
   size: 8,
   colors: 4,
+  /** 灰色ブロック（消えない邪魔者）の数 */
+  blockers: 0,
   /** 追い込み手の総数。色ごとに振り分けられる */
   chainMoves: 0,
   setupMoves: 0,
@@ -70,6 +73,18 @@ export const DEFAULT_OPTIONS = {
   openingTries: 400,
   /** 追い込み手の達成率がこれを超えれば「狙いどおり」とみなして試行を打ち切る */
   chainQuota: 0.75,
+  /**
+   * 同じ色の2個を「接触まで最短この手数」以上に引き離す。
+   * PAR をいくら長くしても、ここが小さいと数手で消されてしまう ―― 実際に
+   * 何手かかるかを決めているのはこの値のほう。
+   */
+  separation: 2,
+  /** 引き離しに使ってよい手の上限 */
+  separationPushes: 30,
+  /** 引き離し1手あたりに評価する巻き戻し候補の数 */
+  separationTries: 40,
+  /** 巻き戻しで「相棒から離れること」をどれだけ重く見るか */
+  gapWeight: 9,
 };
 
 /** セル群の上下左右の隣接セルを Set に集める（盤外は無視） */
@@ -87,10 +102,10 @@ function haloOf(size, cells, target = new Set()) {
 }
 
 /** 盤面に置けるすべての「形状 × 位置」を列挙（空きマスのみ） */
-function emptyPlacements(board) {
+function emptyPlacements(board, shapes = PIECES) {
   const out = [];
   const size = board.size;
-  for (const shape of TETROMINOES) {
+  for (const shape of shapes) {
     const maxX = size - shape.w;
     const maxY = size - shape.h;
     for (let oy = 0; oy <= maxY; oy++) {
@@ -138,7 +153,7 @@ function findPartner(board, rng, ctx, anchors) {
   for (const anchor of shuffle(rng, [...anchors])) {
     const ax = anchor % size;
     const ay = (anchor - ax) / size;
-    for (const shape of shuffle(rng, TETROMINOES.slice())) {
+    for (const shape of shuffle(rng, PIECES.slice())) {
       for (const oi of shuffle(rng, shape.cells.map((_, i) => i))) {
         const [px, py] = shape.cells[oi];
         const ox = ax - px;
@@ -170,6 +185,7 @@ function findPartner(board, rng, ctx, anchors) {
 export function clearableColors(board, limit = Infinity) {
   const out = new Set();
   for (const [id, piece] of board.pieces) {
+    if (piece.color === BLOCKER) continue; // 灰色は消えない
     if (out.has(piece.color)) continue; // この色はもう数えた
     for (const dir of DIR_KEYS) {
       const r = board.simulate(id, dir);
@@ -182,6 +198,7 @@ export function clearableColors(board, limit = Infinity) {
 
 /** その色が「いま1手で消せる」か。色ごとにブロックは2個なので判定は軽い */
 export function colorClearable(board, color) {
+  if (color === BLOCKER) return false; // 灰色は何と触れても消えない
   for (const [id, piece] of board.pieces) {
     if (piece.color !== color) continue;
     for (const dir of DIR_KEYS) {
@@ -205,7 +222,7 @@ export function colorClearable(board, color) {
  * @returns {{dir:string, pieceId:number, depth:number}|null} 最初の1手
  */
 export function findClearPlan(board, maxDepth = 3, budget = 12000) {
-  if (board.isEmpty) return null;
+  if (board.isCleared) return null;
   const seen = new Set([board.fingerprint()]);
   /** @type {{snap:object, first:{pieceId:number,dir:string}|null, depth:number}[]} */
   let frontier = [{ snap: board.snapshot(), first: null, depth: 0 }];
@@ -234,6 +251,171 @@ export function findClearPlan(board, maxDepth = 3, budget = 12000) {
     if (frontier.length === 0) break;
   }
   return null;
+}
+
+/**
+ * 灰色ブロックを撒く。
+ *
+ * 消えないので、盤面はここで決めた形のまま最後まで残る。色つきブロックが減っても
+ * 通路が広がらない ―― 終盤になっても「同じ色の2個を寄せる道のり」が短くならない。
+ * 逆順構築にとってはストッパーが増えるだけなので、追い込みはむしろ深く掛かる。
+ *
+ * 置き場所は散らす。1か所に固めると、ただの壁が生えただけで盤面の大半は素通しになる。
+ */
+function placeBlockers(board, rng, count) {
+  for (let i = 0; i < count; i++) {
+    const spots = emptyPlacements(board, BLOCKER_SHAPES);
+    if (spots.length === 0) return i;
+    // すでに置いた灰色から遠い場所を好む（散らすため）
+    let best = null;
+    let bestScore = -Infinity;
+    for (const spot of shuffle(rng, spots).slice(0, 120)) {
+      let near = Infinity;
+      for (const p of board.pieces.values()) {
+        if (p.color !== BLOCKER) continue;
+        for (const [x, y] of spot.cells) {
+          for (const [qx, qy] of p.cells) {
+            near = Math.min(near, Math.abs(x - qx) + Math.abs(y - qy));
+          }
+        }
+      }
+      const score = (near === Infinity ? 99 : near) + rng() * 3;
+      if (score > bestScore) { bestScore = score; best = spot; }
+    }
+    board.addPiece(BLOCKER, best.cells, best.shape.name);
+  }
+  return count;
+}
+
+/**
+ * そのペアが「接触するまで最短で何手か」。cap 以上なら cap を返す。
+ *
+ * 他のブロックは動かさない前提で、そのペアの2個だけを滑らせる幅優先探索。
+ * 状態は「2個のアンカー位置の組」なので、深さに関係なく盤面の広さの2乗で頭打ちになる。
+ */
+export function pairDistance(board, color, cap = 8) {
+  if (color === BLOCKER) return cap;
+  const size = board.size;
+  const pair = [];
+  for (const p of board.pieces.values()) if (p.color === color) pair.push(p);
+  if (pair.length < 2) return cap;
+  const [P, Q] = pair;
+
+  const occ = new Uint8Array(size * size);
+  for (const p of board.pieces.values()) {
+    if (p.id === P.id || p.id === Q.id) continue;
+    for (const [x, y] of p.cells) occ[y * size + x] = 1;
+  }
+  const shapeOf = (p) => p.cells.map(([x, y]) => [x - p.cells[0][0], y - p.cells[0][1]]);
+  const shapes = [shapeOf(P), shapeOf(Q)];
+  const starts = [P.cells[0][0] + P.cells[0][1] * size, Q.cells[0][0] + Q.cells[0][1] * size];
+  const cellsAt = (w, a) => {
+    const ax = a % size;
+    const ay = (a - ax) / size;
+    return shapes[w].map(([dx, dy]) => [ax + dx, ay + dy]);
+  };
+  const keyset = (cells) => {
+    const set = new Set();
+    for (const [x, y] of cells) set.add(y * size + x);
+    return set;
+  };
+  const touching = (a, b) => {
+    const set = keyset(b);
+    for (const [x, y] of a) {
+      for (const k of DIR_KEYS) {
+        const d = DIRS[k];
+        if (set.has((y + d.y) * size + (x + d.x))) return true;
+      }
+    }
+    return false;
+  };
+  const slide = (w, a, otherCells, dir) => {
+    const d = DIRS[dir];
+    const mine = cellsAt(w, a);
+    const other = keyset(otherCells);
+    let steps = 0;
+    for (let n = 1; n <= size; n++) {
+      let ok = true;
+      for (const [x, y] of mine) {
+        const nx = x + d.x * n;
+        const ny = y + d.y * n;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) { ok = false; break; }
+        const gi = ny * size + nx;
+        if (occ[gi] || other.has(gi)) { ok = false; break; }
+      }
+      if (!ok) break;
+      steps = n;
+    }
+    return steps > 0 ? a + (d.y * size + d.x) * steps : -1;
+  };
+
+  const span = size * size;
+  const seen = new Set([starts[0] * span + starts[1]]);
+  let frontier = [starts];
+  for (let depth = 1; depth <= cap; depth++) {
+    const next = [];
+    for (const [ap, aq] of frontier) {
+      const cells = [cellsAt(0, ap), cellsAt(1, aq)];
+      for (let w = 0; w < 2; w++) {
+        for (const dir of DIR_KEYS) {
+          const moved = slide(w, w === 0 ? ap : aq, cells[1 - w], dir);
+          if (moved < 0) continue;
+          const np = w === 0 ? moved : ap;
+          const nq = w === 0 ? aq : moved;
+          if (touching(cellsAt(0, np), cellsAt(1, nq))) return depth;
+          const k = np * span + nq;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          next.push([np, nq]);
+        }
+      }
+    }
+    frontier = next;
+    if (frontier.length === 0) break;
+  }
+  return cap;
+}
+
+/** 接触まで cap 手に満たない色（＝近道になりうる色）の集合 */
+export function nearColors(board, cap) {
+  const out = new Set();
+  const seen = new Set();
+  for (const p of board.pieces.values()) {
+    if (p.color === BLOCKER || seen.has(p.color)) continue;
+    seen.add(p.color);
+    if (pairDistance(board, p.color, cap) < cap) out.add(p.color);
+  }
+  return out;
+}
+
+/** いちばん近いペアの接触距離 ―― 最短で何手目に最初の消去が起こりうるか */
+export function minPairDistance(board, cap = 8) {
+  let min = cap;
+  const seen = new Set();
+  for (const p of board.pieces.values()) {
+    if (p.color === BLOCKER || seen.has(p.color)) continue;
+    seen.add(p.color);
+    min = Math.min(min, pairDistance(board, p.color, min));
+  }
+  return min;
+}
+
+/** 相棒ブロックとの盤上の隔たり（いちばん近いセル同士のマンハッタン距離） */
+function gapToPartner(board, piece) {
+  if (piece.color === BLOCKER) return 0;
+  let partner = null;
+  for (const q of board.pieces.values()) {
+    if (q.color === piece.color && q.id !== piece.id) { partner = q; break; }
+  }
+  if (!partner) return 0;
+  let best = Infinity;
+  for (const [x, y] of piece.cells) {
+    for (const [qx, qy] of partner.cells) {
+      const d = Math.abs(x - qx) + Math.abs(y - qy);
+      if (d < best) best = d;
+    }
+  }
+  return best;
 }
 
 /** 見つけた候補を実際に盤面へ置く */
@@ -358,7 +540,9 @@ function retractCandidates(board, id) {
   const size = board.size;
   const piece = board.pieces.get(id);
   if (!piece) return [];
-  const partner = [...board.pieces.values()].find((p) => p.color === piece.color && p.id !== id);
+  const partner = piece.color === BLOCKER
+    ? null // 灰色に相棒はいない。どこへ戻しても消えようがない
+    : [...board.pieces.values()].find((p) => p.color === piece.color && p.id !== id);
   const own = new Set(piece.cells.map(([x, y]) => y * size + x));
   const out = [];
 
@@ -432,7 +616,9 @@ function retractOnce(board, rng, opts, id, seen, guard = Infinity) {
       // 軽い判定（この色だけを見る）で点を出し、いまの最高点に届かない候補は
       // ここで捨てる。盤面全体を数える guard は残った候補にだけ掛ける ――
       // 追い込み1手あたり数十回まわるので、ここの枝刈りが生成時間を決める
-      s = (colorClearable(board, piece.color) ? 0 : 100) + c.t * 4 + jitter;
+      // 相棒から遠ざかる巻き戻しを強く好む。ここが「実際に何手かかるか」を決める
+      s = (colorClearable(board, piece.color) ? 0 : 100)
+        + gapToPartner(board, piece) * opts.gapWeight + c.t * 2 + jitter;
       if (s <= bestScore) ok = false;
       // guard を渡されたら「盤面全体で消せる色」をそこまでに抑える候補しか認めない。
       // せっかく塞いだ初手を、深さを稼ぐついでに開けてしまわないための歯止め
@@ -504,6 +690,58 @@ function deepenChains(board, rng, opts, solution, seen, want) {
     idle = 0;
   }
   return added;
+}
+
+/**
+ * 近すぎるペアを引き離す。
+ *
+ * 逆順構築は「解ける手順があること」しか保証しない。実際に何手かかるかを決めて
+ * いるのは同じ色の2個の隔たりのほうで、ここが2手だと、どれだけ長い保証解を
+ * 作っても数手で消されてしまう。
+ */
+function pushApart(board, rng, opts, solution, seen) {
+  const sep = opts.separation;
+  if (sep <= 2) return;
+  let added = 0;
+  for (let round = 0; round < sep + 3 && added < opts.separationPushes; round++) {
+    const near = nearColors(board, sep);
+    if (near.size === 0) return;
+    let moved = false;
+    for (const color of shuffle(rng, [...near])) {
+      if (added >= opts.separationPushes) break;
+      const step = retractApart(board, rng, opts, seen, color, sep);
+      if (!step) continue;
+      solution.unshift(step);
+      added++;
+      moved = true;
+    }
+    if (!moved) return;
+  }
+}
+
+/** 色 color の2個のどちらかを、いちばん引き離せる向きへ1手ぶん巻き戻す */
+function retractApart(board, rng, opts, seen, color, sep) {
+  const ids = [];
+  for (const p of board.pieces.values()) if (p.color === color) ids.push(p.id);
+  let best = null;
+  let bestScore = pairDistance(board, color, sep);
+  let checked = 0;
+  for (const id of shuffle(rng, ids)) {
+    for (const c of shuffle(rng, retractCandidates(board, id))) {
+      if (checked++ >= opts.separationTries) break;
+      board.movePiece(id, OPPOSITE[c.dir], c.t);
+      const ok = !seen.has(board.fingerprint()) && !colorClearable(board, color);
+      const d = ok ? pairDistance(board, color, sep) : -1;
+      board.movePiece(id, c.dir, c.t);
+      if (d > bestScore) { bestScore = d; best = c; }
+      if (bestScore >= sep) break;
+    }
+    if (bestScore >= sep || checked >= opts.separationTries) break;
+  }
+  if (!best) return null;
+  board.movePiece(best.id, OPPOSITE[best.dir], best.t);
+  seen.add(board.fingerprint());
+  return { pieceId: best.id, dir: best.dir, distance: best.t, color, kind: 'chain' };
 }
 
 /** 追い込み手の総数を色ごとに配る。先に置く色（＝最後に消す色）ほど深くする */
@@ -637,6 +875,9 @@ function attemptBuild(seed, opts) {
   // （放っておくと「右へ押して、左へ押し戻す」だけの往復が手順に混ざる）
   const seen = new Set();
 
+  // 先に灰色を撒いておく。以降の逆順構築はこれを壁として組み上がる
+  placeBlockers(board, rng, opts.blockers);
+
   for (let c = 0; c < opts.colors; c++) {
     const placed = placePair(board, rng, opts, c, opts.forced, plan[c] > 0);
     if (!placed) return null;
@@ -670,7 +911,10 @@ function attemptBuild(seed, opts) {
     solution.unshift(step);
   }
 
-  // ④ それでも開いた色が残っていれば、最後にもう一度押し戻す
+  // ④ 近すぎるペアを引き離す。ここが「実際に何手かかるか」を決める
+  pushApart(board, rng, opts, solution, seen);
+
+  // ⑤ 引き離しで開いた色が残っていれば、最後に押し戻す
   pushBackOpenings(board, rng, opts, solution, seen);
 
   return { board, solution };
@@ -709,34 +953,72 @@ export function analyzeSolution(snapshot, solution, size) {
   return { forced, clearAtStart, branchPoints, blindMoves, dryStreak };
 }
 
-/** レベル番号からパズルを作る */
-export function generateLevel(level, overrides = {}) {
-  const config = levelConfig(level);
-  const puzzle = generatePuzzle(levelSeed(config.level), {
-    size: config.size,
-    colors: config.colors,
-    chainMoves: config.chainMoves,
-    setupMoves: config.setupMoves,
-    forced: config.forced,
-    attempts: config.attempts,
-    ...overrides,
-  });
-  return { ...puzzle, level: config.level, config };
+/**
+ * レベル番号 -> データに焼いてあるパズル。
+ *
+ * 以前はその場で逆順構築していたが、それでは「解ける手順がある」ことしか
+ * 保証できず、実際にはもっと短く解けてしまっていた（PAR 106手の盤面が20手）。
+ * いまは tools/levels.mjs が事前に「到達できる盤面を全部展開して、ゴールから
+ * いちばん遠い配置」を選んである。**PAR は厳密な最短手数**で、近道は存在しない。
+ *
+ * データを使い切ったら先頭に戻る（レベルは無限に続くが、譜面は繰り返す）。
+ */
+export function levelPuzzle(level) {
+  const lv = normalizeLevel(level);
+  const data = LEVEL_DATA[(lv - 1) % LEVEL_DATA.length];
+  const board = new Board(data.size);
+  // ブロックはデータの順に入れる。id が生成時と同じ並びになるので手順がそのまま使える
+  for (const p of data.pieces) {
+    const w = Math.max(...p.s.map((c) => c[0])) - Math.min(...p.s.map((c) => c[0])) + 1;
+    const h = Math.max(...p.s.map((c) => c[1])) - Math.min(...p.s.map((c) => c[1])) + 1;
+    board.addPiece(p.c, p.s, `${w}x${h}`);
+  }
+  const snapshot = board.snapshot();
+  const solution = data.solution.map(([pieceId, dir, distance], i) => ({
+    pieceId,
+    dir,
+    distance,
+    color: board.pieces.get(pieceId).color,
+    kind: i === data.solution.length - 1 ? 'clear' : 'chain',
+  }));
+
+  const colors = new Set();
+  let blockers = 0;
+  for (const piece of board.pieces.values()) {
+    if (piece.color === BLOCKER) blockers++;
+    else colors.add(piece.color);
+  }
+  const analysis = analyzeSolution(snapshot, solution, data.size);
+
+  return {
+    seed: lv,
+    snapshot,
+    solution,
+    par: solution.length,
+    cells: board.filledCells,
+    pieces: board.pieceCount,
+    size: data.size,
+    colors: colors.size,
+    blockers,
+    chainMoves: solution.length - 1,
+    setupMoves: 0,
+    /** 厳密な最短手数（これより短い解き方は存在しない） */
+    optimal: data.optimal,
+    analysis,
+    level: lv,
+    config: levelConfig(lv),
+  };
 }
 
-/** generateLevel の非同期版（画面を固めずに生成する） */
+/** レベル番号からパズルを作る */
+export function generateLevel(level) {
+  return levelPuzzle(level);
+}
+
+/** generateLevel の非同期版（画面を固めないための形だけ合わせてある） */
 export async function generateLevelAsync(level, overrides = {}, onProgress = null) {
-  const config = levelConfig(level);
-  const puzzle = await generatePuzzleAsync(levelSeed(config.level), {
-    size: config.size,
-    colors: config.colors,
-    chainMoves: config.chainMoves,
-    setupMoves: config.setupMoves,
-    forced: config.forced,
-    attempts: config.attempts,
-    ...overrides,
-  }, onProgress);
-  return { ...puzzle, level: config.level, config };
+  if (onProgress) onProgress(1);
+  return levelPuzzle(level);
 }
 
 function runAttempt(seed, opts, attempt) {
@@ -758,6 +1040,7 @@ function runAttempt(seed, opts, attempt) {
     pieces: built.board.pieceCount,
     size: opts.size,
     colors: opts.colors,
+    blockers: [...built.board.pieces.values()].filter((p) => p.color === BLOCKER).length,
     chainMoves: built.solution.filter((s) => s.kind === 'chain').length,
     setupMoves: built.solution.filter((s) => s.kind === 'setup').length,
     analysis,
@@ -850,10 +1133,15 @@ export function verifySolution(snapshot, solution, size) {
     return { ok: false, reason: '初期盤面に同色接触がある' };
   }
   for (const p of board.pieces.values()) {
-    if (p.cells.length !== 4) return { ok: false, reason: 'テトロミノ以外のブロックがある' };
+    if (p.cells.length < 1 || p.cells.length > 9) {
+      return { ok: false, reason: `${p.cells.length}マスのブロックがある（1〜9マスであるべき）` };
+    }
   }
   const counts = new Map();
-  for (const p of board.pieces.values()) counts.set(p.color, (counts.get(p.color) || 0) + 1);
+  for (const p of board.pieces.values()) {
+    if (p.color === BLOCKER) continue; // 灰色は何個でもよい
+    counts.set(p.color, (counts.get(p.color) || 0) + 1);
+  }
   for (const [color, n] of counts) {
     if (n !== 2) return { ok: false, reason: `色 ${color} のブロックが ${n} 個（2個であるべき）` };
   }
@@ -878,8 +1166,8 @@ export function verifySolution(snapshot, solution, size) {
     }
   }
 
-  if (!board.isEmpty) {
-    return { ok: false, reason: `解答を実行しても ${board.pieceCount} 個残る` };
+  if (!board.isCleared) {
+    return { ok: false, reason: `解答を実行しても色つきブロックが ${board.coloredCount} 個残る` };
   }
   return { ok: true };
 }

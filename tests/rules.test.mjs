@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Board } from '../src/board.js';
-import { TETROMINOES, DIRS, DIR_KEYS } from '../src/shapes.js';
+import { PIECES, DIRS, DIR_KEYS } from '../src/shapes.js';
 
 const put = (b, color, cells) => b.addPiece(color, cells);
 
@@ -170,11 +170,21 @@ test('simulate は盤面を変更しない', () => {
   assert.equal(b.fingerprint(), before);
 });
 
-test('テトロミノは7種19向き、すべて4セル', () => {
-  const names = new Set(TETROMINOES.map((s) => s.name));
-  assert.equal(names.size, 7);
-  assert.equal(TETROMINOES.length, 19);
-  for (const s of TETROMINOES) assert.equal(s.cells.length, 4);
+test('ブロックは大小の長方形。全向きが揃っていて重複が無い', () => {
+  assert.ok(PIECES.length >= 8, `形が ${PIECES.length} 通りしかない`);
+  const seen = new Set();
+  for (const shape of PIECES) {
+    // 長方形なので「幅×高さ = マス数」がぴったり合う
+    assert.equal(shape.cells.length, shape.w * shape.h, `${shape.name} が長方形でない`);
+    assert.ok(shape.w >= 1 && shape.h >= 1);
+    const key = `${shape.w}x${shape.h}`;
+    assert.equal(seen.has(key), false, `${key} が重複している`);
+    seen.add(key);
+  }
+  // 縦横比の違う形が揃っている（正方形だけ・棒だけ、にはなっていない）
+  assert.ok(PIECES.some((s) => s.w === s.h), '正方形が無い');
+  assert.ok(PIECES.some((s) => s.w > s.h), '横長が無い');
+  assert.ok(PIECES.some((s) => s.h > s.w), '縦長が無い');
 });
 
 test('方向ベクトルは4つとも単位ベクトル', () => {

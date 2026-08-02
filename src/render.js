@@ -86,7 +86,17 @@ const paletteCache = [];
  * 色番号 -> 色。番号はいくつでもよい（無制限）。
  * base=ブロックの色 / light=明るめ / dark=文字などに使う濃いめ / shadow="r,g,b"
  */
+/** 灰色ブロックの見た目。どの色とも消えないので、彩度を持たせない */
+const BLOCKER_COLOR = {
+  name: '灰色（消えないブロック）',
+  base: '#9a9aa2',
+  light: '#c4c4cb',
+  dark: '#5f5f68',
+  shadow: '110,110,120',
+};
+
 export function colorFor(index) {
+  if (index === -9) return BLOCKER_COLOR; // board.js の BLOCKER
   const i = Math.max(0, Math.floor(index) || 0);
   if (paletteCache[i]) return paletteCache[i];
 

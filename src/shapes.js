@@ -1,8 +1,12 @@
 // ブロック形状の定義。
 //
-// 盤面に出るのはテトロミノ（4マス）だけ。7 種をすべて回転させたものを
-// 「向き付き形状」として持つ（19 通り）。連結した大型ブロックは出さない ――
-// 難しさは形ではなく、色数・仕込み手・一本道でつける。
+// ブロックは「大小さまざまな長方形」。凸凹したテトロミノは使わない。
+//
+// 長方形にしているのは見た目のためではない。**大きいブロックほど通れる隙間が
+// 減る** ―― 2×4 のブロックは幅2の通路しか通れないので、同じ色の相手にたどり
+// つくまでの道のりが長くなる。凸凹した形は「どこまでが1つの塊か」を読む負荷を
+// 増やすだけで、通路を読む面白さは増えない。長方形なら形が一目で分かるまま、
+// 動かしにくさだけを上げられる。
 
 /** 方向ベクトル。y は下が正（画面座標系と一致させる） */
 export const DIRS = {
@@ -17,15 +21,33 @@ export const DIR_KEYS = ['up', 'right', 'down', 'left'];
 /** 反対方向 */
 export const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
-// 各テトロミノの基準形。[x, y] の並び。
-const TETROMINO_BASE = {
-  I: [[0, 0], [1, 0], [2, 0], [3, 0]],
-  O: [[0, 0], [1, 0], [0, 1], [1, 1]],
-  T: [[0, 0], [1, 0], [2, 0], [1, 1]],
-  S: [[1, 0], [2, 0], [0, 1], [1, 1]],
-  Z: [[0, 0], [1, 0], [1, 1], [2, 1]],
-  J: [[0, 0], [0, 1], [1, 1], [2, 1]],
-  L: [[2, 0], [0, 1], [1, 1], [2, 1]],
+// 長方形の基準形を作る。w×h のマスを敷き詰めるだけ
+function rect(w, h) {
+  const cells = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) cells.push([x, y]);
+  return cells;
+}
+
+/**
+ * 色つきブロックに使う長方形。縦横は buildShapes が回転で足すので、
+ * ここには片側だけ書けばよい（2×3 を書けば 3×2 も出る）。
+ */
+const RECT_BASE = {
+  '1x2': rect(1, 2),
+  '1x3': rect(1, 3),
+  '1x4': rect(1, 4),
+  '2x2': rect(2, 2),
+  '2x3': rect(2, 3),
+  '2x4': rect(2, 4),
+  '3x3': rect(3, 3),
+};
+
+/** 灰色ブロックに使う長方形。小さめに寄せる（大きすぎると盤面が動かなくなる） */
+const BLOCKER_BASE = {
+  '1x1': rect(1, 1),
+  '1x2': rect(1, 2),
+  '1x3': rect(1, 3),
+  '2x2': rect(2, 2),
 };
 
 function normalize(cells) {
@@ -72,5 +94,12 @@ function buildShapes(base) {
   return out;
 }
 
-/** テトロミノ全種・全向き（19 通り） */
-export const TETROMINOES = buildShapes(TETROMINO_BASE);
+/** 色つきブロックに使う形（大小の長方形・全向き） */
+export const PIECES = buildShapes(RECT_BASE);
+
+/** 灰色ブロックに使う形 */
+export const BLOCKER_SHAPES = buildShapes(BLOCKER_BASE);
+
+/** ブロック1個の平均マス数。盤面サイズの見積もりに使う */
+export const AVG_PIECE_CELLS =
+  PIECES.reduce((a, s) => a + s.size, 0) / PIECES.length;

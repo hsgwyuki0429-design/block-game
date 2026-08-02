@@ -9,7 +9,7 @@
 // 星は「解けるまでの時間」で決まる（手数ではない）。盤面を読むのに使った時間
 // だけを数えたいので、時計は下の条件がすべて満たされている間だけ進む。
 
-import { Board } from './board.js';
+import { Board, BLOCKER } from './board.js';
 import { DIRS } from './shapes.js';
 import { generateLevelAsync, findClearPlan } from './generator.js';
 import {
@@ -213,8 +213,8 @@ export class Game {
     saveStore(this.store);
 
     // このレベルに登場する色（レジェンドはこれだけを並べる）
-    this.activeColors = [...new Set([...this.board.pieces.values()].map((p) => p.color))]
-      .sort((a, b) => a - b);
+    this.activeColors = [...new Set([...this.board.pieces.values()]
+      .filter((p) => p.color !== BLOCKER).map((p) => p.color))].sort((a, b) => a - b);
     if (this.dom.legend) this.dom.legend.innerHTML = '';
 
     this.buildSolutionMap();
@@ -402,7 +402,7 @@ export class Game {
    */
   afterMove() {
     this.updateHud();
-    if (this.board.isEmpty) {
+    if (this.board.isCleared) {
       this.status = 'won';
       this.recordResult();
       this.sound.win();
@@ -847,7 +847,7 @@ export class Game {
   updateHud() {
     const d = this.dom;
     d.statMoves.textContent = String(this.moves);
-    d.statLeft.textContent = String(this.board.pieceCount);
+    d.statLeft.textContent = String(this.board.coloredCount);
     d.statLevel.textContent = String(this.level);
     d.levelInfo.textContent = this.puzzle ? puzzleSummary(this.puzzle) : '\u00a0';
 

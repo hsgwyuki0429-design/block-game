@@ -6,7 +6,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Board } from '../src/board.js';
+import { Board, BLOCKER } from '../src/board.js';
 import { generateLevel, verifySolution, clearableColors, findClearPlan } from '../src/generator.js';
 import {
   levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
@@ -14,7 +14,7 @@ import {
   targetTimes, starsForTime, formatTime,
   MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES, MAX_SETUP_MOVES,
 } from '../src/levels.js';
-import { TETROMINOES } from '../src/shapes.js';
+import { PIECES } from '../src/shapes.js';
 
 /** 通しで確かめるレベル（全部やると遅いので代表点を拾う） */
 const SAMPLE = [1, 2, 3, 5, 7, 10, 13, 17, 21, 24, 26, 30, 42, 60, 120];
@@ -48,19 +48,16 @@ test('色数はレベル1で3色、上がるほど増え、上限で頭打ち', 
 test('盤面が頭打ちになったあとは、色数がそのまま埋め率になる', () => {
   assert.equal(boardSizeForColors(MAX_COLORS), MAX_SIZE);
   // 上限でも空きは残す。追い込み手も初手の掃除も「戻す先の空き」が要る
-  const topFill = (MAX_COLORS * 8) / (MAX_SIZE * MAX_SIZE);
+  const topFill = fillForLevel(1000);
   assert.ok(topFill >= 0.6, `最大でも埋め率が ${(topFill * 100).toFixed(0)}% しかない`);
-  assert.ok(topFill <= 0.7, `埋め率 ${(topFill * 100).toFixed(0)}% は詰まりすぎ（生成が破綻する）`);
+  assert.ok(topFill <= 0.85, `埋め率 ${(topFill * 100).toFixed(0)}% は詰まりすぎ（生成が破綻する）`);
 
-  // 埋め率は下がらない
-  let prev = 0;
+  // 盤面が広がる途中では一度ゆるむが、全体としては詰まっていく
   for (let lv = 1; lv <= 200; lv++) {
     const f = fillForLevel(lv);
-    assert.ok(f >= prev - 0.05, `Lv${lv}: 埋め率が大きく下がった`);
-    assert.ok(f > 0.4 && f <= topFill + 1e-9);
-    prev = Math.max(prev, f);
+    assert.ok(f > 0.3 && f <= topFill + 1e-9, `Lv${lv}: 埋め率 ${f.toFixed(2)}`);
   }
-  assert.ok(fillForLevel(1000) > fillForLevel(1), 'いちばん上でも盤面が詰まらない');
+  assert.ok(fillForLevel(40) > fillForLevel(1) + 0.1, 'いちばん上でも盤面が詰まらない');
 });
 
 test('追い込みはレベル1から深い', () => {
@@ -120,7 +117,7 @@ test('どのレベルも初期盤面に同色隣接が無く、少なくとも1�
 });
 
 test('ブロックはテトロミノだけで、同じ色はちょうど2個ずつ', () => {
-  const shapeNames = new Set(TETROMINOES.map((s) => s.name));
+  const shapeNames = new Set(PIECES.map((s) => s.name));
   for (const lv of SAMPLE) {
     const p = generateLevel(lv);
     const b = new Board(p.size);
@@ -128,7 +125,8 @@ test('ブロックはテトロミノだけで、同じ色はちょうど2個ず�
 
     const counts = new Map();
     for (const piece of b.pieces.values()) {
-      assert.equal(piece.cells.length, 4, `Lv${lv}: ${piece.cells.length}セルのブロック`);
+      if (piece.color === BLOCKER) continue; // 灰色は何個でもよい
+      assert.ok(piece.cells.length >= 1 && piece.cells.length <= 9, `Lv${lv}: ${piece.cells.length}セルのブロック`);
       assert.ok(shapeNames.has(piece.shape), `Lv${lv}: 未知の形 ${piece.shape}`);
       counts.set(piece.color, (counts.get(piece.color) || 0) + 1);
     }
@@ -172,26 +170,39 @@ test('レベルが上がるほど手順は長くなる（多少の上下は許�
   assert.ok(pars[2] < pars[4], `Lv12 ${pars[2]} / Lv30 ${pars[4]}`);
 });
 
-test('上のレベルは 100 手級で、盤面がほとんど埋まっている', () => {
-  for (const lv of [30, 45]) {
+test('上のレベルほど最短手数が長い（データは手数の昇順に並んでいる）', () => {
+  const pars = [1, 10, 20, 30].map((lv) => generateLevel(lv).par);
+  for (let i = 1; i < pars.length; i++) {
+    assert.ok(pars[i] >= pars[i - 1], `Lv順に手数が減った: ${pars.join(',')}`);
+  }
+  assert.ok(pars[pars.length - 1] >= 20, `いちばん上でも ${pars[pars.length - 1]} 手しかない`);
+});
+
+test('どのレベルも盤面が詰まっていて、灰色が入っている', () => {
+  for (const lv of [1, 5, 10, 20, 30]) {
     const p = generateLevel(lv);
-    assert.ok(p.par >= 90, `Lv${lv}: PAR が ${p.par} 手しかない`);
     const fill = p.cells / (p.size * p.size);
-    assert.ok(fill >= 0.65, `Lv${lv}: 埋め率が ${(fill * 100).toFixed(0)}% しかない`);
-    assert.equal(p.size, MAX_SIZE);
-    assert.ok(p.analysis.dryStreak >= 20, `Lv${lv}: 無消去の連続が ${p.analysis.dryStreak} 手`);
-    assert.equal(verifySolution(p.snapshot, p.solution, p.size).ok, true, `Lv${lv}`);
+    // 埋め率は手数を伸ばすための手段であって目的ではない。65% を下回るものは採らない
+    assert.ok(fill >= 0.65, `Lv${lv}: 埋め率 ${(fill * 100).toFixed(0)}%`);
+    assert.ok(p.blockers >= 1, `Lv${lv}: 灰色が無い`);
+    assert.equal(p.colors, 1, `Lv${lv}: 色つきは1組だけ`);
   }
 });
 
-test('ヒントはどのレベルの初期盤面でも道筋を出せる', () => {
-  for (const lv of [1, 5, 13, 26]) {
+test('保証解は厳密な最短手順そのもの', () => {
+  // データは「ゴールからいちばん遠い盤面」なので、記録されている手順より
+  // 短い解き方は存在しない。手順どおりに指せば必ず色つきが消える
+  for (const lv of [1, 7, 15, 25]) {
     const p = generateLevel(lv);
     const b = new Board(p.size);
     b.restore(p.snapshot);
-    const plan = findClearPlan(b, 3);
-    assert.ok(plan, `Lv${lv}: 3手先まで見ても消去の道筋が無い`);
-    assert.ok(b.slideDistance(plan.pieceId, plan.dir) > 0, `Lv${lv}: 指せない手を返した`);
+    for (const step of p.solution) {
+      const res = b.applyMove(step.pieceId, step.dir);
+      assert.ok(res, `Lv${lv}: 指せない手がある`);
+      assert.equal(res.steps, step.distance, `Lv${lv}: 停止位置が違う`);
+    }
+    assert.equal(b.isCleared, true, `Lv${lv}: 手順どおりに指しても消えない`);
+    assert.equal(p.par, p.optimal, `Lv${lv}: PAR が最短手数と違う`);
   }
 });
 
@@ -246,27 +257,23 @@ test('違うレベルは違う譜面になる', () => {
   assert.equal(seen.size, 12);
 });
 
-test('レベル1は3色6個の入門用。それでも何手も重ねないと消せない', () => {
+test('レベル1は入門用。それでも最短6手はかかる', () => {
   const p = generateLevel(1);
-  assert.equal(p.size, MIN_SIZE);
-  assert.equal(p.colors, 3);
-  assert.equal(p.pieces, 6);
-  assert.ok(p.par >= 12, `PAR が ${p.par} 手しかない`);
-  assert.equal(p.analysis.clearAtStart, 0);
-  assert.ok(p.analysis.dryStreak >= 3);
+  assert.equal(p.colors, 1);
+  assert.ok(p.par >= 6, `PAR が ${p.par} 手しかない`);
+  assert.ok(p.size <= 7, `入門なのに ${p.size}×${p.size} は広すぎる`);
 });
 
 test('レベルの要約は主要なパラメータを含む', () => {
-  const cfg = levelConfig(60);
+  const cfg = levelConfig(10);
   const s = levelSummary(cfg);
   assert.match(s, new RegExp(`${cfg.size}×${cfg.size}`));
-  assert.match(s, new RegExp(`${cfg.colors}色`));
-  assert.match(s, /追い込み/);
-  assert.match(s, /埋め率/); // 詰まった盤面ではそれも出す
+  assert.match(s, /最短\d+手/);
+  assert.match(s, /灰\d+個/);
+  assert.match(s, /埋め率\d+%/);
 
-  // 遊んだあとの要約には、実際にかかる手数が入る
-  const p = generateLevel(13);
-  assert.match(puzzleSummary(p), new RegExp(`PAR ${p.par}手`));
+  const p = generateLevel(10);
+  assert.match(puzzleSummary(p), new RegExp(`最短${p.par}手`));
 });
 
 test('レベル番号が不正でもレベル1として扱う', () => {
