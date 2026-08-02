@@ -1096,8 +1096,8 @@ export function verifySolution(snapshot, solution, size) {
     return { ok: false, reason: '初期盤面に同色接触がある' };
   }
   for (const p of board.pieces.values()) {
-    if (p.cells.length < 3 || p.cells.length > 5) {
-      return { ok: false, reason: `${p.cells.length}マスのブロックがある（3〜5マスであるべき）` };
+    if (p.cells.length < 1 || p.cells.length > 9) {
+      return { ok: false, reason: `${p.cells.length}マスのブロックがある（1〜9マスであるべき）` };
     }
   }
   const counts = new Map();

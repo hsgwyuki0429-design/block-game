@@ -25,7 +25,8 @@
 
 import { hashSeed } from './rng.js';
 
-export const MIN_SIZE = 7;
+
+export const MIN_SIZE = 8;
 export const MAX_SIZE = 12;
 /**
  * 色数の上限。最大盤面 12×12 に「12色 × 2個 × 4マス = 96マス」で埋め率 67%
@@ -60,6 +61,13 @@ export const MAX_BLOCKERS = 8;
  */
 const FILL = 0.5;
 
+/**
+ * ブロック1個あたりのマス数の見積もり。
+ * 形の平均（4.9）より小さいのは、大きい長方形ほど詰まった盤面に入る場所が
+ * 無くなり、後半は小さい形ばかりが選ばれるから。実測の埋め率に合わせてある。
+ */
+const EST_PIECE_CELLS = 4;
+
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /** 数値でない・1未満のレベル指定はレベル1として扱う */
@@ -88,12 +96,12 @@ export function fillForLevel(level) {
   const colors = colorsForLevel(level);
   const size = boardSizeForColors(colors);
   // 色つきは1個あたり平均4マス×2個、灰色は平均3.5マス
-  return (colors * 8 + blockersForLevel(level) * 3.5) / (size * size);
+  return (colors * 2 * EST_PIECE_CELLS + blockersForLevel(level) * 2.5) / (size * size);
 }
 
 /** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
 export function boardSizeForColors(colors) {
-  const cells = clamp(Math.round(colors), 1, MAX_COLORS) * 8;
+  const cells = clamp(Math.round(colors), 1, MAX_COLORS) * 2 * EST_PIECE_CELLS;
   return clamp(Math.round(Math.sqrt(cells / FILL)), MIN_SIZE, MAX_SIZE);
 }
 
@@ -203,7 +211,7 @@ export function levelConfig(level) {
      */
     par: colors + chainMoves + setupMoves,
     /** 盤面の埋め率（色つき＋灰色） */
-    fill: (colors * 8 + blockersForLevel(lv) * 3.5) / (size * size),
+    fill: (colors * 2 * EST_PIECE_CELLS + blockersForLevel(lv) * 2.5) / (size * size),
     /** 生成の試行回数 */
     attempts: attemptsForLevel(lv),
   };

@@ -5,12 +5,13 @@
 // ===== src/shapes.js =====
 // ブロック形状の定義。
 //
-// 3〜5マスのポリオミノを、すべて回転させた「向き付き形状」として持つ。
+// ブロックは「大小さまざまな長方形」。凸凹したテトロミノは使わない。
 //
-// 形を混ぜているのは見た目のためではない。**大きい形ほど滑れる場所が減る** ――
-// 5マスのブロックは通れる隙間が限られるので、同じ色の相手にたどり着くまでの
-// 道のりが長くなる。1マスだけずれた形どうしが噛み合わずに詰まる、という状況も
-// 増える。最短手数を伸ばすのに、色数を増やすより効く。
+// 長方形にしているのは見た目のためではない。**大きいブロックほど通れる隙間が
+// 減る** ―― 2×4 のブロックは幅2の通路しか通れないので、同じ色の相手にたどり
+// つくまでの道のりが長くなる。凸凹した形は「どこまでが1つの塊か」を読む負荷を
+// 増やすだけで、通路を読む面白さは増えない。長方形なら形が一目で分かるまま、
+// 動かしにくさだけを上げられる。
 
 /** 方向ベクトル。y は下が正（画面座標系と一致させる） */
 const DIRS = {
@@ -25,21 +26,33 @@ const DIR_KEYS = ['up', 'right', 'down', 'left'];
 /** 反対方向 */
 const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
-// 3マス（トロミノ）。細かい隙間に入るぶん、通路をふさぐ役に向く。
-const TROMINO_BASE = {
-  I3: [[0, 0], [1, 0], [2, 0]],
-  L3: [[0, 0], [0, 1], [1, 1]],
+// 長方形の基準形を作る。w×h のマスを敷き詰めるだけ
+function rect(w, h) {
+  const cells = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) cells.push([x, y]);
+  return cells;
+}
+
+/**
+ * 色つきブロックに使う長方形。縦横は buildShapes が回転で足すので、
+ * ここには片側だけ書けばよい（2×3 を書けば 3×2 も出る）。
+ */
+const RECT_BASE = {
+  '1x2': rect(1, 2),
+  '1x3': rect(1, 3),
+  '1x4': rect(1, 4),
+  '2x2': rect(2, 2),
+  '2x3': rect(2, 3),
+  '2x4': rect(2, 4),
+  '3x3': rect(3, 3),
 };
 
-// 各テトロミノの基準形。[x, y] の並び。
-const TETROMINO_BASE = {
-  I: [[0, 0], [1, 0], [2, 0], [3, 0]],
-  O: [[0, 0], [1, 0], [0, 1], [1, 1]],
-  T: [[0, 0], [1, 0], [2, 0], [1, 1]],
-  S: [[1, 0], [2, 0], [0, 1], [1, 1]],
-  Z: [[0, 0], [1, 0], [1, 1], [2, 1]],
-  J: [[0, 0], [0, 1], [1, 1], [2, 1]],
-  L: [[2, 0], [0, 1], [1, 1], [2, 1]],
+/** 灰色ブロックに使う長方形。小さめに寄せる（大きすぎると盤面が動かなくなる） */
+const BLOCKER_BASE = {
+  '1x1': rect(1, 1),
+  '1x2': rect(1, 2),
+  '1x3': rect(1, 3),
+  '2x2': rect(2, 2),
 };
 
 function normalize(cells) {
@@ -86,27 +99,15 @@ function buildShapes(base) {
   return out;
 }
 
-// 5マス（ペントミノ）。大きく、噛み合いにくく、通れる隙間が少ない。
-const PENTOMINO_BASE = {
-  I5: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]],
-  P5: [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2]],
-  T5: [[0, 0], [1, 0], [2, 0], [1, 1], [1, 2]],
-  U5: [[0, 0], [2, 0], [0, 1], [1, 1], [2, 1]],
-  Z5: [[0, 0], [1, 0], [1, 1], [1, 2], [2, 2]],
-  L5: [[0, 0], [0, 1], [0, 2], [0, 3], [1, 3]],
-};
+/** 色つきブロックに使う形（大小の長方形・全向き） */
+const PIECES = buildShapes(RECT_BASE);
 
-/** テトロミノ全種・全向き（19 通り）。互換のために残してある */
-const TETROMINOES = buildShapes(TETROMINO_BASE);
+/** 灰色ブロックに使う形 */
+const BLOCKER_SHAPES = buildShapes(BLOCKER_BASE);
 
-/** 色つきブロックに使う形（3〜5マス） */
-const PIECES = buildShapes({ ...TROMINO_BASE, ...TETROMINO_BASE, ...PENTOMINO_BASE });
-
-/**
- * 灰色ブロック（どの色とも消えない邪魔者）に使う形。
- * 小さめに寄せてある ―― 大きすぎると盤面が動かなくなるだけで、読みは深くならない。
- */
-const BLOCKER_SHAPES = buildShapes({ ...TROMINO_BASE, O: TETROMINO_BASE.O, I: TETROMINO_BASE.I });
+/** ブロック1個の平均マス数。盤面サイズの見積もりに使う */
+const AVG_PIECE_CELLS =
+  PIECES.reduce((a, s) => a + s.size, 0) / PIECES.length;
 
 // ===== src/board.js =====
 // 盤面モデルとルールの実装。
@@ -564,7 +565,7 @@ function codeToSeed(code) {
 //   ・仕込み手（一見関係ないブロックを先に退かす手）が混ざる
 // という順で難しくなる。
 
-const MIN_SIZE = 7;
+const MIN_SIZE = 8;
 const MAX_SIZE = 12;
 /**
  * 色数の上限。最大盤面 12×12 に「12色 × 2個 × 4マス = 96マス」で埋め率 67%
@@ -599,6 +600,13 @@ const MAX_BLOCKERS = 8;
  */
 const FILL = 0.5;
 
+/**
+ * ブロック1個あたりのマス数の見積もり。
+ * 形の平均（4.9）より小さいのは、大きい長方形ほど詰まった盤面に入る場所が
+ * 無くなり、後半は小さい形ばかりが選ばれるから。実測の埋め率に合わせてある。
+ */
+const EST_PIECE_CELLS = 4;
+
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /** 数値でない・1未満のレベル指定はレベル1として扱う */
@@ -627,12 +635,12 @@ function fillForLevel(level) {
   const colors = colorsForLevel(level);
   const size = boardSizeForColors(colors);
   // 色つきは1個あたり平均4マス×2個、灰色は平均3.5マス
-  return (colors * 8 + blockersForLevel(level) * 3.5) / (size * size);
+  return (colors * 2 * EST_PIECE_CELLS + blockersForLevel(level) * 2.5) / (size * size);
 }
 
 /** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
 function boardSizeForColors(colors) {
-  const cells = clamp(Math.round(colors), 1, MAX_COLORS) * 8;
+  const cells = clamp(Math.round(colors), 1, MAX_COLORS) * 2 * EST_PIECE_CELLS;
   return clamp(Math.round(Math.sqrt(cells / FILL)), MIN_SIZE, MAX_SIZE);
 }
 
@@ -742,7 +750,7 @@ function levelConfig(level) {
      */
     par: colors + chainMoves + setupMoves,
     /** 盤面の埋め率（色つき＋灰色） */
-    fill: (colors * 8 + blockersForLevel(lv) * 3.5) / (size * size),
+    fill: (colors * 2 * EST_PIECE_CELLS + blockersForLevel(lv) * 2.5) / (size * size),
     /** 生成の試行回数 */
     attempts: attemptsForLevel(lv),
   };
@@ -1861,8 +1869,8 @@ function verifySolution(snapshot, solution, size) {
     return { ok: false, reason: '初期盤面に同色接触がある' };
   }
   for (const p of board.pieces.values()) {
-    if (p.cells.length < 3 || p.cells.length > 5) {
-      return { ok: false, reason: `${p.cells.length}マスのブロックがある（3〜5マスであるべき）` };
+    if (p.cells.length < 1 || p.cells.length > 9) {
+      return { ok: false, reason: `${p.cells.length}マスのブロックがある（1〜9マスであるべき）` };
     }
   }
   const counts = new Map();

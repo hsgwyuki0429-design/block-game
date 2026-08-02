@@ -48,7 +48,7 @@ test('同じ色のブロックはちょうど2個ずつ、すべてテトロミ�
     b.restore(p.snapshot);
     const counts = new Map();
     for (const piece of b.pieces.values()) {
-      assert.ok(piece.cells.length >= 3 && piece.cells.length <= 5, `seed ${seed}`);
+      assert.ok(piece.cells.length >= 1 && piece.cells.length <= 9, `seed ${seed}`);
       counts.set(piece.color, (counts.get(piece.color) || 0) + 1);
     }
     for (const [color, n] of counts) {
