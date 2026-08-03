@@ -20,17 +20,22 @@ const OUT = resolve(ROOT, 'src/levelData.js');
 
 const want = Number(process.argv[2] || 24);
 
-/** 振ってみる設定。6×6 前後・埋め率9割あたりがいちばん手数が伸びる */
+/**
+ * 振ってみる設定。6×6 前後・埋め率9割あたりがいちばん手数が伸びる。
+ *
+ * 8×8 以上は入れていない。広いほど到達できる盤面が増えて全探索が終わらなくなり、
+ * かといって埋め率を上げるとブロックが動けなくなって逆に手数が落ちる（実測で4手）。
+ */
 const RECIPES = [];
 for (const size of [5, 6, 7]) {
-  for (const fill of [0.78, 0.83, 0.86, 0.89, 0.92]) RECIPES.push({ size, fill });
+  for (const fill of [0.76, 0.78, 0.80, 0.83, 0.86, 0.89, 0.92]) RECIPES.push({ size, fill });
 }
 
 const pool = [];
 const t0 = Date.now();
 let attempts = 0;
 
-for (let round = 0; pool.length < want && round < 8; round++) {
+for (let round = 0; pool.length < want && round < 40; round++) {
   for (const recipe of RECIPES) {
     if (pool.length >= want) break;
     attempts++;
