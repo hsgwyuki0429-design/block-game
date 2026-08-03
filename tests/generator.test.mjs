@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { Board } from '../src/board.js';
 import {
   generatePuzzle, verifySolution, clearableColors, analyzeSolution,
-  findClearPlan, colorClearable,
+  colorClearable,
 } from '../src/generator.js';
 import { seedToCode, codeToSeed, hashSeed, makeRng } from '../src/rng.js';
 
@@ -219,35 +219,6 @@ test('ヒント用の局面テーブルが解答の全ステップを覆う', ()
   }
   assert.equal(map.size, p.solution.length);
   assert.equal(sim.isCleared, true);
-});
-
-test('解の途中のどの局面からも、数手先に必ず消去がある', () => {
-  // 追い込みが入った盤面では「いま消せる手」は無いのが普通。
-  // ヒントが頼るのは「何手先に消去があるか」なので、そちらを確かめる
-  const p = generatePuzzle(777, { ...BIG, chainMoves: 10 });
-  const b = new Board(p.size);
-  b.restore(p.snapshot);
-  for (const step of p.solution) {
-    if (!b.isCleared) assert.ok(findClearPlan(b, 3), '3手先まで見ても消去が無い');
-    b.applyMove(step.pieceId, step.dir);
-  }
-  assert.equal(b.isCleared, true);
-});
-
-test('findClearPlan は消去にたどり着く道筋の1手目を返す', () => {
-  const p = generatePuzzle(555, { ...BIG, chainMoves: 8 });
-  const b = new Board(p.size);
-  b.restore(p.snapshot);
-
-  const plan = findClearPlan(b, 3);
-  assert.ok(plan, '道筋が見つからない');
-  assert.ok(plan.depth >= 2, '初手から消せてしまっている');
-  assert.ok(b.pieces.has(plan.pieceId));
-  // 返ってきた1手目は、実際に指せる手でなければならない
-  assert.ok(b.slideDistance(plan.pieceId, plan.dir) > 0);
-
-  // 空の盤面には道筋が無い
-  assert.equal(findClearPlan(new Board(6)), null);
 });
 
 test('colorClearable はその色が1手で消せるかを答える', () => {

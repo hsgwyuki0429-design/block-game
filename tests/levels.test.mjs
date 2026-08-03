@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Board, BLOCKER } from '../src/board.js';
-import { generateLevel, verifySolution, clearableColors, findClearPlan } from '../src/generator.js';
+import { generateLevel, verifySolution, clearableColors } from '../src/generator.js';
 import {
   levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
   colorsForLevel, chainDepthForLevel, chainMovesForLevel, setupMovesForLevel, fillForLevel,
@@ -15,9 +15,15 @@ import {
   MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES, MAX_SETUP_MOVES,
 } from '../src/levels.js';
 import { PIECES } from '../src/shapes.js';
+import { LEVEL_DATA } from '../src/levelData.js';
 
 /** 通しで確かめるレベル（全部やると遅いので代表点を拾う） */
 const SAMPLE = [1, 2, 3, 5, 7, 10, 13, 17, 21, 24, 26, 30, 42, 60, 120];
+
+/** 焼いてあるレベルの数。ここを超えると先頭に戻る */
+const BAKED = LEVEL_DATA.length;
+/** 焼いてある中でいちばん上のレベル（手数の昇順なので、いちばん難しい） */
+const LAST = BAKED;
 
 test('盤面はレベル1で最小、上がるほど広がり、12×12で頭打ち', () => {
   assert.equal(boardSizeForLevel(1), MIN_SIZE);
@@ -164,22 +170,35 @@ test('どのレベルも「消すには何手も重ねる」手順になって�
   }
 });
 
-test('レベルが上がるほど手順は長くなる（多少の上下は許す）', () => {
-  const pars = [1, 6, 12, 20, 30].map((lv) => generateLevel(lv).par);
-  assert.ok(pars[0] < pars[2], `Lv1 ${pars[0]} / Lv12 ${pars[2]}`);
-  assert.ok(pars[2] < pars[4], `Lv12 ${pars[2]} / Lv30 ${pars[4]}`);
+test('レベルが上がるほど手順は長くなる', () => {
+  // 焼いてある本数が変わっても壊れないよう、四分位で見る
+  const at = (ratio) => generateLevel(Math.max(1, Math.round(LAST * ratio))).par;
+  const [q1, q2, q4] = [at(0.25), at(0.5), at(1)];
+  assert.ok(q1 < q2, `前半 ${q1} 手 / 中盤 ${q2} 手`);
+  assert.ok(q2 < q4, `中盤 ${q2} 手 / 最後 ${q4} 手`);
 });
 
 test('上のレベルほど最短手数が長い（データは手数の昇順に並んでいる）', () => {
-  const pars = [1, 10, 20, 30].map((lv) => generateLevel(lv).par);
+  // 焼いてあるぶんは端から端まで、1レベルたりとも手数が減らないことを確かめる
+  const pars = [];
+  for (let lv = 1; lv <= LAST; lv++) pars.push(generateLevel(lv).par);
   for (let i = 1; i < pars.length; i++) {
-    assert.ok(pars[i] >= pars[i - 1], `Lv順に手数が減った: ${pars.join(',')}`);
+    assert.ok(pars[i] >= pars[i - 1], `Lv${i} -> Lv${i + 1} で手数が減った: ${pars[i - 1]} -> ${pars[i]}`);
   }
   assert.ok(pars[pars.length - 1] >= 20, `いちばん上でも ${pars[pars.length - 1]} 手しかない`);
+  assert.ok(pars[pars.length - 1] > pars[0], '端から端まで手数が変わらない');
+});
+
+test('データを使い切ったら先頭に戻る', () => {
+  const first = generateLevel(1);
+  const wrapped = generateLevel(LAST + 1);
+  assert.equal(wrapped.par, first.par);
+  assert.equal(wrapped.size, first.size);
+  assert.deepEqual(wrapped.solution, first.solution);
 });
 
 test('どのレベルも盤面が詰まっていて、灰色が入っている', () => {
-  for (const lv of [1, 5, 10, 20, 30]) {
+  for (let lv = 1; lv <= LAST; lv++) {
     const p = generateLevel(lv);
     const fill = p.cells / (p.size * p.size);
     // 埋め率は手数を伸ばすための手段であって目的ではない。65% を下回るものは採らない
@@ -192,7 +211,7 @@ test('どのレベルも盤面が詰まっていて、灰色が入っている',
 test('保証解は厳密な最短手順そのもの', () => {
   // データは「ゴールからいちばん遠い盤面」なので、記録されている手順より
   // 短い解き方は存在しない。手順どおりに指せば必ず色つきが消える
-  for (const lv of [1, 7, 15, 25]) {
+  for (let lv = 1; lv <= LAST; lv++) {
     const p = generateLevel(lv);
     const b = new Board(p.size);
     b.restore(p.snapshot);
@@ -204,6 +223,56 @@ test('保証解は厳密な最短手順そのもの', () => {
     assert.equal(b.isCleared, true, `Lv${lv}: 手順どおりに指しても消えない`);
     assert.equal(p.par, p.optimal, `Lv${lv}: PAR が最短手数と違う`);
   }
+});
+
+test('ヒントは最短手順の上でだけ引ける（外れたら引けない）', () => {
+  // ゲーム側は「いまの盤面が最短手順の途中か」を指紋で照合してヒントを出し、
+  // 外れていたらやり直すかを訊く。その照合が成り立つことを確かめる
+  let offPathLevels = 0;
+  for (let lv = 1; lv <= LAST; lv++) {
+    const p = generateLevel(lv);
+    const sim = new Board(p.size);
+    sim.restore(p.snapshot);
+
+    // 手順の各局面 -> 次の手 の対応表（game.js の buildSolutionMap と同じ）
+    const map = new Map();
+    for (const step of p.solution) {
+      map.set(sim.fingerprint(), step);
+      sim.applyMove(step.pieceId, step.dir);
+    }
+    assert.equal(map.size, p.solution.length, `Lv${lv}: 手順の途中で同じ局面に戻っている`);
+
+    // 手順どおりに指しているかぎり、最後までヒントが出せる
+    const b = new Board(p.size);
+    b.restore(p.snapshot);
+    for (let i = 0; i < p.solution.length; i++) {
+      assert.ok(map.has(b.fingerprint()), `Lv${lv}: 第${i + 1}手のヒントが出せない`);
+      b.applyMove(p.solution[i].pieceId, p.solution[i].dir);
+    }
+    assert.equal(map.has(b.fingerprint()), false, `Lv${lv}: 解き終えた盤面が手順上に残っている`);
+
+    // 手順から外れる指し方が実際にあり、そこでは対応表から外れる
+    // （＝やり直すかを訊く側に回る）。なお外れた先が手順の**手前の局面**に
+    // 戻ることはあり、その場合は乗り直したのだから出せてよい ―― 数えない
+    b.restore(p.snapshot);
+    for (const step of p.solution) {
+      const off = [...b.pieces.keys()]
+        .flatMap((id) => ['up', 'down', 'left', 'right'].map((dir) => ({ id, dir })))
+        .filter(({ id, dir }) => (id !== step.pieceId || dir !== step.dir)
+          && b.slideDistance(id, dir) > 0)
+        .map(({ id, dir }) => {
+          const snap = b.snapshot();
+          b.applyMove(id, dir);
+          const onPath = map.has(b.fingerprint());
+          b.restore(snap);
+          return onPath;
+        });
+      if (off.some((onPath) => onPath === false)) { offPathLevels++; break; }
+      b.applyMove(step.pieceId, step.dir);
+    }
+  }
+  // 全レベルが一本道ということはない ―― 「訊く」側の分岐は実際に起きる
+  assert.ok(offPathLevels > LAST / 2, `手順から外れられるレベルが ${offPathLevels}/${LAST} しかない`);
 });
 
 test('星は解決時間で決まる', () => {
