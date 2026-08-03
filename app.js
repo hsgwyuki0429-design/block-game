@@ -1020,50 +1020,6 @@ function colorClearable(board, color) {
 }
 
 /**
- * 「あと何手で1組消せるか」を幅優先で探す。
- *
- * 追い込み手が入った盤面では、消せる手はたいてい目の前に無い。だから
- * 「いま消せる手」を挙げるだけのヒントは役に立たない ―― 何手か先に消去がある
- * 道筋の1手目を教える必要がある。
- *
- * 局面は指紋で重複を除き、探索したノード数に上限を置く（深いレベルでも
- * ボタンを押した指が待たされない範囲で打ち切る）。
- *
- * @returns {{dir:string, pieceId:number, depth:number}|null} 最初の1手
- */
-function findClearPlan(board, maxDepth = 3, budget = 12000) {
-  if (board.isCleared) return null;
-  const seen = new Set([board.fingerprint()]);
-  /** @type {{snap:object, first:{pieceId:number,dir:string}|null, depth:number}[]} */
-  let frontier = [{ snap: board.snapshot(), first: null, depth: 0 }];
-  const sim = new Board(board.size);
-  let visited = 0;
-
-  for (let depth = 1; depth <= maxDepth; depth++) {
-    const next = [];
-    for (const node of frontier) {
-      for (const piece of node.snap.pieces) {
-        for (const dir of DIR_KEYS) {
-          if (visited++ > budget) return null;
-          sim.restore(node.snap);
-          const res = sim.applyMove(piece.id, dir);
-          if (!res) continue;
-          const first = node.first || { pieceId: piece.id, dir };
-          if (res.cleared.length > 0) return { ...first, depth };
-          const print = sim.fingerprint();
-          if (seen.has(print)) continue;
-          seen.add(print);
-          if (depth < maxDepth) next.push({ snap: sim.snapshot(), first, depth });
-        }
-      }
-    }
-    frontier = next;
-    if (frontier.length === 0) break;
-  }
-  return null;
-}
-
-/**
  * 灰色ブロックを撒く。
  *
  * 消えないので、盤面はここで決めた形のまま最後まで残る。色つきブロックが減っても
@@ -3588,30 +3544,24 @@ class Game {
 
   /**
    * ヒント。
-   * 追い込み手が入った盤面では、消せる手が目の前にあることのほうが珍しい。
-   * だから「いま消せる手」ではなく「消去にたどり着く道筋の1手目」を出す。
-   *   ① 保証解の道筋に乗っていれば、その次の1手
-   *   ② 外れていれば、数手先に消去がある道筋を探して、その1手目
-   *   ③ それも見つからなければ、戻すことを勧める
+   * 出せるのは「最短手順の上にいる間」だけ。
+   *
+   * 最短手順は1本しか持っていないので、そこから外れた盤面については
+   * 次の1手を答えようがない（その場で全探索し直すには重すぎる ―― 上のレベルは
+   * 84手級で、これは事前に全状態を展開して初めて出せた数字）。
+   * 適当な手でお茶を濁すくらいなら、外れたことをはっきり伝えて
+   * **やり直すかどうかを訊く**。
    */
   showHint() {
     if (!this.canInteract()) return;
     const step = this.solutionMap.get(this.board.fingerprint());
     if (step) {
       this.useHint(step.pieceId, step.dir, step.kind === 'clear'
-        ? `保証解の第${this.moves + 1}手：この色のペアが消えます`
-        : `保証解の第${this.moves + 1}手：これ自体は何も消えません（後につながる手）`);
+        ? `最短手順の第${this.moves + 1}手：この色のペアが消えます`
+        : `最短手順の第${this.moves + 1}手：これ自体は何も消えません（後につながる手）`);
       return;
     }
-
-    const plan = findClearPlan(this.board);
-    if (plan) {
-      this.useHint(plan.pieceId, plan.dir, plan.depth === 1
-        ? 'この手でペアが消えます'
-        : `この手から数えて ${plan.depth} 手でペアが消せます`);
-      return;
-    }
-    this.toast('この先すぐに消せる形が見つかりません。「戻す」で組み立て直しましょう');
+    this.askRestart();
   }
 
   useHint(pieceId, dir, message) {
@@ -3619,6 +3569,25 @@ class Game {
     this.hintsUsed++;
     this.toast(`${message}（+${HINT_PENALTY}秒）`);
     this.updateHud();
+  }
+
+  /**
+   * 最短手順から外れているとき、やり直すかを訊く。
+   * ここでは時間を足さない ―― 訊かれただけで罰を受けるのは筋が通らない。
+   */
+  askRestart() {
+    this.showOverlay({
+      badge: '🧭',
+      title: '最短手順から外れています',
+      text: `ヒントを出せるのは、記録してある最短手順（${this.puzzle.par}手）をたどっている間だけです。`
+        + `いまはそこから外れているので、次の1手をお答えできません。`
+        + `最初からやり直すと、第1手からヒントを出せます。`,
+      stats: [],
+      actions: [
+        { label: '最初からやり直す', primary: true, onClick: () => this.restart() },
+        { label: 'このまま続ける', onClick: () => this.hideOverlay() },
+      ],
+    });
   }
 
   // ------------------------------------------------------------ 入力

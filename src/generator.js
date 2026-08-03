@@ -210,50 +210,6 @@ export function colorClearable(board, color) {
 }
 
 /**
- * 「あと何手で1組消せるか」を幅優先で探す。
- *
- * 追い込み手が入った盤面では、消せる手はたいてい目の前に無い。だから
- * 「いま消せる手」を挙げるだけのヒントは役に立たない ―― 何手か先に消去がある
- * 道筋の1手目を教える必要がある。
- *
- * 局面は指紋で重複を除き、探索したノード数に上限を置く（深いレベルでも
- * ボタンを押した指が待たされない範囲で打ち切る）。
- *
- * @returns {{dir:string, pieceId:number, depth:number}|null} 最初の1手
- */
-export function findClearPlan(board, maxDepth = 3, budget = 12000) {
-  if (board.isCleared) return null;
-  const seen = new Set([board.fingerprint()]);
-  /** @type {{snap:object, first:{pieceId:number,dir:string}|null, depth:number}[]} */
-  let frontier = [{ snap: board.snapshot(), first: null, depth: 0 }];
-  const sim = new Board(board.size);
-  let visited = 0;
-
-  for (let depth = 1; depth <= maxDepth; depth++) {
-    const next = [];
-    for (const node of frontier) {
-      for (const piece of node.snap.pieces) {
-        for (const dir of DIR_KEYS) {
-          if (visited++ > budget) return null;
-          sim.restore(node.snap);
-          const res = sim.applyMove(piece.id, dir);
-          if (!res) continue;
-          const first = node.first || { pieceId: piece.id, dir };
-          if (res.cleared.length > 0) return { ...first, depth };
-          const print = sim.fingerprint();
-          if (seen.has(print)) continue;
-          seen.add(print);
-          if (depth < maxDepth) next.push({ snap: sim.snapshot(), first, depth });
-        }
-      }
-    }
-    frontier = next;
-    if (frontier.length === 0) break;
-  }
-  return null;
-}
-
-/**
  * 灰色ブロックを撒く。
  *
  * 消えないので、盤面はここで決めた形のまま最後まで残る。色つきブロックが減っても

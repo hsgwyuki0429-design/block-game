@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Board, BLOCKER } from '../src/board.js';
-import { generateLevel, verifySolution, clearableColors, findClearPlan } from '../src/generator.js';
+import { generateLevel, verifySolution, clearableColors } from '../src/generator.js';
 import {
   levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
   colorsForLevel, chainDepthForLevel, chainMovesForLevel, setupMovesForLevel, fillForLevel,
@@ -203,6 +203,39 @@ test('保証解は厳密な最短手順そのもの', () => {
     }
     assert.equal(b.isCleared, true, `Lv${lv}: 手順どおりに指しても消えない`);
     assert.equal(p.par, p.optimal, `Lv${lv}: PAR が最短手数と違う`);
+  }
+});
+
+test('ヒントは最短手順の上でだけ引ける（外れたら引けない）', () => {
+  // ゲーム側は「いまの盤面が最短手順の途中か」を指紋で照合してヒントを出し、
+  // 外れていたらやり直すかを訊く。その照合が成り立つことを確かめる
+  for (const lv of [1, 12, 28]) {
+    const p = generateLevel(lv);
+    const sim = new Board(p.size);
+    sim.restore(p.snapshot);
+
+    // 手順の各局面 -> 次の手 の対応表（game.js の buildSolutionMap と同じ）
+    const map = new Map();
+    for (const step of p.solution) {
+      map.set(sim.fingerprint(), step);
+      sim.applyMove(step.pieceId, step.dir);
+    }
+    assert.equal(map.size, p.solution.length, `Lv${lv}: 手順の途中で同じ局面に戻っている`);
+
+    // 初期盤面は必ず手順の上にある ―― 第1手は必ずヒントを出せる
+    const b = new Board(p.size);
+    b.restore(p.snapshot);
+    assert.ok(map.has(b.fingerprint()), `Lv${lv}: 初手のヒントが出せない`);
+
+    // 手順どおりでない手を指したら、対応表から外れる（＝やり直すかを訊く側に回る）
+    const first = p.solution[0];
+    const off = [...b.pieces.keys()]
+      .flatMap((id) => ['up', 'down', 'left', 'right'].map((dir) => ({ id, dir })))
+      .find(({ id, dir }) => (id !== first.pieceId || dir !== first.dir)
+        && b.slideDistance(id, dir) > 0);
+    assert.ok(off, `Lv${lv}: 手順から外れる手がひとつも無い`);
+    b.applyMove(off.id, off.dir);
+    assert.equal(map.has(b.fingerprint()), false, `Lv${lv}: 外れたのに手順上と判定された`);
   }
 });
 
