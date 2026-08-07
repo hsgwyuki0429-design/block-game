@@ -825,6 +825,76 @@ svg .fill { fill: currentColor; stroke: none; }
   color: var(--label-2);
 }
 
+/* ============================================================ 素材ピッカー */
+
+.settings-head {
+  margin: 0 2px 10px !important;
+  font-size: 13px !important;
+  font-weight: 700;
+  color: var(--label-2);
+  letter-spacing: -0.01em;
+}
+
+.material-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.material-cell {
+  appearance: none;
+  border: 0;
+  padding: 12px 6px 10px;
+  border-radius: 18px;
+  background: var(--fill);
+  color: var(--label);
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  /* 選んだときに枠を足すのではなく、最初から透明な枠を敷いておく。
+     枠の有無で高さが動くと、選ぶたびに一覧がわずかに跳ねる */
+  box-shadow: inset 0 0 0 2px transparent;
+  transition: transform 0.26s var(--spring), background 0.2s, box-shadow 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.material-cell:active { transform: scale(0.94); }
+.material-cell.on {
+  background: var(--accent-fill);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.material-chip {
+  width: 30px;
+  height: 22px;
+  border-radius: 7px;
+  /* 見本にも同じ向きの光を当てる。盤面と光源がずれると別物に見える */
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.22),
+    0 1.5px 3px rgba(0, 0, 0, 0.22);
+}
+
+.material-name {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.material-cell.on .material-name { color: var(--accent); }
+
+.material-note {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--label-3);
+  line-height: 1.2;
+  text-align: center;
+  letter-spacing: -0.01em;
+}
+
 /* ============================================================ 名前を決める */
 
 .name-field { margin-bottom: 16px; }

@@ -27,7 +27,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SLIDE POP!">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="stylesheet" href="styles.css?v=6a360cc6b6">
+<link rel="stylesheet" href="styles.css?v=c0bfdabfbf">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
@@ -332,6 +332,10 @@
     </button>
     <h2>設定</h2>
 
+    <!-- ブロックの素材。見た目だけが変わり、盤面もルールも変わらない -->
+    <h3 class="settings-head">ブロックの素材</h3>
+    <div class="material-grid" id="material-grid" role="radiogroup" aria-label="ブロックの素材"></div>
+
     <div class="list">
       <label class="row">
         <span class="row-label"><b>サウンド</b><span class="muted">効果音を鳴らす</span></span>
@@ -372,6 +376,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=6a360cc6b6"></script>
+<script defer src="app.js?v=c0bfdabfbf"></script>
 </body>
 </html>

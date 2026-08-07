@@ -66,6 +66,7 @@ const dom = {
   optSymbols: $('opt-symbols'),
   optGhost: $('opt-ghost'),
   optCalm: $('opt-calm'),
+  materialGrid: $('material-grid'),
   btnShare: $('btn-share'),
   btnReset: $('btn-reset'),
   resetNote: $('reset-note'),

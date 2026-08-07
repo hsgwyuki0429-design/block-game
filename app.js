@@ -1343,15 +1343,852 @@ function verifySolution(snapshot, solution, size) {
   return { ok: true };
 }
 
+// ===== src/color.js =====
+// 色の小道具。render.js と materials.js の両方が使う。
+//
+// 切り出してあるのは、ビルドが src/ を 1 つのスコープに連結するから ――
+// 同じ名前の関数を 2 つのファイルに置くと、そこで衝突してビルドが止まる。
+
+/** 直線補間 */
+function mix(a, b, t) {
+  return a + (b - a) * t;
+}
+
+/** 下限と上限で挟む */
+function clip(v, lo, hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
+/** HSL -> [r,g,b]（0..255）。h は度、s と l は % */
+function hslRgb(h, s, l) {
+  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const v = l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * v);
+  };
+  return [f(0), f(8), f(4)];
+}
+
+/** [r,g,b] -> "#rrggbb" */
+function rgbHex(rgb) {
+  return `#${rgb.map((v) => clip(Math.round(v), 0, 255).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** "#rrggbb" -> [r,g,b] */
+function hexRgb(hex) {
+  const s = String(hex).replace('#', '');
+  const n = s.length === 3
+    ? s.split('').map((c) => c + c).join('')
+    : s.padEnd(6, '0').slice(0, 6);
+  return [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16) || 0);
+}
+
+/** [r,g,b] -> [h,s,l]（rgbHsl の逆算。色相をずらすために要る） */
+function rgbHsl(rgb) {
+  const [r, g, b] = rgb.map((v) => v / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l * 100];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return [h * 360, s * 100, l * 100];
+}
+
+/** 2 色を混ぜる（t=0 で a、t=1 で b） */
+function mixHex(a, b, t) {
+  const x = hexRgb(a);
+  const y = hexRgb(b);
+  return rgbHex([0, 1, 2].map((i) => mix(x[i], y[i], clip(t, 0, 1))));
+}
+
+/**
+ * 明るくする / 暗くする。amount > 0 で白へ、< 0 で黒へ。
+ * 単純な乗算ではなく端へ寄せるので、暗い色を明るくしても濁らない。
+ */
+function shade(hex, amount) {
+  const target = amount >= 0 ? 255 : 0;
+  const k = Math.abs(amount);
+  return rgbHex(hexRgb(hex).map((v) => mix(v, target, clip(k, 0, 1))));
+}
+
+/** 色に不透明度を付けて rgba() にする */
+function rgba(hex, alpha) {
+  const [r, g, b] = hexRgb(hex);
+  return `rgba(${r},${g},${b},${clip(alpha, 0, 1)})`;
+}
+
+/**
+ * 素材の地の色を、進行度の色相へ引っぱる。
+ *
+ * 木を真っ青にしてしまうと木に見えなくなるので、引っぱる強さは素材ごとに変える
+ * （ガラスはほぼ言いなり、木はほんの少し）。明るさは素材の側を保つ ――
+ * 明るさまで持っていかれると、灰色ブロックとの区別が付かなくなる。
+ */
+function tintTowards(baseHex, tintHex, strength) {
+  const k = clip(strength, 0, 1);
+  if (k <= 0) return baseHex;
+  const base = hexRgb(baseHex);
+  const [, , baseL] = rgbHsl(base);
+  const [tintH, tintS] = rgbHsl(hexRgb(tintHex));
+
+  // 行き先は「進行度の色相と彩度を、素材の明るさで鳴らした色」
+  let target = hslRgb(tintH, tintS, baseL);
+
+  /*
+   * 明るさは HSL の L ではなく、**目に見える明るさ**で合わせ直す。
+   *
+   * HSL の L は色相をまったく見ていない。同じ L=50% でも黄色は白に近く、
+   * 青は闇に近い。L だけ揃えると、進行度が琥珀を通るときにだけ色つきブロックが
+   * 明るくなり、灰色ブロックと見分けが付かなくなる（実際そうなった）。
+   * 見た目の明るさを揃えておけば、色相がどこへ動いても明暗差は保たれる。
+   */
+  const want = lumaRgb(base);
+  const got = lumaRgb(target);
+  if (got > 1) {
+    const f = want / got;
+    target = target.map((v) => clip(v * f, 0, 255));
+  }
+
+  // 混ぜるのは RGB 空間で。色相を回して混ぜると、橙から藍へ行くときに
+  // 近いほうの回り道が赤側を通り、木材がピンクになる（実際にそうなった）。
+  // RGB で混ぜれば途中は必ず「彩度の落ちた中間色」を通る
+  return rgbHex([0, 1, 2].map((i) => mix(base[i], target[i], k)));
+}
+
+/** [r,g,b] の見た目の明るさ */
+function lumaRgb(rgb) {
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+}
+
+/** 見た目の明るさ（0..255）。文字や縁の色を決めるのに使う */
+function luma(hex) {
+  const [r, g, b] = hexRgb(hex);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// ===== src/materials.js =====
+// ブロックの素材。
+//
+// 盤面のブロックは「色のついた板」ではなく、**その素材で削り出した塊**に見せる。
+// 石は欠けた粗い面、木は繊維の走った木目、金属はヘアラインと帯状の反射、
+// クリスタルはエメラルドカットの面取り、紙は繊維の浮いたマット、布は織り目。
+//
+// 画像は 1 枚も使っていない。すべて実行時に手続き的に描いている ――
+// 素材ごとに「高さの場」を作り、その**傾きから陰影を計算する**（バンプマッピング）。
+// 色を塗り分けただけのテクスチャは、動かすと平らに見える。傾きから光を当てると、
+// 同じデータでも凹凸として読める。
+//
+// ここが持つのは「表面」だけ。立体の組み立て（接地影 → 側面の厚み → 天面 →
+// 面取り → 鏡面）は render.js の 1 本の経路が受け持ち、素材はその経路に
+// 寸法と色と塗り方を渡す。そうしないと素材を足すたびに立体の作りが分岐する。
+
+/**
+ * 光の向き（画面座標）。左上やや上から。
+ * 全素材で共通にしてある ―― 素材ごとに光源が動くと、盤面が 1 つの場所に見えない。
+ */
+const LIGHT = { x: -0.52, y: -0.85 };
+
+/** テクスチャのタイルの一辺（px）。継ぎ目なく繰り返せるように作る */
+const TILE = 256;
+/** ノイズ格子の一辺。TILE と割り切れる 2 の冪にしておくと端が繋がる */
+const GRID = 64;
+
+// ---------------------------------------------------------------- ノイズ
+
+/** 格子の乱数。端で折り返すので、タイルの継ぎ目が出ない */
+function makeNoise(rng) {
+  const g = new Float32Array(GRID * GRID);
+  for (let i = 0; i < g.length; i++) g[i] = rng();
+  return g;
+}
+
+/**
+ * 値ノイズをタイル座標（u,v ∈ 0..1）で読む。
+ *
+ * **fx / fy は「タイルを横切るあいだに何周するか」で、整数でなければならない。**
+ * ここが継ぎ目の有無を決める。整数でないと u=0 と u=1 が別の格子点を指し、
+ * 繰り返して敷いたときに縦横の線が走る（最初これで盤面に格子が出た）。
+ * 整数なら剰余がぴったり回るので、端は必ず反対の端と繋がる。
+ *
+ * ox / oy は表を読む位置のずらし。オクターブごとに変えて、
+ * 重ねた層が同じ模様の拡大縮小に見えないようにする。
+ */
+function noiseAt(g, u, v, fx, fy, ox = 0, oy = 0) {
+  const px = Math.max(1, Math.round(fx));
+  const py = Math.max(1, Math.round(fy));
+  const x = u * px;
+  const y = v * py;
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const tx = x - xi;
+  const ty = y - yi;
+  // smoothstep。線形補間のままだと格子の筋が見えてしまう
+  const sx = tx * tx * (3 - 2 * tx);
+  const sy = ty * ty * (3 - 2 * ty);
+  const i0 = ((xi % px) + px) % px;
+  const j0 = ((yi % py) + py) % py;
+  const i1 = (i0 + 1) % px;
+  const j1 = (j0 + 1) % py;
+  const at = (j, i) => g[(((j + oy) % GRID) * GRID) + ((i + ox) % GRID)];
+  return mix(mix(at(j0, i0), at(j0, i1), sx), mix(at(j1, i0), at(j1, i1), sx), sy);
+}
+
+/**
+ * 重ね合わせたノイズ（fBm）。周波数は倍々になるので、fx / fy が整数なら
+ * どのオクターブも整数のまま ―― 全部の層が同時に継ぎ目なく繋がる。
+ *
+ * @param {boolean} ridge 山にする（|2n-1| を裏返す）。石の「欠け」はこれで出る ――
+ *   ふつうの fBm は丘のように丸いが、ridge は稜線が立って割れ目に見える。
+ */
+function fbm2(g, u, v, fx, fy, octaves, gain = 0.5, ridge = false) {
+  let sum = 0;
+  let amp = 1;
+  let norm = 0;
+  let mul = 1;
+  for (let o = 0; o < octaves; o++) {
+    let n = noiseAt(g, u, v, fx * mul, fy * mul, o * 17, o * 29);
+    if (ridge) n = 1 - Math.abs(n * 2 - 1);
+    sum += n * amp;
+    norm += amp;
+    amp *= gain;
+    mul *= 2;
+  }
+  return sum / norm;
+}
+
+// ---------------------------------------------------------------- タイル生成
+
+/**
+ * 高さの場から 1 枚のタイルを焼く。
+ *
+ * @param {(u:number,v:number)=>number} height 0..1 の高さ（u,v は 0..1 のタイル座標）
+ * @param {(u:number,v:number,h:number)=>number[]} color その点の地の色 [r,g,b]
+ * @param {{relief?:number, ambient?:number}} opts relief = 凹凸の強さ
+ * @returns {HTMLCanvasElement}
+ */
+function bumpTile(height, color, opts = {}) {
+  const { relief = 0.35, ambient = 0.92 } = opts;
+  const cv = makeCanvas(TILE, TILE);
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(TILE, TILE);
+  const px = img.data;
+
+  // ① 高さを全部求める。傾きを取るのに隣の値が要るので、色より先に片づける
+  const h = new Float32Array(TILE * TILE);
+  for (let y = 0; y < TILE; y++) {
+    for (let x = 0; x < TILE; x++) h[y * TILE + x] = height(x / TILE, y / TILE);
+  }
+  const at = (x, y) => h[(((y % TILE) + TILE) % TILE) * TILE + (((x % TILE) + TILE) % TILE)];
+
+  // ② 傾きの大きさを測る。
+  //
+  //    ここが要点。同じ relief を与えても、高さの場が細かいほど傾きは大きくなる ――
+  //    素材ごとに周波数が違うので、生の傾きをそのまま明るさにすると、細かい素材
+  //    （金属のヘアライン）だけが真っ白と真っ黒に振り切れる。実際そうなった。
+  //    傾きの二乗平均で割って正規化すれば、relief は「どれくらい凸凹に見せたいか」
+  //    という 1 つの意味だけを持つようになり、周波数を変えても破綻しない。
+  const gx = new Float32Array(TILE * TILE);
+  const gy = new Float32Array(TILE * TILE);
+  let acc = 0;
+  for (let y = 0; y < TILE; y++) {
+    for (let x = 0; x < TILE; x++) {
+      const i = y * TILE + x;
+      const dx = at(x + 1, y) - at(x - 1, y);
+      const dy = at(x, y + 1) - at(x, y - 1);
+      gx[i] = dx;
+      gy[i] = dy;
+      acc += dx * dx + dy * dy;
+    }
+  }
+  const norm = Math.sqrt(acc / (TILE * TILE)) || 1e-6;
+
+  // ③ 色を置く
+  for (let y = 0; y < TILE; y++) {
+    for (let x = 0; x < TILE; x++) {
+      const i = y * TILE + x;
+      const slope = (gx[i] * LIGHT.x + gy[i] * LIGHT.y) / norm;
+      const lit = clip(ambient + slope * relief, 0.45, 1.55);
+      const c = color(x / TILE, y / TILE, h[i]);
+      const o = i * 4;
+      px[o] = clip(c[0] * lit, 0, 255);
+      px[o + 1] = clip(c[1] * lit, 0, 255);
+      px[o + 2] = clip(c[2] * lit, 0, 255);
+      px[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+
+/** オフスクリーンのキャンバス。OffscreenCanvas が無い環境でも動くようにする */
+function makeCanvas(w, h) {
+  if (typeof document !== 'undefined' && document.createElement) {
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.ceil(w));
+    cv.height = Math.max(1, Math.ceil(h));
+    return cv;
+  }
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(Math.ceil(w), Math.ceil(h));
+  return null;
+}
+
+// ---------------------------------------------------------------- 素材ごとの表面
+
+/**
+ * 石 ―― 割って出した面。
+ * ridge を効かせた fBm で稜線を立て、粗い粒を上から散らす。色は高いところほど
+ * 白茶けさせる（風化した角がいちばん明るい）。
+ */
+function stoneTexture(pal, seed) {
+  const g = makeNoise(makeRng(seed));
+  const grit = makeNoise(makeRng(seed ^ 0x9e3779b9));
+  const base = hexRgb(pal.mid);
+  const high = hexRgb(pal.top);
+  const low = hexRgb(pal.deep);
+
+  const height = (u, v) => {
+    // 大きなうねり（石を割ったときの傾き）に、稜線の立った欠けを重ねる。
+    // ridge を効かせた側が「割れ肌」の正体で、うねりは面全体の向きを決める
+    const slab = fbm2(g, u, v, 3, 3, 2, 0.5);
+    const chip = fbm2(g, u, v, 8, 8, 4, 0.55, true);
+    const sand = noiseAt(grit, u, v, 34, 34) * 0.1;
+    return clip(slab * 0.4 + chip * 0.5 + sand, 0, 1);
+  };
+  const color = (u, v, h) => {
+    // 高い面は風化して明るく、窪みは影が溜まって暗い
+    const t = clip((h - 0.44) * 2.1, -1, 1);
+    const c = t >= 0
+      ? [0, 1, 2].map((i) => mix(base[i], high[i], t * 0.85))
+      : [0, 1, 2].map((i) => mix(base[i], low[i], -t * 0.8));
+    // 石英の粒。ごく小さな明るい点を散らす
+    const fleck = noiseAt(grit, u, v, 52, 52, 7, 11);
+    const k = fleck > 0.86 ? (fleck - 0.86) * 2.4 : 0;
+    return [0, 1, 2].map((i) => mix(c[i], 255, clip(k, 0, 1) * 0.32));
+  };
+  return bumpTile(height, color, { relief: 0.42, ambient: 0.94 });
+}
+
+/**
+ * 木 ―― 削り出した板。
+ * 年輪は「中心からの距離をノイズで歪めて、その小数部を取る」だけで出る。
+ * 歪めないと同心円の模様になってしまうので、歪みの量が木らしさそのものになる。
+ * 導管（細い縦筋）を別に重ねて、繊維の向きを出す。
+ */
+function woodTexture(pal, seed) {
+  const g = makeNoise(makeRng(seed));
+  const fib = makeNoise(makeRng(seed ^ 0x85ebca6b));
+  const light = hexRgb(pal.top);
+  const mid = hexRgb(pal.mid);
+  const dark = hexRgb(pal.deep);
+
+  // 板は横長に取る。木目は u 方向（横）へ流し、縦向きのブロックには
+  // タイルごと 90° 回して貼る（render.js 側）。板の取り方が変われば別の木に見える
+  const height = (u, v) => {
+    // 年輪を v 方向にだけ数え、u に沿ってノイズで歪める。
+    // 折り返しは三角波で作る ―― 小数部（のこぎり波）のままだと 1 周ごとに
+    // 段差ができ、木目ではなく等高線のような硬い輪郭になる（実際そう見えた）。
+    // 年輪の本数を**偶数**にしてあるのも継ぎ目のため。三角波の周期は 2 なので、
+    // 奇数だとタイルの上端と下端で山と谷が入れ替わってしまう
+    const warp = fbm2(g, u, v, 2, 3, 3, 0.5);
+    const t = v * 22 + warp * 1.4;
+    const tri = Math.abs((t % 2) - 1);
+    const ring = Math.pow(tri, 0.9);
+    // 導管。木目に沿って走る細い筋（u にはほぼ変化せず、v に細かく振る）
+    const pore = noiseAt(fib, u, v, 2, 70);
+    return clip(ring * 0.7 + pore * 0.3, 0, 1);
+  };
+  const color = (u, v, h) => {
+    const t = clip(h * 1.15 - 0.05, 0, 1);
+    const c = [0, 1, 2].map((i) => mix(dark[i], light[i], t));
+    // 濃い筋（晩材）をところどころ強く出す
+    const streak = noiseAt(fib, u, v, 2, 26, 5, 9);
+    const k = streak > 0.68 ? (streak - 0.68) * 1.5 : 0;
+    return [0, 1, 2].map((i) => mix(c[i], mid[i] * 0.78, clip(k, 0, 0.45)));
+  };
+  return bumpTile(height, color, { relief: 0.32, ambient: 0.97 });
+}
+
+/**
+ * 金属 ―― ヘアライン仕上げのステンレス。
+ * 研磨の筋は「片方向にだけ引き伸ばしたノイズ」。縦にはほとんど変化させず、
+ * 横に細かく散らすと、あの一方向の擦り傷になる。
+ * 帯状の映り込みはテクスチャではなく、render.js 側の鏡面グラデーションで出す
+ * （ブロックの大きさに合わせて帯の位置が動かないと、板に見えない）。
+ */
+function metalTexture(pal, seed) {
+  const g = makeNoise(makeRng(seed));
+  const base = hexRgb(pal.mid);
+
+  const height = (u, v) => {
+    // u 方向はほとんど変えず、v 方向にだけ細かく振る = 横へ伸びた筋。
+    // v の本数を上げすぎると 1 画素より細かくなり、筋ではなく砂嵐になる ――
+    // タイル 256px なら 110 本で周期およそ 2px。ヘアラインはこのあたりが限度
+    const fine = noiseAt(g, u, v, 3, 110);
+    const mid = noiseAt(g, u, v, 4, 32, 11, 5);
+    const broad = fbm2(g, u, v, 2, 9, 2, 0.5);
+    return clip(fine * 0.5 + mid * 0.3 + broad * 0.2, 0, 1);
+  };
+  const color = (u, v, h) => {
+    // 金属は色数を持たない。明暗だけで見せる
+    const k = (h - 0.5) * 0.16;
+    return [0, 1, 2].map((i) => clip(base[i] * (1 + k), 0, 255));
+  };
+  return bumpTile(height, color, { relief: 0.26, ambient: 1 });
+}
+
+/**
+ * 紙 ―― 圧した厚紙。
+ * 繊維は「短い線分がランダムな向きに絡んだ場」。細かいノイズを 2 枚、
+ * 別の縮尺で重ねると、目で追えない細かさの繊維に見える。
+ */
+function paperTexture(pal, seed) {
+  const g = makeNoise(makeRng(seed));
+  const f = makeNoise(makeRng(seed ^ 0xc2b2ae35));
+  const base = hexRgb(pal.mid);
+  const dark = hexRgb(pal.deep);
+
+  const height = (u, v) => {
+    // 紙は「ほとんど平ら」が正解。粗さを上げると石膏や漆喰になってしまう
+    const fiber = noiseAt(f, u, v, 88, 88);
+    const laid = noiseAt(f, u, v, 3, 60, 9, 3) * 0.5;  // 簀の目。ごく淡い横筋
+    const felt = fbm2(g, u, v, 5, 5, 3, 0.6);
+    const wave = fbm2(g, u, v, 2, 2, 2, 0.5) * 0.5;    // 紙のうねり
+    return clip(fiber * 0.2 + laid * 0.14 + felt * 0.3 + wave, 0, 1);
+  };
+  const color = (u, v, h) => {
+    const t = clip((h - 0.5) * 0.6 + 0.5, 0, 1);
+    return [0, 1, 2].map((i) => mix(dark[i], base[i], 0.62 + t * 0.38));
+  };
+  return bumpTile(height, color, { relief: 0.13, ambient: 0.99 });
+}
+
+/**
+ * 布 ―― 平織り。
+ * 縦糸と横糸が交互に上へ出る。市松に位相をずらした 2 本の正弦波を、
+ * 市松の位置で選び分けると、糸が交差して見える。
+ */
+function fabricTexture(pal, seed) {
+  const g = makeNoise(makeRng(seed));
+  const base = hexRgb(pal.mid);
+  const dark = hexRgb(pal.deep);
+  const light = hexRgb(pal.top);
+  const threads = 27; // タイルあたりの糸の本数
+
+  const height = (u, v) => {
+    const fx = u * threads;
+    const fy = v * threads;
+    const cx = Math.floor(fx);
+    const cy = Math.floor(fy);
+    // 市松で「いま上に出ている糸」を切り替える
+    const warpUp = (cx + cy) % 2 === 0;
+    const along = warpUp ? fy - cy : fx - cx;   // 糸に沿う向き
+    const across = warpUp ? fx - cx : fy - cy;  // 糸を横切る向き
+    // 横切る向きに丸みを付けると、糸が円柱に見える
+    const round = Math.sin(across * Math.PI);
+    const twist = 0.85 + 0.15 * Math.sin(along * Math.PI * 2);
+    const fuzz = noiseAt(g, u, v, 54, 54) * 0.16;
+    return clip(round * twist * 0.84 + fuzz, 0, 1);
+  };
+  const color = (u, v, h) => {
+    const t = clip(h * 1.1, 0, 1);
+    const c = [0, 1, 2].map((i) => mix(dark[i], base[i], 0.4 + t * 0.6));
+    return [0, 1, 2].map((i) => mix(c[i], light[i], clip((h - 0.7) * 1.6, 0, 0.5)));
+  };
+  return bumpTile(height, color, { relief: 0.4, ambient: 0.92 });
+}
+
+/**
+ * クリスタル ―― 磨いたガラスの卓面。
+ * 面取りは幾何（render.js の 8 面）で作るので、ここは卓面のごく淡い曇りだけ。
+ * texture を濃くすると、透明感が濁って「すりガラス」になってしまう。
+ */
+function crystalTexture(pal, seed) {
+  const g = makeNoise(makeRng(seed));
+  const base = hexRgb(pal.mid);
+  const light = hexRgb(pal.top);
+
+  const height = (u, v) => fbm2(g, u, v, 2, 2, 3, 0.55);
+  // 卓面は「ほとんど何も無い」のが正しい。濁らせると、すりガラスになってしまう。
+  // かといって白く飛ばすと、透けているようには見えない ―― 地の色を中心に振る
+  const color = (u, v, h) => [0, 1, 2].map((i) => mix(base[i], light[i], clip(h * 0.5 + 0.05, 0, 1)));
+  return bumpTile(height, color, { relief: 0.1, ambient: 1.04 });
+}
+
+// ---------------------------------------------------------------- 素材の定義
+
+/**
+ * 素材ひとつ。寸法はすべて**セルの一辺に対する比**で持つ ――
+ * 盤面が 4×4 でも 8×8 でも、ブロックの厚みと面取りが同じ割合で見えるように。
+ */
+const DEFS = [
+  {
+    key: 'stone',
+    name: '石',
+    note: '割り出した御影石',
+    depth: 0.115,      // 側面の厚み
+    bevel: 0.13,       // 面取りの幅
+    radius: 0.13,      // 角の丸み
+    gap: 0.055,        // ブロック同士のすき間
+    gloss: 0.1,        // 鏡面の強さ（石はほとんど光らない）
+    sheen: 0.16,       // 天面の明暗の付き方
+    // 明暗の差が見分けを担っているので、色相は控えめでいい。
+    // 石を鮮やかな青にすると、御影石ではなくプラスチックに見える
+    tint: 0.28,        // 進行度の色に引かれる強さ
+    shadow: 0.42,      // 接地影の濃さ
+    facets: 8,         // 面取りの分割数
+    bevelStyle: 'soft',   // 縁は丸い。面では割らない
+    bevelAlpha: 0.6,      // 天面の粗さが縁まで続くよう、薄く重ねる
+    colors: {
+      grey: { top: '#cdc9c2', mid: '#a29e97', deep: '#6d6a65', side: '#7c7973' },
+      // 色つきは灰色より**はっきり暗い**石にしてある。tintTowards は明るさを
+      // 素材の側に残すので、色相がどこへ動いてもこの明暗差は保たれる ――
+      // 色相だけで差を付けると、緑あたりで灰色と見分けが付かなくなる（実際なった）
+      lit: { top: '#a9b7c4', mid: '#6f7f8d', deep: '#3d4852', side: '#4b5761' },
+    },
+    tray: { frame: '#8f8b84', floor: '#a8a49c', well: '#b6b2aa' },
+    texture: stoneTexture,
+  },
+  {
+    key: 'wood',
+    name: '木',
+    note: 'ウォールナットと楓',
+    depth: 0.1,
+    bevel: 0.07,
+    radius: 0.2,
+    gap: 0.05,
+    gloss: 0.24,
+    sheen: 0.22,
+    // 木を真っ青にすると木に見えなくなる。灰色ブロックとの差は
+    // 「ウォールナットと楓」という樹種の差が持ち、色相はほんの少し押すだけ
+    tint: 0.18,
+    shadow: 0.36,
+    facets: 8,
+    bevelStyle: 'soft',
+    bevelAlpha: 0.9,
+    colors: {
+      grey: { top: '#8c5e3a', mid: '#6e4629', deep: '#402716', side: '#4c3020' },
+      lit: { top: '#f6dfb2', mid: '#e3c088', deep: '#9d7942', side: '#ab8b54' },
+    },
+    tray: { frame: '#a8703f', floor: '#8a5936', well: '#96613a' },
+    texture: woodTexture,
+  },
+  {
+    key: 'metal',
+    name: '金属',
+    note: 'ヘアラインのステンレス',
+    depth: 0.095,
+    bevel: 0.1,
+    radius: 0.16,
+    gap: 0.05,
+    gloss: 1,
+    sheen: 0.5,
+    tint: 0.55,
+    shadow: 0.5,
+    facets: 8,
+    bevelStyle: 'facet',  // 留め継ぎの面取り。金属はここが命
+    bevelAlpha: 1,
+    banded: true,      // 帯状の映り込みを重ねる（金属だけ）
+    colors: {
+      grey: { top: '#e4e6e8', mid: '#a8adb2', deep: '#4a4f55', side: '#5c6167' },
+      lit: { top: '#cfe2f2', mid: '#6f96bb', deep: '#2b4761', side: '#38566f' },
+    },
+    tray: { frame: '#8d9298', floor: '#2a2c2f', well: '#141517' },
+    texture: metalTexture,
+  },
+  {
+    key: 'crystal',
+    name: 'クリスタル',
+    note: 'エメラルドカットのガラス',
+    depth: 0.085,
+    bevel: 0.17,
+    radius: 0,
+    chamfer: 0.2,      // 角を 45° で落とす（丸めない）
+    gap: 0.05,
+    gloss: 1,
+    sheen: 0.3,
+    tint: 0.95,
+    shadow: 0.3,
+    facets: 8,
+    bevelStyle: 'facet',  // エメラルドカット
+    bevelAlpha: 1,
+    translucent: 0.72, // 卓面の不透明度。下のトレイが薄く透ける
+    prism: true,       // 面の継ぎ目に虹の線を入れる
+    colors: {
+      grey: { top: '#eef4fa', mid: '#b4c0cb', deep: '#69747f', side: '#94a0ab' },
+      lit: { top: '#c8ecff', mid: '#4fbdec', deep: '#0f5c82', side: '#2b8cbe' },
+    },
+    tray: { frame: '#dfe6ee', floor: '#eef3f8', well: '#f6f9fc' },
+    texture: crystalTexture,
+  },
+  {
+    key: 'paper',
+    name: '紙',
+    note: '圧した厚紙',
+    depth: 0.075,
+    bevel: 0.07,
+    radius: 0.14,
+    gap: 0.055,
+    gloss: 0.06,
+    sheen: 0.12,
+    tint: 0.5,
+    shadow: 0.3,
+    facets: 8,
+    bevelStyle: 'soft',
+    bevelAlpha: 0.75,
+    colors: {
+      // 灰色は板紙（クラフト）、色つきは白いカード。紙どうしなので、
+      // 色相ではなく**紙の種類**で差を付けないと見分けが付かない
+      grey: { top: '#cfc6b4', mid: '#b3a894', deep: '#7d735f', side: '#8d8370' },
+      lit: { top: '#fffaf0', mid: '#f4ead6', deep: '#c0b394', side: '#d0c3a4' },
+    },
+    tray: { frame: '#b6ab95', floor: '#cdc3ae', well: '#dad1bd' },
+    texture: paperTexture,
+  },
+  {
+    key: 'fabric',
+    name: '布',
+    note: '平織りのリネン',
+    depth: 0.085,
+    bevel: 0.1,
+    radius: 0.24,
+    gap: 0.06,
+    gloss: 0.05,
+    sheen: 0.14,
+    tint: 0.62,
+    shadow: 0.34,
+    facets: 8,
+    bevelStyle: 'soft',
+    bevelAlpha: 0.7,
+    colors: {
+      // 灰色は染めた麻、色つきは晒した麻。織り目は同じで、糸の色だけが違う
+      grey: { top: '#b0a89a', mid: '#8e8677', deep: '#5d564a', side: '#6b6456' },
+      lit: { top: '#eae5d6', mid: '#d5cfbc', deep: '#948d7a', side: '#a29b88' },
+    },
+    tray: { frame: '#8e8778', floor: '#a49c8c', well: '#b3ab9a' },
+    texture: fabricTexture,
+  },
+];
+
+/** 素材の並び（設定画面もこの順で出す） */
+const MATERIAL_KEYS = DEFS.map((d) => d.key);
+
+/** 何も選んでいないときの素材 */
+const DEFAULT_MATERIAL = 'stone';
+
+const BY_KEY = new Map(DEFS.map((d) => [d.key, d]));
+
+/** 素材を引く。知らない名前なら既定の素材 */
+function materialFor(key) {
+  return BY_KEY.get(key) || BY_KEY.get(DEFAULT_MATERIAL);
+}
+
+/** 設定画面に並べるための一覧 */
+function materialList() {
+  return DEFS.map((d) => ({ key: d.key, name: d.name, note: d.note, swatch: d.colors.lit.mid }));
+}
+
+// ---------------------------------------------------------------- 色
+
+/**
+ * ブロックの色を決める。
+ *
+ * 灰色ブロックは素材そのままの色。色つきブロックは、素材の明るいほうの地を
+ * 進行度の色相へ引っぱる ―― 引っぱる強さは素材ごと（木を真っ青にすると
+ * 木に見えなくなるが、ガラスは何色でもガラスに見える）。
+ */
+function paletteFor(mat, isColored, tintHex) {
+  const src = isColored ? mat.colors.lit : mat.colors.grey;
+  if (!isColored || !tintHex) return { ...src, key: `${mat.key}|grey` };
+  const k = mat.tint;
+  return {
+    top: tintTowards(src.top, tintHex, k * 0.9),
+    mid: tintTowards(src.mid, tintHex, k),
+    deep: tintTowards(src.deep, tintHex, k),
+    side: tintTowards(src.side, tintHex, k),
+    key: `${mat.key}|${tintHex}`,
+  };
+}
+
+/**
+ * テクスチャを焼くときの色。**進行度では動かさない。**
+ *
+ * タイル 1 枚を焼くのに数十ミリ秒かかるので、進行度が変わるたびに焼き直すと
+ * 遊んでいる最中に引っかかる。そこでタイルは素材そのものの色で 1 度だけ焼き、
+ * 進行度の色は描くときに色相だけ被せる（render.js の bakeSurface）。
+ * 明るさは被せても変わらないので、木目や石の粒の陰影はそのまま残る。
+ */
+function texturePaletteFor(mat, isColored) {
+  const src = isColored ? mat.colors.lit : mat.colors.grey;
+  return { ...src, key: `${mat.key}|${isColored ? 'lit' : 'grey'}` };
+}
+
+/**
+ * 盤面（トレイ）の色。
+ *
+ * **進行度では動かさない。** 動かすと、色が 1 段変わるたびにトレイを丸ごと
+ * 焼き直すことになり（枠・床・空きマスの 3 枚のテクスチャと内側の影）、
+ * 遊んでいる最中に 90ms 近く止まった。
+ * 温度の変化は色つきブロックと背景の光が担っているので、
+ * 受け皿は素材そのものの色で据えておくほうが、画面としても落ち着く。
+ */
+function trayPaletteFor(mat) {
+  return { ...mat.tray, key: `${mat.key}|tray` };
+}
+
+// ---------------------------------------------------------------- タイルの控え
+
+const tileCache = new Map();
+
+/**
+ * 素材 × 色 のタイルを 1 枚だけ焼いて使い回す。
+ * 1 枚 256×256 の生成に数ミリ秒かかるので、毎フレーム作るわけにはいかない。
+ */
+function tileFor(mat, pal) {
+  const key = `${mat.key}|${pal.top}|${pal.mid}|${pal.deep}`;
+  const hit = tileCache.get(key);
+  if (hit) return hit;
+  const cv = mat.texture(pal, hashSeed(key));
+  // 使い回しが効かないほど溜まったら、古いものから捨てる（進行度で色が動くため）
+  if (tileCache.size > 24) tileCache.delete(tileCache.keys().next().value);
+  tileCache.set(key, cv);
+  return cv;
+}
+
+/** 素材を切り替えたときなど、焼いたタイルを全部捨てる */
+function clearTileCache() {
+  tileCache.clear();
+  scaleCache.clear();
+}
+
+const scaleCache = new Map();
+
+/**
+ * タイルを実寸に焼き直したもの。
+ *
+ * **createPattern に拡大縮小を掛けたまま敷いてはいけない。** 繰り返しの継ぎ目に
+ * 半端な画素が挟まり、ブロックの上に白い格子の線が走る（実機ではっきり見えた）。
+ * 整数の大きさに焼き直してから等倍で敷けば、継ぎ目は原理的に出ない。
+ *
+ * @param {boolean} turn 90° 回す（木目を長辺に沿わせるとき）。正方形なので
+ *   回しても継ぎ目は崩れないし、画素の補間も起きない
+ */
+function scaledTile(mat, pal, size, turn = false) {
+  // 8 の倍数に丸める。下で余白を 1/8 だけ取るので、そこが割り切れないと
+  // 縮尺がわずかにずれ、せっかく消した継ぎ目が戻ってくる
+  const px = Math.max(16, Math.round(size / 8) * 8);
+  const key = `${mat.key}|${pal.top}|${pal.mid}|${pal.deep}|${px}|${turn ? 1 : 0}`;
+  const hit = scaleCache.get(key);
+  if (hit) return hit;
+
+  const src = tileFor(mat, pal);
+  if (!src) return null;
+
+  /*
+   * 素のタイルは継ぎ目なく繋がるが、**縮めた瞬間に継ぎ目が戻る** ――
+   * drawImage は端の外側を読めないので、右端の画素が左端ではなく自分自身と
+   * 混ざり、1 本の線になる。
+   *
+   * そこで周囲に「回り込んだぶん」の余白を付けてから縮め、中央だけを切り出す。
+   * 中央の画素は上下左右に本物の隣を持つので、継ぎ目が生まれない。
+   *
+   * 余白は 1/8 で足りる。最初は 3×3 に並べていたが、それだと縮小先が
+   * 9 倍の面積になり、素材を切り替えるたびに 300ms 近く固まった。
+   */
+  const m = TILE / 8;
+  const sw = TILE + m * 2;
+  const pm = px / 8;
+  const pw = px + pm * 2;
+
+  const rep = makeCanvas(sw, sw);
+  const wide = makeCanvas(pw, pw);
+  const cv = makeCanvas(px, px);
+  if (!rep || !wide || !cv) return null;
+
+  const rctx = rep.getContext('2d');
+  for (let j = -1; j <= 1; j++) {
+    for (let i = -1; i <= 1; i++) rctx.drawImage(src, m + i * TILE, m + j * TILE);
+  }
+
+  const wctx = wide.getContext('2d');
+  wctx.imageSmoothingEnabled = true;
+  if (wctx.imageSmoothingQuality) wctx.imageSmoothingQuality = 'high';
+  wctx.drawImage(rep, 0, 0, pw, pw);
+
+  const ctx = cv.getContext('2d');
+  if (turn) {
+    ctx.translate(px, 0);
+    ctx.rotate(Math.PI / 2);
+  }
+  ctx.drawImage(wide, pm, pm, px, px, 0, 0, px, px);
+
+  if (scaleCache.size > 32) scaleCache.delete(scaleCache.keys().next().value);
+  scaleCache.set(key, cv);
+  return cv;
+}
+
+// ---------------------------------------------------------------- 面取りの陰影
+
+/**
+ * 面取りの 1 面の明るさ。法線 (nx, ny) が光のほうを向くほど明るい。
+ *
+ * 金属だけ返り方を変えてある ―― 磨いた金属は拡散光をほとんど返さず、
+ * 光源の**鏡像**を返す。だから上の面が明るいだけでなく、下の面も
+ * （周りの明るい床を映して）明るくなる。この 2 つ目の山が無いと、
+ * どれだけ磨いても「灰色のプラスチック」にしか見えない。
+ */
+function facetShade(mat, nx, ny) {
+  const d = nx * LIGHT.x + ny * LIGHT.y;
+  if (mat.key === 'metal' || mat.key === 'crystal') {
+    const direct = Math.max(0, d);
+    const bounce = Math.max(0, -d); // 下から返ってくる環境光
+    // 面ごとの差を大きく取る。差が小さいと、磨いた面ではなく
+    // 「灰色のプラスチックに角を付けたもの」にしか見えない
+    return 0.34 + Math.pow(direct, 1.15) * 1.05 + Math.pow(bounce, 2.2) * 0.5;
+  }
+  return 0.62 + Math.max(0, d) * 0.62 + Math.max(0, -d) * 0.06;
+}
+
+/** 面取りの 1 面の色 */
+function facetColor(mat, pal, nx, ny) {
+  const s = facetShade(mat, nx, ny);
+  const base = pal.mid;
+  return s >= 1 ? shade(base, (s - 1) * 0.9) : mixHex(pal.deep, base, clip(s, 0, 1));
+}
+
+/** ブロックの縁に引く 1 本の線。地より少し濃いだけにして、輪郭を主張させない */
+function edgeColor(pal) {
+  return luma(pal.deep) > 140 ? shade(pal.deep, -0.22) : shade(pal.deep, -0.3);
+}
+
+/** 効果（破片・光の輪）に使う代表色。素材が変わっても演出の色が浮かないように */
+function effectColors(mat, pal) {
+  return {
+    base: pal.mid,
+    light: shade(pal.top, 0.18),
+    dark: pal.deep,
+    shadow: hexRgb(pal.deep).join(','),
+  };
+}
+
 // ===== src/render.js =====
 // Canvas 描画。盤面・ブロック・着地予測ゴースト・演出をすべてここで描く。
 //
-// ブロックは「色そのもの」で描く。影も光沢も模様も乗せない ―― 一色のベタ塗りに、
-// ほんのわずかな角丸だけ。マス同士のすき間も髪の毛ほどしか空けないので、
-// 盤面はタイルを敷き詰めたモザイクのように見える。
-// 同じブロックのマス同士はすき間なく繋がるので「どこまでが一緒に動くか」は形で読める。
+// ブロックは「色の付いた板」ではなく、**素材から削り出した塊**として描く。
+// 順番は 接地影 → 側面の厚み → 天面のテクスチャ → 面取り → 縁 の 1 本道で、
+// 素材（src/materials.js）はその道に寸法と色と塗り方を渡すだけ。
+// 素材ごとに立体の作りを分岐させると、素材を足すたびに立体が壊れる。
 //
-// 後ろの盤面も同じ考えで、淡い色のマスを敷き詰めただけの平らな面にしている。
+// 速さについて。天面のテクスチャは 256×256 のタイルを 1 枚焼いて使い回し、
+// **ブロック 1 個の絵そのものもオフスクリーンに焼いて使い回す**。
+// 同じ形・同じ色のブロックは 1 枚を共有するので、盤上に 20 個あっても
+// 焼くのは数枚で済む。毎フレームやるのは、その絵を貼ることだけ。
+// 影のぼかしや面取りの扇を毎フレーム描くと、それだけで 60fps が出ない。
 
 /** roundRect は Safari 16.4 未満に無い。無ければ自前で足す */
 function installRoundRect() {
@@ -1463,15 +2300,6 @@ function colorFor(index) {
   return c;
 }
 
-/**
- * 盤面（ブロックを並べる面）。影も光沢も落とさない、平らな面。
- * 上端にだけ細い明るい線を引く ―― ガラス板の縁が光を拾ったときの1本で、
- * これだけで面が「浮いている」ように見える。
- *
- * 面の色そのものは進行度で動く（trayFor）。ここに残っているのは縁の光だけ。
- */
-const TRAY = { rim: 'rgba(255,255,255,.85)' };
-
 // ---------------------------------------------------------------- 進行度の色
 //
 // 色つきブロックは盤面に1組しかないので、その色を**進行度そのもの**に使える。
@@ -1492,7 +2320,7 @@ const PROGRESS_STOPS = [
 ];
 const PROGRESS_AT = [0, 0.28, 0.55, 0.8, 1];
 
-const lerp = (a, b, t) => a + (b - a) * t;
+const lerp = mix;
 
 /** 進行度 t（0..1）の HSL を求める。色相は近いほうへ回して濁りを避ける */
 function progressHsl(t) {
@@ -1521,12 +2349,6 @@ function progressColor(t) {
   };
 }
 
-/** 進行度 -> 盤面の面の色。ブロックと同じ色相を、ほとんど白まで薄めたもの */
-function trayFor(t) {
-  const { h } = progressHsl(t);
-  return { plate: hex(hsl(h, 30, 89)), hole: hex(hsl(h, 34, 95)) };
-}
-
 /** 進行度 -> 画面の後ろに敷く淡い色（CSS へ渡す） */
 function auraFor(t) {
   const { h, s } = progressHsl(t);
@@ -1540,6 +2362,73 @@ const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', 
 const UI_FONT = 'ui-rounded, -apple-system, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Hiragino Sans", system-ui, sans-serif';
 
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+/**
+ * 角を 45° で切り落とした矩形を path に足す（エメラルドカット）。
+ * 落とすのは**外側の角だけ** ―― 同じブロックの隣と接している角を落とすと、
+ * 塊の途中に切り欠きができて 1 個に見えなくなる。
+ */
+function chamferRect(path, p, cut) {
+  const { px, py, pw, ph, up, down, left, right } = p;
+  const x1 = px + pw;
+  const y1 = py + ph;
+  const c = Math.min(cut, pw / 2, ph / 2);
+  const tl = (!up && !left) ? c : 0;
+  const tr = (!up && !right) ? c : 0;
+  const br = (!down && !right) ? c : 0;
+  const bl = (!down && !left) ? c : 0;
+  path.moveTo(px + tl, py);
+  path.lineTo(x1 - tr, py);
+  if (tr) path.lineTo(x1, py + tr);
+  path.lineTo(x1, y1 - br);
+  if (br) path.lineTo(x1 - br, y1);
+  path.lineTo(px + bl, y1);
+  if (bl) path.lineTo(px, y1 - bl);
+  path.lineTo(px, py + tl);
+  if (tl) path.lineTo(px + tl, py);
+  path.closePath();
+}
+
+/**
+ * 面取りを何枚の面に割るか、その境界の向きを決める。
+ *
+ * 角から角へ均等に 8 分割すると、細長いブロックでは対角線が角を通らず、
+ * 長辺の途中で面が割れてしまう。だから角度は**その矩形の角の位置から逆算**する ――
+ * 角の落とし（丸みなら丸みの端、面取りなら切り口の両端）を通る 8 本の線が境界。
+ * こうすると額縁の留め継ぎのように、角でぴたりと 45° に合う。
+ */
+function facetRays(box, cut) {
+  const cx = (box.x0 + box.x1) / 2;
+  const cy = (box.y0 + box.y1) / 2;
+  const c = Math.max(0.5, Math.min(cut, box.w / 2 - 0.5, box.h / 2 - 0.5));
+  const { x0, y0, x1, y1 } = box;
+  // 右上の切り口の始点から時計回り。点と点のあいだが 1 枚の面になる
+  const pts = [
+    [x1 - c, y0], [x1, y0 + c], // 右上の角
+    [x1, y1 - c], [x1 - c, y1], // 右辺 → 右下の角
+    [x0 + c, y1], [x0, y1 - c], // 下辺 → 左下の角
+    [x0, y0 + c], [x0 + c, y0], // 左辺 → 左上の角
+  ];
+  // 各面の外向き法線。pts[i] と pts[i+1] のあいだの面が normals[i]
+  const K = Math.SQRT1_2;
+  const normals = [
+    [K, -K],  // 右上の角
+    [1, 0],   // 右辺
+    [K, K],   // 右下の角
+    [0, 1],   // 下辺
+    [-K, K],  // 左下の角
+    [-1, 0],  // 左辺
+    [-K, -K], // 左上の角
+    [0, -1],  // 上辺
+  ];
+  // atan2 は ±π で折り返す。そのまま arc() に渡すと、折り返した 1 枚だけが
+  // 円をほぼ 1 周してしまうので、単調に増えるようにほどいておく
+  const angles = pts.map(([x, y]) => Math.atan2(y - cy, x - cx));
+  for (let i = 1; i < angles.length; i++) {
+    while (angles[i] < angles[i - 1]) angles[i] += Math.PI * 2;
+  }
+  return { cx, cy, angles, normals };
+}
 
 class Renderer {
   constructor(canvas) {
@@ -1569,9 +2458,37 @@ class Renderer {
     this.progress = 0;
     this.progressTarget = 0;
     this._tintAt = -1;
+
+    /** ブロックの素材。設定で切り替わる */
+    this.material = materialFor(DEFAULT_MATERIAL);
+    /**
+     * 焼き上げたブロックの絵。
+     * 鍵は「素材 × 形 × 色 × マスの大きさ」。同じ鍵なら 1 枚を全員で使う。
+     */
+    this.pieceCache = new Map();
+    /** 焼き上げた盤面。素材・大きさ・色が変わったときだけ焼き直す */
+    this.trayCache = null;
+    this.trayKey = '';
+
     this.refreshTint();
 
     this.options = { symbols: false, ghost: true, calm: false };
+  }
+
+  /** 素材を切り替える。焼いてある絵は全部捨てる */
+  setMaterial(key) {
+    const next = materialFor(key);
+    if (next === this.material) return;
+    this.material = next;
+    this.invalidateBakes();
+  }
+
+  invalidateBakes() {
+    this.pieceCache.clear();
+    this.trayCache = null;
+    this.trayKey = '';
+    this._tintAt = -1; // 素材が変われば同じ進行度でも色が変わる
+    this.refreshTint();
   }
 
   /**
@@ -1583,19 +2500,43 @@ class Renderer {
     if (immediate) this.progress = this.progressTarget;
   }
 
-  /** 進行度から作った色。値が動いたときだけ作り直す */
+  /**
+   * 進行度から作った色。値が動いたときだけ作り直す。
+   *
+   * 刻みを 1/32 に粗くしてあるのは、ブロックの絵とテクスチャを焼き直す回数を
+   * 抑えるため ―― 連続値のままだと、進行度が動くたびに色つきブロックの
+   * テクスチャを焼き直すことになり、遊んでいる最中に引っかかる。
+   * 目で見て段が分かる粗さではないし、背景の光は連続値のまま動かしている。
+   */
   refreshTint() {
-    const q = Math.round(this.progress * 400) / 400;
+    const q = Math.round(this.progress * 32) / 32;
     if (this._tintAt === q) return;
     this._tintAt = q;
     this.tint = progressColor(q);
-    this.tray = trayFor(q);
+    this.stonePal = paletteFor(this.material, false, null);
+    this.litPal = paletteFor(this.material, true, this.tint.base);
+    this.trayPal = trayPaletteFor(this.material);
   }
 
-  /** ブロックの色。灰色は不変、色つきは進行度で動く */
+  /** ブロックの色。灰色は素材そのまま、色つきは進行度の色を素材に混ぜたもの */
+  palFor(colorIndex) {
+    return colorIndex === -9 ? this.stonePal : this.litPal; // -9 は board.js の BLOCKER
+  }
+
+  /**
+   * 演出（破片・光の輪・残像）に使う色。
+   * ブロックそのものではなく「そこにあった色」を伝えられればいいので、
+   * 素材の代表色 3 つに畳んで返す。
+   */
   colorOf(colorIndex) {
-    if (colorIndex === -9) return BLOCKER_COLOR; // board.js の BLOCKER
-    return this.tint;
+    const pal = this.palFor(colorIndex);
+    return {
+      name: colorIndex === -9 ? '灰色（消えないブロック）' : '色つきブロック',
+      base: pal.mid,
+      light: shade(pal.top, 0.16),
+      dark: pal.deep,
+      shadow: hexRgb(pal.deep).join(','),
+    };
   }
 
   resize(size) {
@@ -1612,20 +2553,30 @@ class Renderer {
 
     // 盤面は正方形。画面をできるだけ大きく使う ―― 余白ではなく盤面が主役。
     // 外周は演出（光の輪）がわずかに滲む余地だけ残す
-    const cell = Math.floor((Math.min(w, h) - 8) / this.size);
+    // 外周は、トレイの枠と落ち影のぶんだけ余白を取る
+    const frame = Math.max(10, Math.min(w, h) * 0.035);
+    const cell = Math.floor((Math.min(w, h) - frame * 2) / this.size);
+    const prev = this.cell;
     this.cell = Math.max(8, cell);
     const boardPx = this.cell * this.size;
     this.ox = Math.floor((w - boardPx) / 2);
     this.oy = Math.floor((h - boardPx) / 2);
+    // マスの大きさが変われば、焼いてある絵は全部寸法違い
+    if (this.cell !== prev) this.invalidateBakes();
+    else { this.trayCache = null; this.trayKey = ''; }
   }
 
   /**
-   * マスとマスのすき間。「ほんの少しだけ」＝ 1〜2px。
-   * 敷き詰まって見えることを優先し、マスが小さいときも 1px 以上は空けない。
+   * マスとマスのすき間。素材ごとに決まる（石は目地が広く、金属は詰まっている）。
+   * ここが空いているぶんだけ、下のトレイと落ち影が見える ＝ 厚みが読める。
    */
-  get tileGap() { return this.cell >= 34 ? 1.5 : 1; }
+  get tileGap() { return Math.max(1, this.cell * this.material.gap); }
   get tileSize() { return this.cell - this.tileGap * 2; }
-  get tileRadius() { return Math.max(1.5, this.tileSize * 0.14); }
+  get tileRadius() { return Math.max(1.5, this.cell * (this.material.radius || 0.12)); }
+  /** ブロックの厚み（側面の見える高さ） */
+  get depth() { return Math.max(1.5, this.cell * this.material.depth); }
+  /** 面取りの幅 */
+  get bevel() { return Math.max(1.5, this.cell * this.material.bevel); }
 
   /** 画面座標 -> 盤面セル */
   toCell(clientX, clientY) {
@@ -1789,55 +2740,172 @@ class Renderer {
   }
 
   /**
-   * 盤面。ブロックと同じ寸法・同じすき間の淡いマスを敷き詰めただけの平らな面。
-   * 影も枠線も付けない ―― 空きマスがそのまま「通路」として読めればいい。
+   * 盤面（トレイ）。
+   *
+   * ブロックが**中に収まっている**ことを見せたいので、枠は 1 段高く、床は
+   * 1 段低く描く。高いところは上面が明るく、低いところは上端に影が落ちる ――
+   * 明暗の付け方をひっくり返すだけで、同じ形が「出っ張り」にも「窪み」にも見える。
+   *
+   * 空きマスはさらにもう 1 段深い窪みにしてある。通路がどこにあるかは
+   * このゲームでいちばん読みたい情報なので、影の濃さで他と差を付ける。
    */
   drawTray(board) {
-    const ctx = this.ctx;
+    const key = `${this.material.key}|${this.cell}|${this.size}|${this.ox},${this.oy}`
+      + `|${this.trayPal ? this.trayPal.key : ''}|${this.emptyKey(board)}`;
+    if (this.trayKey !== key || !this.trayCache) {
+      this.trayCache = this.bakeTray(board);
+      this.trayKey = key;
+    }
+    if (this.trayCache) {
+      const t = this.trayCache;
+      this.ctx.drawImage(t.canvas, t.x, t.y, t.w, t.h);
+    }
+  }
+
+  /** 空きマスの並び。ここが変わったときだけトレイを焼き直せばいい */
+  emptyKey(board) {
+    if (!board) return '';
+    const out = [];
+    for (let y = 0; y < this.size; y++) {
+      for (let x = 0; x < this.size; x++) if (board.at(x, y) === -1) out.push(`${x}.${y}`);
+    }
+    return out.join(',');
+  }
+
+  bakeTray(board) {
+    const mat = this.material;
+    const pal = this.trayPal;
     const n = this.size;
     const cell = this.cell;
     const w = cell * n;
-    const x0 = this.ox;
-    const y0 = this.oy;
-    const pad = Math.max(2, cell * 0.06);
+    // 枠の幅。盤面が小さいほど相対的に太くして、額縁らしく見せる
+    const frame = Math.max(6, cell * 0.3);
+    const outPad = Math.ceil(frame + cell * 0.3);
+    const side = w + outPad * 2;
+    const s = this.dpr;
+    const cv = makeCanvas(side * s, side * s);
+    if (!cv) return null;
+    const ctx = cv.getContext('2d');
+    ctx.scale(s, s);
+    const x0 = outPad;
+    const y0 = outPad;
+    const radius = Math.max(6, cell * 0.3);
 
-    const radius = Math.max(6, cell * 0.24);
+    // --- 落ち影（盤面そのものが台の上に置かれている） ---
     ctx.save();
+    ctx.shadowColor = 'rgba(24,22,20,0.3)';
+    ctx.shadowBlur = cell * 0.4;
+    ctx.shadowOffsetY = cell * 0.16;
+    ctx.fillStyle = '#000';
     ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
-    ctx.fillStyle = this.tray.plate;
+    ctx.roundRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2, radius);
     ctx.fill();
-    // ガラスの縁の光。上半分だけを 1px でなぞる
+    ctx.restore();
+
+    // --- 枠 ---
+    const outerRect = new Path2D();
+    outerRect.roundRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2, radius);
     ctx.save();
-    ctx.clip();
-    ctx.strokeStyle = TRAY.rim;
+    ctx.clip(outerRect);
+    ctx.fillStyle = pal.frame;
+    ctx.fillRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2);
+    const framePal = {
+      top: shade(pal.frame, 0.18), mid: pal.frame, deep: shade(pal.frame, -0.24), side: pal.frame,
+    };
+    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 3.4 * this.dpr), 0.85);
+    // 枠は 1 段高い ―― 上端が明るく、下端が暗い
+    const fg = ctx.createLinearGradient(0, y0 - frame, 0, y0 + w + frame);
+    fg.addColorStop(0, 'rgba(255,255,255,0.32)');
+    fg.addColorStop(0.5, 'rgba(255,255,255,0)');
+    fg.addColorStop(1, 'rgba(0,0,0,0.22)');
+    ctx.fillStyle = fg;
+    ctx.fillRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2);
+    ctx.restore();
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.roundRect(x0 - pad + 0.5, y0 - pad + 0.5, w + pad * 2 - 1, (w + pad * 2) * 0.6, radius);
+    ctx.roundRect(x0 - frame + 0.5, y0 - frame + 0.5, w + frame * 2 - 1, w + frame * 2 - 1, radius);
     ctx.stroke();
     ctx.restore();
-    ctx.restore();
 
+    // --- 床（1 段低い。上端に枠の影が落ちる） ---
+    const floorPad = frame * 0.34;
+    const floor = new Path2D();
+    floor.roundRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2,
+      Math.max(3, radius * 0.6));
+    ctx.save();
+    ctx.clip(floor);
+    ctx.fillStyle = pal.floor;
+    ctx.fillRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2);
+    // 枠と同じ模様が続かないようにずらす
+    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2.4 * this.dpr), 0.5, 37, 61);
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    ctx.fillRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2);
+    ctx.restore();
+    this.insetShadow(ctx, floor, cell * 0.34, 0.5);
+
+    // --- 空きマス（もう 1 段深い窪み） ---
     const gap = this.tileGap;
     const size = this.tileSize;
     const tr = this.tileRadius;
-    ctx.save();
-    ctx.fillStyle = this.tray.hole;
-    ctx.beginPath();
+    const holes = new Path2D();
+    let any = false;
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         if (board && board.at(x, y) !== -1) continue;
-        ctx.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
+        holes.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
+        any = true;
       }
     }
-    ctx.fill();
+    if (any) {
+      ctx.save();
+      ctx.clip(holes);
+      ctx.fillStyle = pal.well;
+      ctx.fillRect(0, 0, side, side);
+      this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2 * this.dpr), 0.38, 13, 29);
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.fillRect(0, 0, side, side);
+      ctx.restore();
+      this.insetShadow(ctx, holes, cell * 0.22, 0.62);
+    }
+
+    return { canvas: cv, x: this.ox - outPad, y: this.oy - outPad, w: side, h: side };
+  }
+
+  /**
+   * 窪みの内側に落ちる影。
+   * 形の内側を切り抜き、外側を塗った面に影を落とすと、影だけが内側へ回り込む ――
+   * これが「へこんでいる」ことのいちばん確かなしるしになる。
+   */
+  insetShadow(ctx, path, blur, strength) {
+    ctx.save();
+    ctx.clip(path);
+    ctx.shadowColor = `rgba(18,16,14,${strength})`;
+    ctx.shadowBlur = blur;
+    ctx.shadowOffsetY = blur * 0.34;
+    // 外側だけを塗る（even-odd で「とても大きな矩形 − この形」を作る）
+    const outside = new Path2D();
+    outside.rect(-2000, -2000, 6000, 6000);
+    outside.addPath(path);
+    ctx.fillStyle = 'rgba(0,0,0,1)';
+    ctx.fill(outside, 'evenodd');
     ctx.restore();
   }
 
+  /**
+   * 盤上のブロックを全部描く。
+   *
+   * 描く順を「画面の下にあるものほど後」にしてある。ブロックには厚みがあり、
+   * 手前（下）のブロックは奥（上）のブロックの側面を隠す ―― 順を守らないと、
+   * 下のブロックの向こう側に上のブロックの側面が突き抜けて見える。
+   */
   drawPieces(view) {
     const { board, anim, selected, invalid } = view;
     if (!board) return;
 
+    const list = [];
     for (const piece of board.pieces.values()) {
       let dx = 0;
       let dy = 0;
@@ -1849,7 +2917,6 @@ class Renderer {
           const p = easeOutCubic(anim.t);
           dx = -d.x * anim.steps * this.cell * (1 - p);
           dy = -d.y * anim.steps * this.cell * (1 - p);
-          this.drawTrail(piece, d, anim, p);
         } else if (anim.phase === 'land') {
           // 進行方向につぶれて戻る（ぶつかった手応え）
           squash = Math.sin(anim.t * Math.PI) * 0.16;
@@ -1863,9 +2930,374 @@ class Renderer {
         dy += d.y * k;
       }
 
-      const axis = anim && anim.pieceId === piece.id ? anim.dir : null;
-      this.drawPiece(piece, dx, dy, 1, squash, selected === piece.id, 'solid', axis);
+      let bottom = -Infinity;
+      for (const [, y] of piece.cells) if (y > bottom) bottom = y;
+      list.push({ piece, dx, dy, squash, depth: bottom * this.cell + dy });
     }
+    list.sort((a, b) => a.depth - b.depth);
+
+    // 残像は全部のブロックより下に敷く（塊の下をくぐって見えるように）
+    if (anim && anim.phase === 'slide') {
+      const moving = board.pieces.get(anim.pieceId);
+      if (moving) this.drawTrail(moving, DIRS[anim.dir], anim, easeOutCubic(anim.t));
+    }
+
+    for (const item of list) {
+      const axis = anim && anim.pieceId === item.piece.id ? anim.dir : null;
+      this.drawPiece(item.piece, item.dx, item.dy, 1, item.squash,
+        selected === item.piece.id, 'solid', axis);
+    }
+  }
+
+  // ---------------------------------------------------------------- ブロックを焼く
+
+  /**
+   * 素材のタイルを敷く。
+   *
+   * **必ず画素そのままの座標で敷くこと。** 変換行列に拡大が掛かったまま
+   * createPattern を敷くと、繰り返しの継ぎ目に半端な画素が挟まり、
+   * ブロックの上を白い格子の線が走る（実機ではっきり見えた）。
+   * 切り抜き（clip）は変換を戻しても効いたままなので、ここだけ等倍に落とせばよい。
+   */
+  fillTexture(ctx, tile, alpha, offsetX = 0, offsetY = 0) {
+    if (!tile) return;
+    const pattern = ctx.createPattern(tile, 'repeat');
+    if (!pattern) return;
+    const ox = Math.round(offsetX);
+    const oy = Math.round(offsetY);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = alpha;
+    ctx.translate(ox, oy);
+    ctx.fillStyle = pattern;
+    ctx.fillRect(-ox, -oy, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+  }
+
+  /** ブロックの外接矩形（セル単位） */
+  cellBounds(cells) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const [x, y] of cells) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    return { minX, minY, cols: maxX - minX + 1, rows: maxY - minY + 1 };
+  }
+
+  /** 形の指紋。同じ形なら同じ絵を使い回せる */
+  shapeKey(cells, minX, minY) {
+    return cells.map(([x, y]) => `${x - minX}.${y - minY}`).sort().join('-');
+  }
+
+  /**
+   * ブロック 1 個の絵をオフスクリーンに焼く。
+   *
+   * 影のぼかし・面取りの扇・テクスチャの敷き込みは、どれも 1 個あたり
+   * 10 回近い描画になる。盤上に 20 個あると毎フレーム 200 回。
+   * 焼いてしまえば毎フレームやるのは drawImage 1 回だけになる。
+   *
+   * @param {number[][]} cells 盤面座標のセル
+   * @param {object} pal 色（materials.paletteFor）
+   * @param {number} variant 同じ形でもテクスチャの位置をずらすための番号
+   * @param {boolean} colored 色つきブロックか（灰色は進行度の色を被せない）
+   */
+  bakePiece(cells, pal, variant, colored) {
+    const mat = this.material;
+    const cell = this.cell;
+    const { minX, minY, cols, rows } = this.cellBounds(cells);
+    const depth = this.depth;
+    // 影と厚みがはみ出すぶんの余白
+    const pad = Math.ceil(depth + cell * 0.34);
+    const w = cols * cell + pad * 2;
+    const h = rows * cell + pad * 2;
+    // 画素密度ぶん大きく焼いて、貼るときに CSS 画素へ戻す。
+    // 等倍で焼くと Retina で 2 倍に引き伸ばされ、面取りの稜線がぼやける
+    const s = this.dpr;
+    const cv = makeCanvas(w * s, h * s);
+    if (!cv) return null;
+    const ctx = cv.getContext('2d');
+    ctx.scale(s, s);
+
+    const ox = pad - minX * cell;
+    const oy = pad - minY * cell;
+    const gap = this.tileGap;
+    const bevel = this.bevel;
+    const radius = this.tileRadius;
+    const chamfer = mat.chamfer ? mat.chamfer * cell : 0;
+
+    const rects = this.rectsFor(cells, ox, oy, gap, radius);
+    const outer = this.pathOf(rects, chamfer);
+    const box = this.bboxOf(rects);
+
+    // 卓面（面取りの内側）。角の落としも面取りのぶんだけ小さくなる
+    const innerCut = chamfer ? Math.max(1, chamfer - bevel * 0.7) : Math.max(0.5, radius - bevel * 0.6);
+    const innerRects = this.rectsFor(cells, ox, oy, gap + bevel, innerCut);
+    const inner = this.pathOf(innerRects, chamfer ? innerCut : 0);
+
+    // 順番が意味を持つ。
+    //
+    // 面取りは「輪郭と卓面のあいだの輪」だが、**輪を even-odd で切り抜いてはいけない**。
+    // ブロックが複数マスにまたがると、マスの継ぎ目で内側の輪郭が重なり、
+    // そこだけ半端な被覆率になって細い線が走る（盤面にマス目が浮いて見えた）。
+    // 代わりに「面取りを一面に塗ってから、卓面をその上に重ねて隠す」―― こうすれば
+    // 輪は塗り重ねの差として現れるだけで、切り抜きが要らない。
+    // 縁をなぞるとき用の、外周だけの 1 本の輪郭（マスの境目を含まない）
+    const rim = this.boundaryOf(cells, rects, box, radius, chamfer);
+    const innerBox = this.bboxOf(innerRects);
+    const innerRim = this.boundaryOf(cells, innerRects, innerBox, innerCut, chamfer ? innerCut : 0);
+
+    const skin = {
+      pal, mat, cols, rows, variant, box,
+      colored,
+      tintHex: this.tint.base,
+    };
+    this.bakeShadow(ctx, outer, rim, mat, cell, depth);
+    this.bakeSide(ctx, outer, box, pal, mat, depth);
+    // 天面をいったん全面に描く。面取りはこの上に乗せる
+    this.bakeFace(ctx, outer, skin, 1);
+    if (mat.bevelStyle === 'facet') {
+      // 留め継ぎの面。いったん全面を面の色で塗り、卓面を上から重ねて中央を隠す ――
+      // 輪だけを even-odd で切り抜くと、マスの継ぎ目に線が残る
+      this.bakeFacets(ctx, outer, box, pal, mat, chamfer || radius * 0.85);
+      this.bakeTable(ctx, inner, skin);
+    } else {
+      this.bakeSoftBevel(ctx, outer, rim, box, pal, mat);
+    }
+    this.bakeEdge(ctx, rim, innerRim, pal, mat, cell);
+
+    return { canvas: cv, pad, minX, minY, w, h };
+  }
+
+  /**
+   * 接地影。
+   * いったん影を落としてから**内側をくり抜く** ―― くり抜かないと、影を落とすために
+   * 塗った面がブロックの下に残り、透けるクリスタルで真っ黒に見えてしまう。
+   */
+  bakeShadow(ctx, outer, rim, mat, cell, depth) {
+    ctx.save();
+    ctx.shadowColor = `rgba(26,24,22,${mat.shadow})`;
+    ctx.shadowBlur = cell * 0.16;
+    ctx.shadowOffsetX = cell * 0.018;
+    ctx.shadowOffsetY = depth * 0.72 + cell * 0.05;
+    ctx.fillStyle = '#000';
+    ctx.fill(outer);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fill(outer);
+    // 塗りだけだと縁の半端な画素が残り、黒い髪の毛のような線になる。
+    // 外周を 1px の線でもなぞって、その半端まで消す
+    ctx.lineWidth = 1;
+    ctx.stroke(rim);
+    ctx.restore();
+  }
+
+  /** 側面。塊の厚み。下へ押し出したぶんが、すき間から帯になって見える */
+  bakeSide(ctx, outer, box, pal, mat, depth) {
+    ctx.save();
+    ctx.translate(0, depth);
+    const g = ctx.createLinearGradient(0, box.y0, 0, box.y1 + depth);
+    g.addColorStop(0, pal.side);
+    g.addColorStop(0.55, mixHex(pal.side, pal.deep, 0.5));
+    g.addColorStop(1, shade(pal.deep, -0.26));
+    ctx.fillStyle = g;
+    ctx.fill(outer);
+    ctx.restore();
+  }
+
+  /**
+   * 素材の地。指定された形に、色とテクスチャだけを敷く。
+   * タイル 1 枚はおよそ 3 マスぶん。マスが小さくても、木目や石の粒が
+   * 「そのブロックに対して」同じ割合で見える。
+   * 木と金属は筋を長辺に沿わせる ―― 板の取り方が変われば、別の板に見える。
+   */
+  bakeSurface(ctx, box, skin, alpha) {
+    const { pal, mat, cols, rows, variant, colored } = skin;
+    const along = (mat.key === 'wood' || mat.key === 'metal') && rows > cols;
+    // タイルは**素材そのものの色**で焼く。進行度で焼き直すと、色が 1 段動くたびに
+    // 数十ミリ秒止まる。色は下の「色相を被せる」ひと塗りで付ける
+    const tile = scaledTile(mat, texturePaletteFor(mat, colored), this.cell * 3 * this.dpr, along);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = pal.mid;
+    ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+    // 同じ形のブロックでも模様の位置をずらす（並ぶと繰り返しが目に付く）
+    if (tile) {
+      this.fillTexture(ctx, tile, alpha, tile.width * variant * 0.37, tile.height * variant * 0.61);
+    }
+    ctx.globalAlpha = 1;
+
+    /*
+     * 進行度の色相を被せる。
+     *
+     * 'color' は「色相と彩度は塗った色、明るさは下のまま」という混ぜ方。
+     * ふつうの半透明で塗ると陰影まで一緒に薄まって、木目も石の粒も潰れる ――
+     * これなら凹凸はそのまま残り、色だけが変わる。
+     */
+    if (colored && mat.tint > 0 && skin.tintHex) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'color';
+      ctx.globalAlpha = alpha * mat.tint;
+      ctx.fillStyle = skin.tintHex;
+      ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * 天面。素材の地を敷き、その上に帯・斜めの明暗・艶を重ねる。
+   * 面取りの前に全面へ、面取りのあとに卓面へ ―― 同じ関数を 2 度使う。
+   */
+  bakeFace(ctx, path, skin, alpha) {
+    const { pal, mat, box } = skin;
+    ctx.save();
+    ctx.clip(path);
+
+    this.bakeSurface(ctx, box, skin, alpha);
+
+    // 帯状の映り込み（金属だけ）。研磨の筋と直交する向きに置く
+    if (mat.banded) {
+      const g = ctx.createLinearGradient(0, box.y0, 0, box.y1);
+      g.addColorStop(0, 'rgba(255,255,255,0.36)');
+      g.addColorStop(0.14, 'rgba(255,255,255,0.04)');
+      g.addColorStop(0.33, 'rgba(0,0,0,0.22)');
+      g.addColorStop(0.5, 'rgba(255,255,255,0.26)');
+      g.addColorStop(0.68, 'rgba(0,0,0,0.18)');
+      g.addColorStop(0.86, 'rgba(255,255,255,0.2)');
+      g.addColorStop(1, 'rgba(0,0,0,0.12)');
+      ctx.fillStyle = g;
+      ctx.fillRect(box.x0, box.y0, box.w, box.h);
+    }
+
+    // 斜めの明暗。光の来ている側が明るい
+    const s = mat.sheen;
+    if (s > 0) {
+      const g = ctx.createLinearGradient(box.x0, box.y0, box.x1, box.y1);
+      g.addColorStop(0, `rgba(255,255,255,${s * 0.5})`);
+      g.addColorStop(0.42, 'rgba(255,255,255,0)');
+      g.addColorStop(1, `rgba(20,16,12,${s * 0.4})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(box.x0, box.y0, box.w, box.h);
+    }
+
+    // 艶。左上寄りに広い光の溜まりを置く
+    if (mat.gloss > 0.15) {
+      const r = Math.max(box.w, box.h) * 0.62;
+      const g = ctx.createRadialGradient(
+        box.x0 + box.w * 0.3, box.y0 + box.h * 0.2, 0,
+        box.x0 + box.w * 0.3, box.y0 + box.h * 0.2, r,
+      );
+      g.addColorStop(0, `rgba(255,255,255,${mat.gloss * 0.26})`);
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(box.x0, box.y0, box.w, box.h);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * 卓面。面取りを塗ったあとに、その中央だけを塗り直して隠す。
+   * 透ける素材はいったん下を消してから薄く塗る ―― 消さないと、下に敷いた
+   * 面取りと側面が透けて、トレイではなく自分の影を見ることになる。
+   */
+  bakeTable(ctx, inner, skin) {
+    const { mat, box } = skin;
+    if (mat.translucent) {
+      ctx.save();
+      ctx.clip(inner);
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = '#000';
+      ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+      ctx.restore();
+    }
+    this.bakeFace(ctx, inner, skin, mat.translucent || 1);
+  }
+
+  /**
+   * 留め継ぎの面取り（金属・クリスタル）。
+   * 中心から 8 方向へ扇を放ち、面ごとに明るさを変える。角度は矩形の角から
+   * 逆算してあるので（facetRays）、角でぴたりと 45° に合う。
+   * ここでは全面を塗り、中央は卓面で隠す ―― 輪を切り抜くとマスの継ぎ目に線が出る。
+   */
+  bakeFacets(ctx, outer, box, pal, mat, cut) {
+    const { cx, cy, angles, normals } = facetRays(box, cut);
+    const r = Math.hypot(box.w, box.h);
+    ctx.save();
+    ctx.clip(outer);
+    ctx.globalAlpha = mat.bevelAlpha == null ? 1 : mat.bevelAlpha;
+    for (let i = 0; i < angles.length; i++) {
+      const a0 = angles[i];
+      const a1 = i === angles.length - 1 ? angles[0] + Math.PI * 2 : angles[i + 1];
+      ctx.fillStyle = facetColor(mat, pal, normals[i][0], normals[i][1]);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, r, a0, a1);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * 丸い縁の面取り（石・木・紙・布）。
+   *
+   * 面では割らない。輪郭を**太さを変えながら何度もなぞる** ―― 太くて薄い線から
+   * 細くて濃い線へ重ねると、縁でいちばん強く、内へ向かって滑らかに消える帯になる。
+   * 内側の輪郭で切り抜くやり方だと、そこに硬い境目が出て「丸み」に見えない。
+   */
+  bakeSoftBevel(ctx, outer, rim, box, pal, mat) {
+    const bevel = this.bevel;
+    const r = Math.hypot(box.w, box.h) / 2;
+    const cx = (box.x0 + box.x1) / 2;
+    const cy = (box.y0 + box.y1) / 2;
+    const g = ctx.createLinearGradient(
+      cx + LIGHT.x * r, cy + LIGHT.y * r,
+      cx - LIGHT.x * r, cy - LIGHT.y * r,
+    );
+    g.addColorStop(0, facetColor(mat, pal, LIGHT.x, LIGHT.y));
+    g.addColorStop(0.5, facetColor(mat, pal, -LIGHT.y, LIGHT.x));
+    g.addColorStop(1, facetColor(mat, pal, -LIGHT.x, -LIGHT.y));
+
+    const alpha = mat.bevelAlpha == null ? 1 : mat.bevelAlpha;
+    ctx.save();
+    ctx.clip(outer);
+    ctx.strokeStyle = g;
+    ctx.lineJoin = 'round';
+    const steps = 4;
+    for (let i = 0; i < steps; i++) {
+      ctx.globalAlpha = alpha * (0.26 + i * 0.16);
+      ctx.lineWidth = bevel * 2 * (1 - i / steps);
+      ctx.stroke(rim);
+    }
+    ctx.restore();
+  }
+
+  /** 縁の線と、クリスタルの稜線 */
+  bakeEdge(ctx, rim, innerRim, pal, mat, cell) {
+    ctx.save();
+    ctx.lineWidth = Math.max(1, cell * 0.018);
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = edgeColor(pal);
+    ctx.stroke(rim);
+    ctx.restore();
+
+    if (!mat.prism) return;
+    // 面と面の継ぎ目が光を拾う。ガラスの「エッジの線」はこれで出る
+    ctx.save();
+    ctx.lineWidth = Math.max(1, cell * 0.022);
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.stroke(innerRim);
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = Math.max(1, cell * 0.014);
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.stroke(rim);
+    ctx.restore();
   }
 
   drawTrail(piece, d, anim, p) {
@@ -1893,26 +3325,43 @@ class Renderer {
     }
   }
 
-  /** ブロックのセル矩形を組み立てる（同じブロックの隣とは継ぎ目なく繋がる） */
-  cellRects(piece, dx, dy) {
+  /**
+   * セル群 -> 矩形の並び。
+   *
+   * 同じブロックの隣り合うマスは、接する側のすき間と角丸を 0 にして繋げる ――
+   * こうすると L 字でも凹型でも「1 個の塊」に見える。
+   * pad を大きくすると、そのぶん内側へ縮んだ相似形になる（面取りの内側の輪郭）。
+   */
+  rectsFor(cells, ox, oy, pad, r) {
     const cell = this.cell;
-    const own = new Set(piece.cells.map(([x, y]) => `${x},${y}`));
+    const own = new Set(cells.map(([x, y]) => `${x},${y}`));
     const has = (x, y) => own.has(`${x},${y}`);
-    const pad = this.tileGap;
-    const r = this.tileRadius;
+    /*
+     * 隣り合うマスは、接する側をわずかに**重ねる**。
+     *
+     * ぴったり突き合わせると、塗りと切り抜きの縁で被覆率が 100% に届かず、
+     * マスの境目に髪の毛ほどの線が走る（盤面にマス目が浮いて見えた）。
+     * 0.6px 食い込ませれば重なるので、線は原理的に出ない。
+     * 重なっても困らないよう、塗りと切り抜きは全部 nonzero で扱う。
+     */
+    const bleed = -0.6;
 
     const out = [];
-    for (const [x, y] of piece.cells) {
+    for (const [x, y] of cells) {
       const up = has(x, y - 1);
       const down = has(x, y + 1);
       const left = has(x - 1, y);
       const right = has(x + 1, y);
+      const l = left ? bleed : pad;
+      const t = up ? bleed : pad;
+      const rt = right ? bleed : pad;
+      const b = down ? bleed : pad;
       out.push({
         x, y, up, down, left, right,
-        px: this.ox + x * cell + dx + (left ? 0 : pad),
-        py: this.oy + y * cell + dy + (up ? 0 : pad),
-        pw: cell - (left ? 0 : pad) - (right ? 0 : pad),
-        ph: cell - (up ? 0 : pad) - (down ? 0 : pad),
+        px: ox + x * cell + l,
+        py: oy + y * cell + t,
+        pw: cell - l - rt,
+        ph: cell - t - b,
         radii: [
           (!up && !left) ? r : 0,
           (!up && !right) ? r : 0,
@@ -1924,9 +3373,46 @@ class Renderer {
     return out;
   }
 
-  pathOf(rects) {
+  /** ブロックのセル矩形（盤面座標） */
+  cellRects(piece, dx, dy) {
+    return this.rectsFor(piece.cells, this.ox + dx, this.oy + dy, this.tileGap, this.tileRadius);
+  }
+
+  /**
+   * 矩形の並び -> 輪郭の Path2D。
+   * 角の落とし方は素材が決める ―― 丸める（石・木・金属・紙・布）か、
+   * 45° で切り落とす（クリスタル。エメラルドカットの角はここで決まる）。
+   */
+  /**
+   * ブロックの**外周だけ**をなぞる 1 本の閉じた輪郭。
+   *
+   * pathOf はマスごとの矩形を並べたものなので、これを stroke すると
+   * マスとマスの境目まで線が引かれ、1 個の塊に格子が浮く（実際そうなった）。
+   * 縁をなぞる用途では必ずこちらを使うこと。
+   *
+   * このゲームのブロックは全部が長方形（src/exact.js が長方形しか置かない）なので、
+   * 外接矩形をそのままなぞれば厳密に外周と一致する。将来 L 字などが増えたときの
+   * ために、長方形でなければ辺ごとの外周（outlineOf）へ落ちる。
+   */
+  boundaryOf(cells, rects, box, r, chamfer = 0) {
+    const { cols, rows } = this.cellBounds(cells);
+    if (cells.length !== cols * rows) return this.outlineOf(rects, r);
     const path = new Path2D();
-    for (const p of rects) path.roundRect(p.px, p.py, p.pw, p.ph, p.radii);
+    const shape = {
+      px: box.x0, py: box.y0, pw: box.w, ph: box.h,
+      up: false, down: false, left: false, right: false,
+    };
+    if (chamfer > 0) chamferRect(path, shape, chamfer);
+    else path.roundRect(box.x0, box.y0, box.w, box.h, r);
+    return path;
+  }
+
+  pathOf(rects, chamfer = 0) {
+    const path = new Path2D();
+    for (const p of rects) {
+      if (chamfer > 0) chamferRect(path, p, chamfer);
+      else path.roundRect(p.px, p.py, p.pw, p.ph, p.radii);
+    }
     return path;
   }
 
@@ -1968,7 +3454,10 @@ class Renderer {
     }
 
     const c = this.colorOf(piece.color);
-    const outline = this.outlineOf(rects, this.tileRadius);
+    const mat = this.material;
+    const outline = this.boundaryOf(
+      piece.cells, rects, box, this.tileRadius, mat.chamfer ? mat.chamfer * cell : 0,
+    );
 
     if (mode === 'outline') {
       ctx.lineWidth = Math.max(2, cell * 0.09);
@@ -1981,16 +3470,37 @@ class Renderer {
       return;
     }
 
-    // ベタ塗り一色。同じブロックのマス同士は継ぎ目なく繋がり、
-    // 別のブロックとのあいだにだけ髪の毛ほどのすき間が残る。
-    ctx.fillStyle = c.base;
-    ctx.fill(this.pathOf(rects));
+    // 焼いてある絵を貼る。同じ形・同じ素材・同じ色なら 1 枚を全員で使い回す
+    const pal = this.palFor(piece.color);
+    const { minX, minY } = this.cellBounds(piece.cells);
+    const variant = ((piece.id % 4) + 4) % 4;
+    const key = `${this.material.key}|${this.shapeKey(piece.cells, minX, minY)}`
+      + `|${pal.key}|${this.cell}|${variant}`;
+    let baked = this.pieceCache.get(key);
+    if (baked === undefined) {
+      baked = this.bakePiece(piece.cells, pal, variant, piece.color !== -9);
+      // 盤上の形は数種類しかないが、進行度で色が動くので上限は付けておく
+      if (this.pieceCache.size > 48) this.pieceCache.clear();
+      this.pieceCache.set(key, baked);
+    }
+    if (baked) {
+      ctx.drawImage(
+        baked.canvas,
+        this.ox + minX * cell + dx - baked.pad,
+        this.oy + minY * cell + dy - baked.pad,
+        baked.w, baked.h,
+      );
+    } else {
+      // キャンバスを作れない環境（テストなど）。塗りだけは出しておく
+      ctx.fillStyle = pal.mid;
+      ctx.fill(this.pathOf(rects));
+    }
 
     // 色記号（色覚サポート）
     if (this.options.symbols && cell > 16) {
       const [ax, ay] = piece.cells[Math.floor(piece.cells.length / 2)];
       ctx.save();
-      ctx.globalAlpha = alpha * 0.38;
+      ctx.globalAlpha = alpha * 0.42;
       ctx.fillStyle = c.dark;
       ctx.font = `700 ${Math.floor(cell * 0.44)}px ${UI_FONT}`;
       ctx.textAlign = 'center';
@@ -2004,7 +3514,7 @@ class Renderer {
       const pulse = 0.5 + 0.5 * Math.sin(this.time * 6.5);
       ctx.save();
       ctx.globalAlpha = alpha * (0.55 + 0.45 * pulse);
-      ctx.lineWidth = Math.max(2, cell * 0.08);
+      ctx.lineWidth = Math.max(2, cell * 0.075);
       ctx.strokeStyle = '#ffffff';
       ctx.stroke(outline);
       ctx.restore();
@@ -3089,7 +4599,11 @@ const LEGACY_KEYS = ['slidepop.v4', 'slidepop.v3'];
 const RULES_KEY = 'slidepop.seenRules';
 
 /** 設定の初期値。「データを消す」でここへ戻る */
-const DEFAULT_SETTINGS = { sound: true, haptics: true, symbols: false, ghost: true, calm: false };
+const DEFAULT_SETTINGS = {
+  sound: true, haptics: true, symbols: false, ghost: true, calm: false,
+  /** ブロックの素材。見た目だけが変わり、盤面もルールも変わらない */
+  material: DEFAULT_MATERIAL,
+};
 
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
@@ -3740,6 +5254,8 @@ class Game {
       });
     }
 
+    this.buildMaterialPicker();
+
     d.btnShare.addEventListener('click', () => this.share());
     if (d.btnReset) d.btnReset.addEventListener('click', () => this.askReset());
   }
@@ -3792,6 +5308,7 @@ class Game {
     this.store = {};
     this.settings = { ...DEFAULT_SETTINGS };
     this.applySettings();
+    this.markMaterial();
     for (const [key, el] of Object.entries(this.toggles || {})) {
       if (el) el.checked = !!this.settings[key];
     }
@@ -3959,8 +5476,60 @@ class Game {
 
   applySettings() {
     this.renderer.options = { ...this.settings };
+    this.renderer.setMaterial(this.settings.material);
     this.sound.enabled = this.settings.sound;
     this.sound.haptics = this.settings.haptics;
+  }
+
+  /**
+   * ブロックの素材を選ぶボタンを並べる。
+   * 見本は「その素材で焼いた実物」ではなく代表色の四角 ―― 一覧を実物で描くと
+   * 選ぶだけで6素材ぶんのテクスチャを焼くことになり、シートを開くたびに固まる。
+   */
+  buildMaterialPicker() {
+    const grid = this.dom.materialGrid;
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (const m of materialList()) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'material-cell';
+      btn.dataset.material = m.key;
+      btn.setAttribute('role', 'radio');
+      btn.innerHTML = `<span class="material-chip" style="background:${m.swatch}"></span>`
+        + `<span class="material-name"></span><span class="material-note"></span>`;
+      btn.querySelector('.material-name').textContent = m.name;
+      btn.querySelector('.material-note').textContent = m.note;
+      grid.appendChild(btn);
+    }
+    grid.addEventListener('click', (e) => {
+      const cell = e.target.closest && e.target.closest('[data-material]');
+      if (!cell) return;
+      this.setMaterial(cell.dataset.material);
+    });
+    this.markMaterial();
+  }
+
+  setMaterial(key) {
+    const mat = materialFor(key);
+    if (this.settings.material === mat.key) return;
+    this.settings.material = mat.key;
+    this.applySettings();
+    this.store.settings = this.settings;
+    saveStore(this.store);
+    this.markMaterial();
+    this.toast(`ブロックを「${mat.name}」にしました`);
+  }
+
+  /** いま選ばれている素材に印を付ける */
+  markMaterial() {
+    const grid = this.dom.materialGrid;
+    if (!grid) return;
+    for (const cell of grid.children) {
+      const on = cell.dataset.material === this.settings.material;
+      cell.classList.toggle('on', on);
+      cell.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
   }
 
   openModal(el) {
@@ -4446,6 +6015,7 @@ const dom = {
   optSymbols: $('opt-symbols'),
   optGhost: $('opt-ghost'),
   optCalm: $('opt-calm'),
+  materialGrid: $('material-grid'),
   btnShare: $('btn-share'),
   btnReset: $('btn-reset'),
   resetNote: $('reset-note'),

@@ -17,6 +17,7 @@ import {
   targetMoves, starsForMoves, formatTime,
 } from './levels.js';
 import { Renderer, colorFor, auraFor } from './render.js';
+import { materialList, materialFor, DEFAULT_MATERIAL } from './materials.js';
 import { attachInput } from './input.js';
 import { Sound } from './audio.js';
 import {
@@ -37,7 +38,11 @@ const LEGACY_KEYS = ['slidepop.v4', 'slidepop.v3'];
 export const RULES_KEY = 'slidepop.seenRules';
 
 /** 設定の初期値。「データを消す」でここへ戻る */
-const DEFAULT_SETTINGS = { sound: true, haptics: true, symbols: false, ghost: true, calm: false };
+const DEFAULT_SETTINGS = {
+  sound: true, haptics: true, symbols: false, ghost: true, calm: false,
+  /** ブロックの素材。見た目だけが変わり、盤面もルールも変わらない */
+  material: DEFAULT_MATERIAL,
+};
 
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
@@ -688,6 +693,8 @@ export class Game {
       });
     }
 
+    this.buildMaterialPicker();
+
     d.btnShare.addEventListener('click', () => this.share());
     if (d.btnReset) d.btnReset.addEventListener('click', () => this.askReset());
   }
@@ -740,6 +747,7 @@ export class Game {
     this.store = {};
     this.settings = { ...DEFAULT_SETTINGS };
     this.applySettings();
+    this.markMaterial();
     for (const [key, el] of Object.entries(this.toggles || {})) {
       if (el) el.checked = !!this.settings[key];
     }
@@ -907,8 +915,60 @@ export class Game {
 
   applySettings() {
     this.renderer.options = { ...this.settings };
+    this.renderer.setMaterial(this.settings.material);
     this.sound.enabled = this.settings.sound;
     this.sound.haptics = this.settings.haptics;
+  }
+
+  /**
+   * ブロックの素材を選ぶボタンを並べる。
+   * 見本は「その素材で焼いた実物」ではなく代表色の四角 ―― 一覧を実物で描くと
+   * 選ぶだけで6素材ぶんのテクスチャを焼くことになり、シートを開くたびに固まる。
+   */
+  buildMaterialPicker() {
+    const grid = this.dom.materialGrid;
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (const m of materialList()) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'material-cell';
+      btn.dataset.material = m.key;
+      btn.setAttribute('role', 'radio');
+      btn.innerHTML = `<span class="material-chip" style="background:${m.swatch}"></span>`
+        + `<span class="material-name"></span><span class="material-note"></span>`;
+      btn.querySelector('.material-name').textContent = m.name;
+      btn.querySelector('.material-note').textContent = m.note;
+      grid.appendChild(btn);
+    }
+    grid.addEventListener('click', (e) => {
+      const cell = e.target.closest && e.target.closest('[data-material]');
+      if (!cell) return;
+      this.setMaterial(cell.dataset.material);
+    });
+    this.markMaterial();
+  }
+
+  setMaterial(key) {
+    const mat = materialFor(key);
+    if (this.settings.material === mat.key) return;
+    this.settings.material = mat.key;
+    this.applySettings();
+    this.store.settings = this.settings;
+    saveStore(this.store);
+    this.markMaterial();
+    this.toast(`ブロックを「${mat.name}」にしました`);
+  }
+
+  /** いま選ばれている素材に印を付ける */
+  markMaterial() {
+    const grid = this.dom.materialGrid;
+    if (!grid) return;
+    for (const cell of grid.children) {
+      const on = cell.dataset.material === this.settings.material;
+      cell.classList.toggle('on', on);
+      cell.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
   }
 
   openModal(el) {
