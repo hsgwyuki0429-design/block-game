@@ -50,7 +50,6 @@ const dom = {
   overlayActions: $('overlay-actions'),
 
   btnUndo: $('btn-undo'),
-  btnHint: $('btn-hint'),
   btnRestart: $('btn-restart'),
   btnLevels: $('btn-levels'),
   btnHome: $('btn-home'),

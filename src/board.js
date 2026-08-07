@@ -337,7 +337,7 @@ export class Board {
     return b;
   }
 
-  /** 状態の指紋（ヒントが「解答手順の途中かどうか」を判定するのに使う） */
+  /** 状態の指紋（生成中に同じ局面を作っていないか調べるのに使う） */
   fingerprint() {
     const rows = [];
     for (const p of [...this.pieces.values()].sort((a, b) => a.id - b.id)) {

@@ -11,7 +11,7 @@ import { generateLevel, verifySolution, clearableColors } from '../src/generator
 import {
   levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
   colorsForLevel, chainDepthForLevel, chainMovesForLevel, setupMovesForLevel, fillForLevel,
-  targetTimes, starsForTime, formatTime,
+  targetMoves, starsForMoves, formatTime,
   MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES, MAX_SETUP_MOVES,
 } from '../src/levels.js';
 import { PIECES } from '../src/shapes.js';
@@ -236,73 +236,56 @@ test('保証解は厳密な最短手順そのもの', () => {
   }
 });
 
-test('ヒントは最短手順の上でだけ引ける（外れたら引けない）', () => {
-  // ゲーム側は「いまの盤面が最短手順の途中か」を指紋で照合してヒントを出し、
-  // 外れていたらやり直すかを訊く。その照合が成り立つことを確かめる
-  let offPathLevels = 0;
+test('最短手順は同じ局面を二度通らない', () => {
+  // 最短手順なのだから、同じ配置に戻る手が混ざっていたらその区間は無駄。
+  // 全レベルで、手順上の局面がすべて相異なることを確かめる
   for (let lv = 1; lv <= LAST; lv++) {
     const p = generateLevel(lv);
-    const sim = new Board(p.size);
-    sim.restore(p.snapshot);
-
-    // 手順の各局面 -> 次の手 の対応表（game.js の buildSolutionMap と同じ）
-    const map = new Map();
-    for (const step of p.solution) {
-      map.set(sim.fingerprint(), step);
-      sim.applyMove(step.pieceId, step.dir);
-    }
-    assert.equal(map.size, p.solution.length, `Lv${lv}: 手順の途中で同じ局面に戻っている`);
-
-    // 手順どおりに指しているかぎり、最後までヒントが出せる
     const b = new Board(p.size);
     b.restore(p.snapshot);
-    for (let i = 0; i < p.solution.length; i++) {
-      assert.ok(map.has(b.fingerprint()), `Lv${lv}: 第${i + 1}手のヒントが出せない`);
-      b.applyMove(p.solution[i].pieceId, p.solution[i].dir);
-    }
-    assert.equal(map.has(b.fingerprint()), false, `Lv${lv}: 解き終えた盤面が手順上に残っている`);
 
-    // 手順から外れる指し方が実際にあり、そこでは対応表から外れる
-    // （＝やり直すかを訊く側に回る）。なお外れた先が手順の**手前の局面**に
-    // 戻ることはあり、その場合は乗り直したのだから出せてよい ―― 数えない
-    b.restore(p.snapshot);
+    const seen = new Set([b.fingerprint()]);
     for (const step of p.solution) {
-      const off = [...b.pieces.keys()]
-        .flatMap((id) => ['up', 'down', 'left', 'right'].map((dir) => ({ id, dir })))
-        .filter(({ id, dir }) => (id !== step.pieceId || dir !== step.dir)
-          && b.slideDistance(id, dir) > 0)
-        .map(({ id, dir }) => {
-          const snap = b.snapshot();
-          b.applyMove(id, dir);
-          const onPath = map.has(b.fingerprint());
-          b.restore(snap);
-          return onPath;
-        });
-      if (off.some((onPath) => onPath === false)) { offPathLevels++; break; }
       b.applyMove(step.pieceId, step.dir);
+      const print = b.fingerprint();
+      assert.equal(seen.has(print), false, `Lv${lv}: 同じ局面を二度通っている`);
+      seen.add(print);
     }
+    assert.equal(seen.size, p.solution.length + 1, `Lv${lv}: 局面の数が手数と合わない`);
   }
-  // 全レベルが一本道ということはない ―― 「訊く」側の分岐は実際に起きる
-  assert.ok(offPathLevels > LAST / 2, `手順から外れられるレベルが ${offPathLevels}/${LAST} しかない`);
 });
 
-test('星は解決時間で決まる', () => {
-  const t = targetTimes(10, 4);
+test('星は手数で決まる', () => {
+  const t = targetMoves(10);
   assert.ok(t.gold > 0 && t.silver > t.gold);
-  assert.equal(starsForTime(1, t), 3);
-  assert.equal(starsForTime(t.gold, t), 3);
-  assert.equal(starsForTime(t.gold + 1, t), 2);
-  assert.equal(starsForTime(t.silver, t), 2);
-  assert.equal(starsForTime(t.silver + 1, t), 1);
-  assert.equal(starsForTime(99999, t), 1);
+  assert.equal(starsForMoves(1, t), 3);
+  assert.equal(starsForMoves(t.gold, t), 3);
+  assert.equal(starsForMoves(t.gold + 1, t), 2);
+  assert.equal(starsForMoves(t.silver, t), 2);
+  assert.equal(starsForMoves(t.silver + 1, t), 1);
+  assert.equal(starsForMoves(99999, t), 1);
+});
+
+test('★★★ は最短ちょうど ―― 近道は存在しない', () => {
+  // par は厳密な最短手数なので、gold をそれ未満に置く意味はないし、
+  // gold ちょうどで解けたなら「それ以上短くできない」と言い切れる
+  for (const lv of [1, 20, 40, 60]) {
+    const p = generateLevel(lv);
+    const t = targetMoves(p.par);
+    assert.equal(t.gold, p.par, `Lv${lv}: ★★★ の基準が最短手数と違う`);
+    assert.equal(starsForMoves(p.par, t), 3, `Lv${lv}: 最短で解いても ★★★ にならない`);
+  }
 });
 
 test('しきい値は手順が長いほど緩む', () => {
-  const short = targetTimes(4, 2);
-  const long = targetTimes(28, 9);
+  const short = targetMoves(4);
+  const long = targetMoves(28);
   assert.ok(long.gold > short.gold);
+  assert.ok(long.silver > short.silver);
+  // 短いレベルほど1手の重みが大きいので、少しだけ余裕がある
+  assert.ok(targetMoves(2).silver >= 4, '2手のレベルで1手ずれただけで★1になる');
   // 極端な値でも壊れない
-  assert.ok(targetTimes(0, 0).gold > 0);
+  assert.ok(targetMoves(0).gold > 0);
 });
 
 test('時間の表記は M:SS（1時間を超えたら H:MM:SS）', () => {
