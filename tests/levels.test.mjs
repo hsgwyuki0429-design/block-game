@@ -1,107 +1,88 @@
 // レベル進行のテスト。
-// 「レベルが上がるほど盤面が広く・色が増え・追い込みが深くなる」
-// 「ブロックはテトロミノだけ」「同じ色はちょうど2個」「どのレベルも必ず解ける」
-// 「初手からは何も消せない（＝スライドを重ねないと1個も消えない）」
-// 「同じレベルならどの端末でも同じ譜面」を確かめる。
+//
+// 「レベルは上限なく続く」「上がるほど最短手数が伸びる」「手数は目標カーブに沿う」
+// 「どのレベルも手順どおりに指せば必ず解ける」「初期盤面からは何も消せない」
+// 「ブロックは 1×2 〜 3×3 の長方形」「同じレベルならどの端末でも同じ譜面」
+// を確かめる。
+//
+// PAR は推定ではなく厳密な最短手数なので、「焼いてある手順より短い解き方が
+// 存在しない」ことは生成側（全探索）が保証している。ここではその手順が本当に
+// 盤面の上で通ることと、並びが崩れていないことを見る。
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Board, BLOCKER } from '../src/board.js';
 import { generateLevel, verifySolution, clearableColors } from '../src/generator.js';
 import {
-  levelConfig, levelSeed, levelSummary, puzzleSummary, boardSizeForLevel, boardSizeForColors,
-  colorsForLevel, chainDepthForLevel, chainMovesForLevel, setupMovesForLevel, fillForLevel,
-  targetMoves, starsForMoves, formatTime,
-  MIN_SIZE, MAX_SIZE, MAX_COLORS, MAX_CHAIN_DEPTH, MAX_CHAIN_MOVES, MAX_SETUP_MOVES,
+  levelConfig, levelSeed, levelSummary, puzzleSummary, levelIndex, levelData,
+  boardSizeForLevel, fillForLevel, blockersForLevel, parForLevel, targetPar,
+  targetMoves, starsForMoves, formatTime, normalizeLevel,
+  MIN_SIZE, MAX_SIZE, MAX_PAR, PAR_ANCHORS, BAKED_LEVELS, TAIL_LEVELS,
 } from '../src/levels.js';
-import { PIECES } from '../src/shapes.js';
-import { LEVEL_DATA } from '../src/levelData.js';
+import { LEVEL_CODES } from '../src/levelData.js';
+import { encodeLevel, decodeLevel } from '../src/levelCodec.js';
 
 /** 通しで確かめるレベル（全部やると遅いので代表点を拾う） */
-const SAMPLE = [1, 2, 3, 5, 7, 10, 13, 17, 21, 24, 26, 30, 42, 60, 120];
+const SAMPLE = [1, 2, 3, 5, 8, 13, 20, 35, 50, 80, 100, 150, 250, 400, 600, 800, 1000];
 
-/** 焼いてあるレベルの数。ここを超えると先頭に戻る */
-const BAKED = LEVEL_DATA.length;
-/** 焼いてある中でいちばん上のレベル（手数の昇順なので、いちばん難しい） */
-const LAST = BAKED;
+test('レベルは上限なく続く ―― どんな番号でも盤面が出る', () => {
+  for (const lv of [1, BAKED_LEVELS, BAKED_LEVELS + 1, BAKED_LEVELS * 3 + 7, 999999]) {
+    const p = generateLevel(lv);
+    assert.ok(p.par >= 2, `Lv${lv}: PAR が ${p.par}`);
+    assert.ok(p.size >= MIN_SIZE && p.size <= MAX_SIZE);
+  }
+});
 
-test('盤面はレベル1で最小、上がるほど広がり、12×12で頭打ち', () => {
-  assert.equal(boardSizeForLevel(1), MIN_SIZE);
-  assert.equal(boardSizeForLevel(1000), MAX_SIZE);
+test('焼いたぶんを使い切ったら、いちばん上の帯を繰り返す（頭には戻らない）', () => {
+  const tail = Math.min(TAIL_LEVELS, BAKED_LEVELS);
+  assert.equal(levelIndex(BAKED_LEVELS + 1), BAKED_LEVELS - tail);
+  assert.equal(levelIndex(BAKED_LEVELS + tail), BAKED_LEVELS - 1);
+  assert.equal(levelIndex(BAKED_LEVELS + tail + 1), BAKED_LEVELS - tail);
 
+  // 繰り返しに入っても手数はいちばん上の帯のまま。頭に戻って易しくならない
+  const easiest = parForLevel(1);
+  for (const lv of [BAKED_LEVELS + 1, BAKED_LEVELS + 50, BAKED_LEVELS * 2]) {
+    assert.ok(parForLevel(lv) > easiest + 50, `Lv${lv}: ${parForLevel(lv)}手まで落ちた`);
+  }
+});
+
+test('目標カーブは折れ線どおり ―― 減らないし、指定した節を通る', () => {
+  for (const [lv, par] of PAR_ANCHORS) assert.equal(targetPar(lv), par, `Lv${lv}`);
   let prev = 0;
-  for (let lv = 1; lv <= 200; lv++) {
-    const size = boardSizeForLevel(lv);
-    assert.ok(size >= prev, `Lv${lv}: 盤面が縮んだ`);
-    assert.ok(size >= MIN_SIZE && size <= MAX_SIZE);
-    prev = size;
+  for (let lv = 1; lv <= 1200; lv++) {
+    const p = targetPar(lv);
+    assert.ok(p >= prev, `Lv${lv}: 目標手数が減った`);
+    assert.ok(p >= 2 && p <= MAX_PAR);
+    prev = p;
   }
+  assert.equal(targetPar(1000), MAX_PAR);
+  assert.equal(targetPar(99999), MAX_PAR);
 });
 
-test('色数はレベル1で3色、上がるほど増え、上限で頭打ち', () => {
-  assert.equal(colorsForLevel(1), 3);
-
+test('焼いてある手数は、レベルが上がるほど伸びる（1レベルも減らない）', () => {
   let prev = 0;
-  for (let lv = 1; lv <= 300; lv++) {
-    const n = colorsForLevel(lv);
-    assert.ok(n >= prev, `Lv${lv}: 色数が減った`);
-    assert.ok(n >= 3 && n <= MAX_COLORS);
-    prev = n;
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const par = parForLevel(lv);
+    assert.ok(par >= prev, `Lv${lv}: 手数が ${prev} -> ${par} と減った`);
+    prev = par;
   }
-  assert.equal(colorsForLevel(1000), MAX_COLORS);
+  assert.equal(parForLevel(1), targetPar(1));
+  assert.ok(prev >= 250, `いちばん上でも ${prev} 手しかない`);
 });
 
-test('盤面が頭打ちになったあとは、色数がそのまま埋め率になる', () => {
-  assert.equal(boardSizeForColors(MAX_COLORS), MAX_SIZE);
-  // 上限でも空きは残す。追い込み手も初手の掃除も「戻す先の空き」が要る
-  const topFill = fillForLevel(1000);
-  assert.ok(topFill >= 0.6, `最大でも埋め率が ${(topFill * 100).toFixed(0)}% しかない`);
-  assert.ok(topFill <= 0.85, `埋め率 ${(topFill * 100).toFixed(0)}% は詰まりすぎ（生成が破綻する）`);
-
-  // 盤面が広がる途中では一度ゆるむが、全体としては詰まっていく
-  for (let lv = 1; lv <= 200; lv++) {
-    const f = fillForLevel(lv);
-    assert.ok(f > 0.3 && f <= topFill + 1e-9, `Lv${lv}: 埋め率 ${f.toFixed(2)}`);
+test('焼いてある手数は目標カーブから大きく外れない', () => {
+  // 上端（250手超）は在庫がそもそも数枚しか無いので、狙いどおりの手数が
+  // 見つからないことがある。ずれても手数が減ることは無い（並べ直すため）ので、
+  // 効いてくるのは「狙った形になっているか」だけ
+  let worst = 0;
+  let total = 0;
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const gap = Math.abs(parForLevel(lv) - targetPar(lv));
+    worst = Math.max(worst, gap);
+    total += gap;
   }
-  assert.ok(fillForLevel(40) > fillForLevel(1) + 0.1, 'いちばん上でも盤面が詰まらない');
-});
-
-test('追い込みはレベル1から深い', () => {
-  // レベル1でも「1手ずらせば届く」形にはしない。3手ぶん寄せさせる
-  assert.ok(chainDepthForLevel(1) >= 3, `レベル1の追い込みが ${chainDepthForLevel(1)} 手しかない`);
-  assert.ok(chainMovesForLevel(1) >= colorsForLevel(1) * 3);
-
-  let prev = 0;
-  for (let lv = 1; lv <= 300; lv++) {
-    const d = chainDepthForLevel(lv);
-    assert.ok(d >= prev, `Lv${lv}: 追い込みが浅くなった`);
-    assert.ok(d >= 1 && d <= MAX_CHAIN_DEPTH);
-    assert.ok(chainMovesForLevel(lv) <= MAX_CHAIN_MOVES);
-    prev = d;
-  }
-  assert.equal(chainDepthForLevel(1000), MAX_CHAIN_DEPTH);
-});
-
-test('仕込み手は、あるレベルから先で加わる', () => {
-  assert.equal(setupMovesForLevel(1), 0);
-
-  let prev = 0;
-  for (let lv = 1; lv <= 300; lv++) {
-    const n = setupMovesForLevel(lv);
-    assert.ok(n >= prev, `Lv${lv}: 仕込み手が減った`);
-    assert.ok(n <= MAX_SETUP_MOVES);
-    prev = n;
-  }
-  assert.ok(setupMovesForLevel(100) > 0, '上のレベルで仕込み手が入らない');
-  assert.equal(setupMovesForLevel(1000), MAX_SETUP_MOVES);
-});
-
-test('PAR の見込みは 色数 + 追い込み手 + 仕込み手', () => {
-  for (const lv of [1, 5, 13, 24, 60]) {
-    const cfg = levelConfig(lv);
-    assert.equal(cfg.par, cfg.colors + cfg.chainMoves + cfg.setupMoves);
-    assert.equal(cfg.pieces, cfg.colors * 2);
-  }
+  assert.ok(worst <= 40, `いちばんずれたレベルで ${worst} 手ずれている`);
+  assert.ok(total / BAKED_LEVELS <= 3, `平均で ${(total / BAKED_LEVELS).toFixed(2)} 手ずれている`);
 });
 
 test('どのレベルも解答手順で必ず全消しできる', () => {
@@ -109,6 +90,21 @@ test('どのレベルも解答手順で必ず全消しできる', () => {
     const p = generateLevel(lv);
     const r = verifySolution(p.snapshot, p.solution, p.size);
     assert.equal(r.ok, true, `Lv${lv}: ${r.reason}`);
+  }
+});
+
+test('焼いてあるレベルは全部、手順どおりに指せばちょうどそこで消える', () => {
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const p = generateLevel(lv);
+    const b = new Board(p.size);
+    b.restore(p.snapshot);
+    for (const step of p.solution) {
+      const res = b.applyMove(step.pieceId, step.dir);
+      assert.ok(res, `Lv${lv}: 指せない手がある`);
+      assert.equal(res.steps, step.distance, `Lv${lv}: 停止位置が違う`);
+    }
+    assert.equal(b.isCleared, true, `Lv${lv}: 手順どおりに指しても消えない`);
+    assert.equal(p.par, p.optimal, `Lv${lv}: PAR が最短手数と違う`);
   }
 });
 
@@ -122,40 +118,12 @@ test('どのレベルも初期盤面に同色隣接が無く、少なくとも1�
   }
 });
 
-test('ブロックはテトロミノだけで、同じ色はちょうど2個ずつ', () => {
-  const shapeNames = new Set(PIECES.map((s) => s.name));
-  for (const lv of SAMPLE) {
-    const p = generateLevel(lv);
-    const b = new Board(p.size);
-    b.restore(p.snapshot);
-
-    const counts = new Map();
-    for (const piece of b.pieces.values()) {
-      if (piece.color === BLOCKER) continue; // 灰色は何個でもよい
-      assert.ok(piece.cells.length >= 1 && piece.cells.length <= 9, `Lv${lv}: ${piece.cells.length}セルのブロック`);
-      assert.ok(shapeNames.has(piece.shape), `Lv${lv}: 未知の形 ${piece.shape}`);
-      counts.set(piece.color, (counts.get(piece.color) || 0) + 1);
-    }
-    assert.equal(counts.size, p.config.colors, `Lv${lv}: 色数が違う`);
-    for (const [color, n] of counts) {
-      assert.equal(n, 2, `Lv${lv}: 色 ${color} が ${n} 個`);
-    }
-    assert.equal(b.size, p.config.size);
-  }
-});
-
 test('初期盤面ではどのブロックを動かしても何も消えない', () => {
-  // これがこのゲームの核。生成は最善を尽くすが必ず成功するとは限らないので、
-  // 代表点の大半で成り立てばよい
-  let blocked = 0;
-  for (const lv of SAMPLE) {
+  // これがこのゲームの核。最短2手以上の盤面しか採っていないので、1手では届かない
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
     const p = generateLevel(lv);
-    const b = new Board(p.size);
-    b.restore(p.snapshot);
-    assert.equal(clearableColors(b).size, p.analysis.clearAtStart, `Lv${lv}`);
-    if (p.analysis.clearAtStart === 0) blocked++;
+    assert.equal(p.analysis.clearAtStart, 0, `Lv${lv}: 初手から消せてしまう`);
   }
-  assert.ok(blocked >= SAMPLE.length - 1, `初手が塞がった盤面が ${blocked}/${SAMPLE.length} しかない`);
 });
 
 test('消えるのは必ず最後の1手 ―― 途中で消えることはない', () => {
@@ -170,76 +138,64 @@ test('消えるのは必ず最後の1手 ―― 途中で消えることはな�
   }
 });
 
-test('入門を抜けたら「何手も重ねる」手順になる', () => {
-  // レベル1〜12 は操作を掴むための短い問題（2〜5手）。そこを抜けたレベルは、
-  // 1組を消すまでに最低でも5手ぶん滑らせる必要がある
-  const graduated = SAMPLE.filter((lv) => generateLevel(lv).par >= 6);
-  assert.ok(graduated.length >= 8, '入門を抜けたレベルが少なすぎる');
-  for (const lv of graduated) {
-    const p = generateLevel(lv);
-    assert.ok(p.analysis.dryStreak >= 5, `Lv${lv}: 無消去の連続が ${p.analysis.dryStreak} 手`);
-  }
-});
-
-test('レベルが上がるほど手順は長くなる', () => {
-  // 焼いてある本数が変わっても壊れないよう、四分位で見る
-  const at = (ratio) => generateLevel(Math.max(1, Math.round(LAST * ratio))).par;
-  const [q1, q2, q4] = [at(0.25), at(0.5), at(1)];
-  assert.ok(q1 < q2, `前半 ${q1} 手 / 中盤 ${q2} 手`);
-  assert.ok(q2 < q4, `中盤 ${q2} 手 / 最後 ${q4} 手`);
-});
-
-test('上のレベルほど最短手数が長い（データは手数の昇順に並んでいる）', () => {
-  // 焼いてあるぶんは端から端まで、1レベルたりとも手数が減らないことを確かめる
-  const pars = [];
-  for (let lv = 1; lv <= LAST; lv++) pars.push(generateLevel(lv).par);
-  for (let i = 1; i < pars.length; i++) {
-    assert.ok(pars[i] >= pars[i - 1], `Lv${i} -> Lv${i + 1} で手数が減った: ${pars[i - 1]} -> ${pars[i]}`);
-  }
-  assert.ok(pars[pars.length - 1] >= 20, `いちばん上でも ${pars[pars.length - 1]} 手しかない`);
-  assert.ok(pars[pars.length - 1] > pars[0], '端から端まで手数が変わらない');
-});
-
-test('データを使い切ったら先頭に戻る', () => {
-  const first = generateLevel(1);
-  const wrapped = generateLevel(LAST + 1);
-  assert.equal(wrapped.par, first.par);
-  assert.equal(wrapped.size, first.size);
-  assert.deepEqual(wrapped.solution, first.solution);
-});
-
-test('どのレベルも盤面が詰まっていて、灰色が入っている', () => {
-  for (let lv = 1; lv <= LAST; lv++) {
-    const p = generateLevel(lv);
-    const fill = p.cells / (p.size * p.size);
-    // 埋め率は手数を伸ばすための手段であって目的ではない。65% を下回るものは採らない
-    assert.ok(fill >= 0.65, `Lv${lv}: 埋め率 ${(fill * 100).toFixed(0)}%`);
-    assert.ok(p.blockers >= 1, `Lv${lv}: 灰色が無い`);
-    assert.equal(p.colors, 1, `Lv${lv}: 色つきは1組だけ`);
-  }
-});
-
-test('保証解は厳密な最短手順そのもの', () => {
-  // データは「ゴールからいちばん遠い盤面」なので、記録されている手順より
-  // 短い解き方は存在しない。手順どおりに指せば必ず色つきが消える
-  for (let lv = 1; lv <= LAST; lv++) {
+test('ブロックは 1×2 〜 3×3 の長方形で、色つきはちょうど2個', () => {
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
     const p = generateLevel(lv);
     const b = new Board(p.size);
     b.restore(p.snapshot);
-    for (const step of p.solution) {
-      const res = b.applyMove(step.pieceId, step.dir);
-      assert.ok(res, `Lv${lv}: 指せない手がある`);
-      assert.equal(res.steps, step.distance, `Lv${lv}: 停止位置が違う`);
+    assert.ok(b.size >= MIN_SIZE && b.size <= MAX_SIZE, `Lv${lv}: ${b.size}×${b.size}`);
+
+    let colored = 0;
+    let grey = 0;
+    for (const piece of b.pieces.values()) {
+      const xs = piece.cells.map((c) => c[0]);
+      const ys = piece.cells.map((c) => c[1]);
+      const w = Math.max(...xs) - Math.min(...xs) + 1;
+      const h = Math.max(...ys) - Math.min(...ys) + 1;
+      assert.equal(piece.cells.length, w * h, `Lv${lv}: 長方形でないブロック`);
+      assert.ok(w >= 1 && w <= 3 && h >= 1 && h <= 3, `Lv${lv}: ${w}×${h} のブロック`);
+      assert.ok(piece.cells.length >= 2, `Lv${lv}: 1マスのブロック`);
+      if (piece.color === BLOCKER) grey++;
+      else colored++;
     }
-    assert.equal(b.isCleared, true, `Lv${lv}: 手順どおりに指しても消えない`);
-    assert.equal(p.par, p.optimal, `Lv${lv}: PAR が最短手数と違う`);
+    assert.equal(colored, 2, `Lv${lv}: 色つきが ${colored} 個`);
+    assert.ok(grey >= 1, `Lv${lv}: 灰色が無い`);
+  }
+});
+
+test('色つきにも灰色にも、大きいブロックが実際に出てくる', () => {
+  const colorShapes = new Set();
+  const greyShapes = new Set();
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const data = levelData(lv);
+    data.pieces.forEach((p, i) => {
+      (i < 2 ? colorShapes : greyShapes).add(`${p.w}x${p.h}`);
+    });
+  }
+  // 色つきは 1×2 だけだった時代の名残を残さない ―― 2×2 以上も出る
+  assert.ok(colorShapes.size >= 4, `色つきの形が ${colorShapes.size} 通りしかない`);
+  assert.ok([...colorShapes].some((s) => s !== '1x2' && s !== '2x1'), '色つきが 1×2 だけになっている');
+  assert.ok(greyShapes.has('3x3'), '3×3 の灰色が出てこない');
+  for (const s of [...colorShapes, ...greyShapes]) {
+    assert.match(s, /^[123]x[123]$/, `使ってはいけない形 ${s}`);
+  }
+});
+
+test('どのレベルも盤面が詰まっている', () => {
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const fill = fillForLevel(lv);
+    // 埋め率は手数を伸ばすための手段であって目的ではないが、
+    // 隙間だらけの盤面は「滑らせて詰める」読みが成立しない
+    assert.ok(fill >= 0.65, `Lv${lv}: 埋め率 ${(fill * 100).toFixed(0)}%`);
+    assert.ok(fill < 1, `Lv${lv}: 空きが無い`);
+    assert.ok(blockersForLevel(lv) >= 1, `Lv${lv}: 灰色が無い`);
   }
 });
 
 test('最短手順は同じ局面を二度通らない', () => {
   // 最短手順なのだから、同じ配置に戻る手が混ざっていたらその区間は無駄。
   // 全レベルで、手順上の局面がすべて相異なることを確かめる
-  for (let lv = 1; lv <= LAST; lv++) {
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
     const p = generateLevel(lv);
     const b = new Board(p.size);
     b.restore(p.snapshot);
@@ -269,7 +225,7 @@ test('星は手数で決まる', () => {
 test('★★★ は最短ちょうど ―― 近道は存在しない', () => {
   // par は厳密な最短手数なので、gold をそれ未満に置く意味はないし、
   // gold ちょうどで解けたなら「それ以上短くできない」と言い切れる
-  for (const lv of [1, 20, 40, 60]) {
+  for (const lv of [1, 20, 200, 1000]) {
     const p = generateLevel(lv);
     const t = targetMoves(p.par);
     assert.equal(t.gold, p.par, `Lv${lv}: ★★★ の基準が最短手数と違う`);
@@ -279,7 +235,7 @@ test('★★★ は最短ちょうど ―― 近道は存在しない', () => {
 
 test('しきい値は手順が長いほど緩む', () => {
   const short = targetMoves(4);
-  const long = targetMoves(28);
+  const long = targetMoves(300);
   assert.ok(long.gold > short.gold);
   assert.ok(long.silver > short.silver);
   // 短いレベルほど1手の重みが大きいので、少しだけ余裕がある
@@ -298,7 +254,7 @@ test('時間の表記は M:SS（1時間を超えたら H:MM:SS）', () => {
 });
 
 test('同じレベルなら、どの端末でも同じ譜面になる', () => {
-  for (const lv of [1, 9, 22, 47]) {
+  for (const lv of [1, 9, 22, 47, 500, 1000]) {
     const a = generateLevel(lv);
     const b = generateLevel(lv);
     const ba = new Board(a.size); ba.restore(a.snapshot);
@@ -309,15 +265,55 @@ test('同じレベルなら、どの端末でも同じ譜面になる', () => {
   }
 });
 
-test('違うレベルは違う譜面になる', () => {
-  const seen = new Set();
-  for (let lv = 1; lv <= 12; lv++) {
-    const p = generateLevel(lv);
-    const b = new Board(p.size);
-    b.restore(p.snapshot);
-    seen.add(b.fingerprint());
+test('焼いてあるレベルはすべて別の譜面', () => {
+  assert.equal(new Set(LEVEL_CODES).size, LEVEL_CODES.length, '同じ盤面が2回出てくる');
+});
+
+test('同じ配役の使い回しになっていない', () => {
+  // 全探索の距離マップは1枚の盤面から何十問でも切り出せる。切り出したものは
+  // 灰色の位置まで違うが、ブロックの顔ぶれ（大きさの多重集合）は同じままなので、
+  // 並べると「さっきと同じ盤面」に見える。1枚から1レベルしか取らないことで
+  // 避けているが、別々の盤面がたまたま同じ顔ぶれになることはある
+  const casts = new Map();
+  for (const code of LEVEL_CODES) {
+    const d = decodeLevel(code);
+    const cast = `${d.size}:${d.pieces.map((p) => `${p.w}x${p.h}`).sort().join(',')}`;
+    casts.set(cast, (casts.get(cast) || 0) + 1);
   }
-  assert.equal(seen.size, 12);
+  // 別々の盤面でも、たまたま同じ大きさのブロックが同じ数だけ入ることはある
+  // （並びは違う）。使い回しは 0 だが、顔ぶれの一致まではゼロにできない
+  const worst = Math.max(...casts.values());
+  assert.ok(worst <= 20, `同じ顔ぶれの盤面が ${worst} レベルに使われている`);
+  assert.ok(
+    casts.size >= LEVEL_CODES.length / 3,
+    `顔ぶれが ${casts.size} 通りしかない（${LEVEL_CODES.length} レベルに対して少なすぎる）`,
+  );
+});
+
+test('盤面はできるだけ小さく、手数が要求したときだけ広がる', () => {
+  const bySize = new Map();
+  let smallPars = [];
+  let bigPars = [];
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const size = boardSizeForLevel(lv);
+    const par = parForLevel(lv);
+    bySize.set(size, Math.max(bySize.get(size) || 0, par));
+    if (size <= 5) smallPars.push(par);
+    if (size >= 7) bigPars.push(par);
+  }
+  // 大きい盤面は「小さい盤面では出せない手数」のために使う。
+  // 4×4/5×5 で足りる手数の帯に、7×7/8×8 がまとめて居座っていないこと
+  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+  if (smallPars.length && bigPars.length) {
+    assert.ok(
+      avg(bigPars) > avg(smallPars),
+      `広い盤面の平均手数 ${avg(bigPars).toFixed(0)} が、小さい盤面の ${avg(smallPars).toFixed(0)} を上回っていない`,
+    );
+  }
+  // いちばん易しい帯は小さい盤面から取る
+  for (let lv = 1; lv <= 10; lv++) {
+    assert.ok(boardSizeForLevel(lv) <= 6, `Lv${lv}: ${boardSizeForLevel(lv)}×${boardSizeForLevel(lv)} は入門には広すぎる`);
+  }
 });
 
 test('レベル1は入門用 ―― 短いが、1手では終わらない', () => {
@@ -325,18 +321,8 @@ test('レベル1は入門用 ―― 短いが、1手では終わらない', () =
   assert.equal(p.colors, 1);
   // 1手だとゴールそのもの（置いた瞬間くっついている）になってしまう
   assert.ok(p.par >= 2, `PAR が ${p.par} 手しかない`);
-  assert.ok(p.par <= 5, `入門なのに ${p.par} 手もかかる`);
+  assert.ok(p.par <= 4, `入門なのに ${p.par} 手もかかる`);
   assert.ok(p.size <= 7, `入門なのに ${p.size}×${p.size} は広すぎる`);
-});
-
-test('序盤は同じ手数が並びすぎない', () => {
-  // 出やすい手数ばかりが続くと「上がった感じ」が消えるので、
-  // 同じ最短手数は 3 レベルまでに抑えてある
-  const counts = new Map();
-  for (const d of LEVEL_DATA) counts.set(d.optimal, (counts.get(d.optimal) || 0) + 1);
-  for (const [par, n] of counts) {
-    assert.ok(n <= 3, `最短${par}手のレベルが ${n} 件ある`);
-  }
 });
 
 test('レベルの要約は主要なパラメータを含む', () => {
@@ -349,10 +335,20 @@ test('レベルの要約は主要なパラメータを含む', () => {
 
   const p = generateLevel(10);
   assert.match(puzzleSummary(p), new RegExp(`最短${p.par}手`));
+  assert.equal(cfg.par, parForLevel(10));
+  assert.equal(cfg.size, boardSizeForLevel(10));
 });
 
 test('レベル番号が不正でもレベル1として扱う', () => {
   for (const bad of [0, -5, 0.4, NaN, undefined, 'abc']) {
     assert.equal(levelConfig(bad).level, 1);
+    assert.equal(normalizeLevel(bad), 1);
+  }
+});
+
+test('符号は往復しても同じ盤面になる', () => {
+  for (const code of [LEVEL_CODES[0], LEVEL_CODES[Math.floor(BAKED_LEVELS / 2)], LEVEL_CODES[BAKED_LEVELS - 1]]) {
+    const data = decodeLevel(code);
+    assert.equal(encodeLevel({ size: data.size, pieces: data.pieces, solution: data.solution }), code);
   }
 });

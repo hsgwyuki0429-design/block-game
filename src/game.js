@@ -230,7 +230,7 @@ export class Game {
     this.showOverlay({
       badge: '🧩',
       title: `レベル ${level}`,
-      text: `${cfg.size}×${cfg.size}・${cfg.colors}色 の盤面を組み立てています…`
+      text: `${cfg.size}×${cfg.size}・最短${cfg.par}手 の盤面を組み立てています…`
         + (tried > 0 ? `（${tried} 通り目）` : ''),
       stats: [],
       actions: [],

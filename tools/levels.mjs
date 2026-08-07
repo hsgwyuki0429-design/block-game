@@ -1,96 +1,209 @@
-// レベルデータの事前生成。
-//   node tools/levels.mjs [レベル数]
+// 採集した盤面をレベルに割り当てて src/levelData.js を書き出す。
+//   node tools/levels.mjs [--levels 1000] [--pool data]
 //
-// src/exact.js は「到達できる盤面を全部展開していちばん遠いものを選ぶ」ので、
-// 出てくる手数は厳密な最短手数になる代わりに、1問あたり数秒〜数十秒かかる。
-// レベルは番号で決まる（＝毎回同じ盤面）ので、ここで作ってデータとして同梱する。
+// 採集（tools/harvest.mjs）は「手数ごとの在庫」を作るだけで、レベル番号は付けない。
+// ここでその在庫を手数カーブ（src/levels.js の PAR_ANCHORS）に流し込む。
 //
-// 難易度順は「作ってから並べ替える」。盤面サイズと埋め率をいくら振っても
-// 出てくる手数は前もって読めないので、候補をたくさん作って最短手数の昇順に
-// 並べ、それをそのままレベル順にする。
+//   Lv1 → 2手 ／ Lv20 → 20手 ／ Lv50 → 40手 ／ Lv100 → 80手
+//   Lv500 → 100手 ／ Lv1000 → 110手
+//
+// 在庫がぴったり無い手数は、いちばん近い手数で埋める（無い手数を待って止まるより、
+// 1手ずれても並べたほうがカーブは滑らかになる）。最後に手数の昇順へ並べ直すので、
+// レベルが上がって手数が減ることは絶対に起きない。
+//
+// 選び方の決まりは2つ:
+//
+//   ① 1枚の盤面からは1レベルまで。
+//      全探索の距離マップは1枚から何十問でも切り出せるが、切り出したものは
+//      灰色の位置こそ違え、ブロックの顔ぶれ（配役）が同じままになる。
+//      並べると「さっきと同じ盤面」に見えるので、使い回さない。
+//
+//   ② 盤面はできるだけ小さいものから使う。
+//      同じ手数なら小さい盤面のほうが読みやすく、詰まった手触りも出る。
+//      4×4 で足りるなら 4×4、そこに無ければ 5×5、6×6 …と広げていく。
+//      110手級は 6×6 以上でしか出ないので、上のレベルだけが自然に広くなる。
 
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { generateExactPuzzle } from '../src/exact.js';
-import { hashSeed } from '../src/rng.js';
+import { targetPar } from '../src/levels.js';
+import { decodeLevel } from '../src/levelCodec.js';
+import { Board } from '../src/board.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = resolve(ROOT, 'src/levelData.js');
 
-const want = Number(process.argv[2] || 24);
+const arg = (name, fallback) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : fallback;
+};
 
-/**
- * 振ってみる設定。6×6 前後・埋め率9割あたりがいちばん手数が伸びる。
- *
- * 8×8 以上は入れていない。広いほど到達できる盤面が増えて全探索が終わらなくなり、
- * かといって埋め率を上げるとブロックが動けなくなって逆に手数が落ちる（実測で4手）。
- */
-const RECIPES = [];
-for (const size of [5, 6, 7]) {
-  for (const fill of [0.76, 0.78, 0.80, 0.83, 0.86, 0.89, 0.92]) RECIPES.push({ size, fill });
+const want = Number(arg('levels', 1000));
+const poolDir = resolve(ROOT, arg('pool', 'data'));
+
+// ── 在庫を読む ──
+const files = (await readdir(poolDir)).filter((f) => f.endsWith('.jsonl'));
+if (!files.length) {
+  console.error(`${poolDir} に .jsonl がありません。先に tools/harvest.mjs を回してください。`);
+  process.exit(1);
 }
 
 /**
- * 採る最短手数の下限。
- * レベル1は「まず動かし方を掴む」ための1問なので、2手から採る。
- * 1手（＝置いた瞬間くっつく）はゴールそのものなので当然入らない。
+ * 符号を実際に盤面へ組み直し、手順どおりに指して本当に消えるかを確かめる。
+ * 採集側のバグを焼き込まないための関門なので、ここは必ず全件通す。
  */
-const MIN_OPTIMAL = 2;
+function playable(code) {
+  const data = decodeLevel(code);
+  const board = new Board(data.size);
+  for (const p of data.pieces) board.addPiece(p.c, p.s, `${p.w}x${p.h}`);
+  if (board.hasSameColorContact()) return false;
+  for (const [id, dir, distance] of data.solution) {
+    const res = board.applyMove(id, dir);
+    if (!res || res.steps !== distance) return false;
+  }
+  return board.isCleared;
+}
 
-/**
- * 同じ最短手数のレベルをいくつまで採るか。
- * 上限を置かないと、出やすい手数（6手・15手あたり）ばかりが並んで
- * 「レベルが上がった感じがしない」区間ができる。
- */
-const PER_PAR = 3;
-
-const pool = [];
-const counts = new Map();
-const t0 = Date.now();
-let attempts = 0;
-
-for (let round = 0; pool.length < want && round < 60; round++) {
-  for (const recipe of RECIPES) {
-    if (pool.length >= want) break;
-    attempts++;
-    const seed = hashSeed(`slidepop/exact/${recipe.size}/${recipe.fill}/${round}`);
-    const t = Date.now();
-    const r = generateExactPuzzle(seed, { ...recipe, tries: 3, cap: 60000 });
-    if (!r || r.optimal < MIN_OPTIMAL) continue;
-    const n = counts.get(r.optimal) || 0;
-    if (n >= PER_PAR) continue; // その手数はもう足りている
-    counts.set(r.optimal, n + 1);
-    pool.push({
-      size: recipe.size,
-      fill: Number((r.board.filledCells / (recipe.size * recipe.size)).toFixed(3)),
-      optimal: r.optimal,
-      states: r.states,
-      pieces: r.board.snapshot().pieces.map((p) => ({ c: p.color, s: p.cells })),
-      solution: r.solution.map((s) => [s.pieceId, s.dir, s.distance]),
-    });
-    console.error(`  ${recipe.size}x${recipe.size} fill${recipe.fill} -> ${r.optimal}手 (${Date.now() - t}ms)`);
+/** @type {Map<number, {par:number,size:number,cells:number,lay:string,code:string}[]>} */
+const stock = new Map();
+const seen = new Set();
+let read = 0;
+let broken = 0;
+for (const file of files) {
+  const text = await readFile(resolve(poolDir, file), 'utf8');
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    const row = JSON.parse(line);
+    read++;
+    if (seen.has(row.code)) continue; // 同じ盤面は1回だけ
+    seen.add(row.code);
+    if (!playable(row.code)) { broken++; continue; }
+    if (!stock.has(row.par)) stock.set(row.par, []);
+    stock.get(row.par).push(row);
+  }
+}
+if (broken) {
+  console.error(`警告: 手順が通らない在庫が ${broken}/${read} 件ありました（採集側のバグです）`);
+  if (broken > read * 0.01) {
+    console.error('壊れている割合が高すぎます。src/exact.js を直してから採集し直してください。');
+    process.exit(1);
   }
 }
 
-// 手数の昇順がそのままレベル順。候補は切り捨てない（難しいものほど貴重）
-pool.sort((a, b) => a.optimal - b.optimal);
-const levels = pool;
+// 同じ手数の在庫は「盤面が小さい順」に並べる。同点は符号順（毎回同じ結果になるように）
+for (const rows of stock.values()) {
+  rows.sort((a, b) => a.size - b.size || (a.code < b.code ? -1 : 1));
+}
 
-const body = levels.map((l) => JSON.stringify(l)).join(',\n  ');
-const code = `// tools/levels.mjs が生成。直接編集しないこと。
+const usedLayouts = new Map();
+const usedCodes = new Set();
+
+/**
+ * 手数 par の在庫から1本取る。すでに maxUse 回使った盤面のものは飛ばす。
+ * 在庫は小さい盤面から並んでいるので、先頭から見るだけで②が満たされる。
+ */
+const takeFrom = (par, maxUse) => {
+  const rows = stock.get(par);
+  if (!rows) return null;
+  for (const row of rows) {
+    if (usedCodes.has(row.code)) continue;
+    if ((usedLayouts.get(row.lay) || 0) >= maxUse) continue;
+    usedCodes.add(row.code);
+    usedLayouts.set(row.lay, (usedLayouts.get(row.lay) || 0) + 1);
+    return row;
+  }
+  return null;
+};
+
+/** 目標 target に近い手数から順に1本取る。無ければ null */
+const takeNear = (target, maxUse, radius) => {
+  const hit = takeFrom(target, maxUse);
+  if (hit) return hit;
+  for (let d = 1; d <= radius; d++) {
+    const row = takeFrom(target - d, maxUse) || takeFrom(target + d, maxUse);
+    if (row) return row;
+  }
+  return null;
+};
+
+// ── レベルに割り当てる ──
+// 探す順は「①ぴったりの手数 → ②近い手数 → ③盤面の使い回しを許す」。
+// 使い回しは最後の手段で、在庫が足りているかぎり起きない。
 //
-// 各レベルは「到達できる盤面を全部展開して、ゴールからいちばん遠い配置」を選んだもの。
-// optimal は推定ではなく**厳密な最短手数**で、これより短く解く方法は存在しない。
-// solution はその最短手順（[ブロックid, 向き, 滑るマス数] の並び）。
+// **長い手数から先に割り当てる。** 300手の盤面は在庫に1枚しか無いのに、
+// 掘り直したものは元の（浅い）行と同じ盤面から出ているので、浅いレベルに
+// 先に取られると300手のほうが使えなくなる ―― 希少なほうから押さえる。
+const widest = Math.max(...stock.keys(), 1);
+const chosen = [];
+const substituted = [];
+const order = [];
+for (let lv = 1; lv <= want; lv++) order.push(lv);
+order.sort((a, b) => targetPar(b) - targetPar(a));
+for (const lv of order) {
+  const target = targetPar(lv);
+  let row = null;
+  for (let maxUse = 1; maxUse <= 4 && !row; maxUse++) {
+    // 近い手数から探し、無ければ手数がどれだけ離れていても在庫から埋める。
+    // **盤面の使い回し（maxUse を上げること）はいちばん最後**にしか許さない
+    // ―― 手数が狙いから外れるより、同じ盤面が2回出るほうが目につくため。
+    // カーブは最後に手数の昇順へ並べ直すので、崩れるのは「狙いどおりか」だけ
+    row = takeNear(target, maxUse, 40) || takeNear(target, maxUse, widest);
+  }
+  if (!row) {
+    console.error(`在庫を使い切りました（${chosen.length} 本で打ち止め）`);
+    break;
+  }
+  if (row.par !== target) substituted.push([lv, target, row.par]);
+  chosen.push(row);
+}
 
-export const LEVEL_DATA = [
-  ${body},
+// 手数の昇順がそのままレベル順。ここで並べ直すので、手数が減ることは起きない
+chosen.sort((a, b) => a.par - b.par || a.size - b.size || (a.code < b.code ? -1 : 1));
+
+// ── 書き出し ──
+const lines = [];
+for (let i = 0; i < chosen.length; i += 4) {
+  lines.push(chosen.slice(i, i + 4).map((r) => `'${r.code}'`).join(', '));
+}
+const code = `// tools/harvest.mjs で採集し、tools/levels.mjs が並べたもの。直接編集しないこと。
+//
+// 1行1レベルではなく1文字列1レベル。詰め方は src/levelCodec.js を参照。
+// どのレベルも「到達できる盤面を全部展開して、ゴールからちょうど N 手の配置」で、
+// N（＝符号に入っている手数）は推定ではなく**厳密な最短手数**。
+// これより短く解く方法は存在しない。
+
+export const LEVEL_CODES = [
+  ${lines.join(',\n  ')},
 ];
 `;
 await writeFile(OUT, code);
 
+// ── 統計 ──
+const sizes = new Map();
+const colorShapes = new Map();
+const layouts = new Set();
+for (const row of chosen) {
+  sizes.set(row.size, (sizes.get(row.size) || 0) + 1);
+  layouts.add(row.lay);
+  const d = decodeLevel(row.code);
+  for (const p of d.pieces.slice(0, 2)) {
+    const k = `${p.w}x${p.h}`;
+    colorShapes.set(k, (colorShapes.get(k) || 0) + 1);
+  }
+}
+const err = [];
+for (let lv = 1; lv <= chosen.length; lv++) err.push(Math.abs(chosen[lv - 1].par - targetPar(lv)));
+const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+
 console.error('');
-console.error(`レベル ${levels.length} 件 / 候補 ${pool.length} 件 / ${attempts} 回試行 / ${((Date.now() - t0) / 1000).toFixed(0)}秒`);
-console.error(`最短手数: ${levels[0].optimal} 〜 ${levels[levels.length - 1].optimal}`);
-console.error(`src/levelData.js に書き出しました`);
+console.error(`在庫 ${read} 行 / 重複を除いて ${seen.size} 件 / 使った盤面 ${layouts.size} 枚`);
+console.error(`レベル ${chosen.length} 本 / 最短手数 ${chosen[0].par} 〜 ${chosen[chosen.length - 1].par}`);
+console.error(`盤面を使い回したレベル: ${chosen.length - layouts.size} 本（0 なら全レベルが別の盤面）`);
+console.error(`目標カーブとのずれ: 平均 ${avg(err).toFixed(2)}手 / 最大 ${Math.max(...err)}手 / 代用 ${substituted.length} 件`);
+console.error(`盤面の広さ: ${[...sizes.entries()].sort((a, b) => a[0] - b[0]).map(([s, n]) => `${s}×${s}:${n}`).join(' ')}`);
+console.error(`色つきの形: ${[...colorShapes.entries()].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${s}:${n}`).join(' ')}`);
+console.error(`データの大きさ: ${(code.length / 1024).toFixed(0)}KB`);
+console.error(`${OUT} に書き出しました`);
+for (const [lv, tgt, got] of substituted.slice(0, 10)) {
+  console.error(`  代用 Lv${lv}: ${tgt}手 -> ${got}手`);
+}
