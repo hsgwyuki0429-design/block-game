@@ -31,18 +31,36 @@ for (const size of [5, 6, 7]) {
   for (const fill of [0.76, 0.78, 0.80, 0.83, 0.86, 0.89, 0.92]) RECIPES.push({ size, fill });
 }
 
+/**
+ * 採る最短手数の下限。
+ * レベル1は「まず動かし方を掴む」ための1問なので、2手から採る。
+ * 1手（＝置いた瞬間くっつく）はゴールそのものなので当然入らない。
+ */
+const MIN_OPTIMAL = 2;
+
+/**
+ * 同じ最短手数のレベルをいくつまで採るか。
+ * 上限を置かないと、出やすい手数（6手・15手あたり）ばかりが並んで
+ * 「レベルが上がった感じがしない」区間ができる。
+ */
+const PER_PAR = 3;
+
 const pool = [];
+const counts = new Map();
 const t0 = Date.now();
 let attempts = 0;
 
-for (let round = 0; pool.length < want && round < 40; round++) {
+for (let round = 0; pool.length < want && round < 60; round++) {
   for (const recipe of RECIPES) {
     if (pool.length >= want) break;
     attempts++;
     const seed = hashSeed(`slidepop/exact/${recipe.size}/${recipe.fill}/${round}`);
     const t = Date.now();
     const r = generateExactPuzzle(seed, { ...recipe, tries: 3, cap: 60000 });
-    if (!r || r.optimal < 6) continue;
+    if (!r || r.optimal < MIN_OPTIMAL) continue;
+    const n = counts.get(r.optimal) || 0;
+    if (n >= PER_PAR) continue; // その手数はもう足りている
+    counts.set(r.optimal, n + 1);
     pool.push({
       size: recipe.size,
       fill: Number((r.board.filledCells / (recipe.size * recipe.size)).toFixed(3)),

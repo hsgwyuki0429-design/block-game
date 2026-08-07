@@ -1,6 +1,6 @@
 // 起動。DOM を集めて Game に渡し、URL のハッシュから最初の画面を決める。
 
-import { Game } from './game.js';
+import { Game, RULES_KEY } from './game.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -69,6 +69,8 @@ const dom = {
   optGhost: $('opt-ghost'),
   optCalm: $('opt-calm'),
   btnShare: $('btn-share'),
+  btnReset: $('btn-reset'),
+  resetNote: $('reset-note'),
 };
 
 const game = new Game(dom);
@@ -93,9 +95,9 @@ window.addEventListener('hashchange', () => {
 
 // 初回だけルールを開く
 try {
-  if (!localStorage.getItem('slidepop.seenRules')) {
+  if (!localStorage.getItem(RULES_KEY)) {
     dom.modalRules.hidden = false;
-    localStorage.setItem('slidepop.seenRules', '1');
+    localStorage.setItem(RULES_KEY, '1');
   }
 } catch { /* プライベートモードなどでは無視 */ }
 
