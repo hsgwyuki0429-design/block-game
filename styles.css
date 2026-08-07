@@ -768,7 +768,22 @@ svg .fill { fill: currentColor; stroke: none; }
   box-shadow: var(--glass-edge), 0 4px 16px rgba(0, 0, 0, 0.06);
   color: var(--accent);
 }
+/*
+ * 取り返しのつかない操作。iOS の「削除」と同じで、赤いのは文字だけ ――
+ * 面まで赤くすると、押すつもりのない人の目にまで刺さる。
+ */
+.btn-danger {
+  background: var(--glass-sheen), var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge), 0 4px 16px rgba(0, 0, 0, 0.06);
+  color: var(--warn);
+}
 .btn:disabled { opacity: 0.35; cursor: default; }
+
+/* 設定シートの終わり。ふつうの設定から離して置く */
+.danger-zone { margin-top: 26px; }
+.danger-zone .muted { margin-top: 8px; }
 
 /* ============================================================ シート */
 

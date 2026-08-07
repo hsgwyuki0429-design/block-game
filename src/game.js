@@ -23,6 +23,11 @@ import { Sound } from './audio.js';
 const STORE_KEY = 'slidepop.v4';
 /** 手数で星を付けていた頃の記録。解放済みレベルだけ引き継ぐ */
 const LEGACY_KEY = 'slidepop.v3';
+/** 初回にルールを開いたかどうか。「データを消す」はここも戻す */
+export const RULES_KEY = 'slidepop.seenRules';
+
+/** 設定の初期値。「データを消す」でここへ戻る */
+const DEFAULT_SETTINGS = { sound: true, haptics: true, symbols: false, ghost: true, calm: false };
 
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
@@ -75,10 +80,7 @@ export class Game {
     this.renderer = new Renderer(dom.canvas);
     this.board = new Board();
     this.store = loadStore();
-    this.settings = Object.assign(
-      { sound: true, haptics: true, symbols: false, ghost: true, calm: false },
-      this.store.settings || {},
-    );
+    this.settings = Object.assign({ ...DEFAULT_SETTINGS }, this.store.settings || {});
     this.sound = new Sound();
 
     this.puzzle = null;
@@ -593,14 +595,15 @@ export class Game {
       });
     }
 
-    const toggles = {
+    // 「データを消す」でも既定に戻せるよう、対応表を持っておく
+    this.toggles = {
       sound: d.optSound,
       haptics: d.optHaptics,
       symbols: d.optSymbols,
       ghost: d.optGhost,
       calm: d.optCalm,
     };
-    for (const [key, el] of Object.entries(toggles)) {
+    for (const [key, el] of Object.entries(this.toggles)) {
       if (!el) continue;
       el.checked = !!this.settings[key];
       el.addEventListener('change', () => {
@@ -613,6 +616,63 @@ export class Game {
     }
 
     d.btnShare.addEventListener('click', () => this.share());
+    if (d.btnReset) d.btnReset.addEventListener('click', () => this.askReset());
+  }
+
+  // ------------------------------------------------------------ 記録を消す
+
+  /**
+   * この端末のデータを消す。
+   *
+   * 取り返しがつかないので2段階にしてある ―― 1回目のタップで「本当に消す」に
+   * 変わり、何を失うのかを数字で見せる。5秒でふつうの表示に戻るので、
+   * 誤タップだけで消えることはない。
+   */
+  askReset() {
+    const d = this.dom;
+    if (!d.btnReset) return;
+    if (this.resetArmed) { this.resetAll(); return; }
+
+    this.resetArmed = true;
+    d.btnReset.textContent = '本当に消す（もう一度タップ）';
+    if (d.resetNote) {
+      d.resetNote.textContent = `星 ${this.totalStars} 個・クリア ${this.clearedCount} レベル`
+        + `・自己ベスト・設定が消えます。元には戻せません。`;
+    }
+    clearTimeout(this.resetTimer);
+    this.resetTimer = setTimeout(() => this.disarmReset(), 5000);
+  }
+
+  /** 「本当に消す」の身構えを解いて、ふつうの表示に戻す */
+  disarmReset() {
+    const d = this.dom;
+    this.resetArmed = false;
+    clearTimeout(this.resetTimer);
+    if (d.btnReset) d.btnReset.textContent = 'この端末のデータを消す';
+    if (d.resetNote) d.resetNote.textContent = '星・自己ベスト・設定を消して、最初の状態に戻します。';
+  }
+
+  resetAll() {
+    this.disarmReset();
+    for (const key of [STORE_KEY, LEGACY_KEY, RULES_KEY]) {
+      try { localStorage.removeItem(key); } catch { /* 消せない環境では諦める */ }
+    }
+
+    this.store = {};
+    this.settings = { ...DEFAULT_SETTINGS };
+    this.applySettings();
+    for (const [key, el] of Object.entries(this.toggles || {})) {
+      if (el) el.checked = !!this.settings[key];
+    }
+
+    // 遊びかけの盤面も畳んで、初回起動と同じ状態に戻す
+    this.puzzle = null;
+    this.level = 1;
+    this.status = 'idle';
+    this.loadToken++;
+    this.closeModals();
+    this.showHome();
+    this.toast('この端末のデータを消しました');
   }
 
   // ------------------------------------------------------------ ホーム画面に追加
@@ -785,6 +845,8 @@ export class Game {
     this.dom.modalRules.hidden = true;
     this.dom.modalSettings.hidden = true;
     this.dom.modalInstall.hidden = true;
+    // 開き直したら「本当に消す」は最初から訊き直す
+    this.disarmReset();
   }
 
   async share() {

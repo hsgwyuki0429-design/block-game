@@ -158,15 +158,26 @@ test('初期盤面ではどのブロックを動かしても何も消えない',
   assert.ok(blocked >= SAMPLE.length - 1, `初手が塞がった盤面が ${blocked}/${SAMPLE.length} しかない`);
 });
 
-test('どのレベルも「消すには何手も重ねる」手順になっている', () => {
+test('消えるのは必ず最後の1手 ―― 途中で消えることはない', () => {
+  // 色つきは1組しかないので、消去は手順のいちばん最後に1回だけ起きる。
+  // つまり最短手数から1を引いた数だけ「何も消えない手」を積むことになる
   for (const lv of SAMPLE) {
     const p = generateLevel(lv);
-    // 何も消さない手が、消去1回あたり平均3手は挟まる
     const quiet = p.solution.filter((s) => s.kind !== 'clear').length;
-    assert.ok(quiet >= p.colors * 3, `Lv${lv}: 何も消さない手が ${quiet} 手しかない`);
-    assert.ok(p.par >= p.colors * 4, `Lv${lv}: PAR ${p.par} が色数 ${p.colors} に対して短い`);
-    // 消えない手が続けて何手も要る（＝1手先だけ見ても進めない）
-    assert.ok(p.analysis.dryStreak >= 3, `Lv${lv}: 無消去の連続が ${p.analysis.dryStreak} 手`);
+    assert.equal(quiet, p.par - 1, `Lv${lv}: 途中で消える手がある`);
+    assert.ok(p.par >= 2, `Lv${lv}: 1手で終わってしまう`);
+    assert.equal(p.analysis.dryStreak, p.par - 1, `Lv${lv}: 無消去の連続が途切れている`);
+  }
+});
+
+test('入門を抜けたら「何手も重ねる」手順になる', () => {
+  // レベル1〜12 は操作を掴むための短い問題（2〜5手）。そこを抜けたレベルは、
+  // 1組を消すまでに最低でも5手ぶん滑らせる必要がある
+  const graduated = SAMPLE.filter((lv) => generateLevel(lv).par >= 6);
+  assert.ok(graduated.length >= 8, '入門を抜けたレベルが少なすぎる');
+  for (const lv of graduated) {
+    const p = generateLevel(lv);
+    assert.ok(p.analysis.dryStreak >= 5, `Lv${lv}: 無消去の連続が ${p.analysis.dryStreak} 手`);
   }
 });
 
@@ -326,11 +337,23 @@ test('違うレベルは違う譜面になる', () => {
   assert.equal(seen.size, 12);
 });
 
-test('レベル1は入門用。それでも最短6手はかかる', () => {
+test('レベル1は入門用 ―― 短いが、1手では終わらない', () => {
   const p = generateLevel(1);
   assert.equal(p.colors, 1);
-  assert.ok(p.par >= 6, `PAR が ${p.par} 手しかない`);
+  // 1手だとゴールそのもの（置いた瞬間くっついている）になってしまう
+  assert.ok(p.par >= 2, `PAR が ${p.par} 手しかない`);
+  assert.ok(p.par <= 5, `入門なのに ${p.par} 手もかかる`);
   assert.ok(p.size <= 7, `入門なのに ${p.size}×${p.size} は広すぎる`);
+});
+
+test('序盤は同じ手数が並びすぎない', () => {
+  // 出やすい手数ばかりが続くと「上がった感じ」が消えるので、
+  // 同じ最短手数は 3 レベルまでに抑えてある
+  const counts = new Map();
+  for (const d of LEVEL_DATA) counts.set(d.optimal, (counts.get(d.optimal) || 0) + 1);
+  for (const [par, n] of counts) {
+    assert.ok(n <= 3, `最短${par}手のレベルが ${n} 件ある`);
+  }
 });
 
 test('レベルの要約は主要なパラメータを含む', () => {
