@@ -1,3 +1,6 @@
 node_modules/
 .DS_Store
 *.log
+
+# tools/harvest.mjs が貯める盤面の在庫。焼いたあと（src/levelData.js）だけが要る
+data/

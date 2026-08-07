@@ -17,8 +17,11 @@ test('app.js と index.html は src/ から生成された最新のもの', () =
 
 test('index.html はハッシュ付きの app.js を 1 つだけ読み込む', () => {
   const html = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
-  const scripts = html.match(/<script[^>]*>/g) || [];
-  assert.equal(scripts.length, 1, 'script タグは 1 つだけであるべき');
+  // 外部ホストの読み込み（アクセス解析など）は数えない。見たいのは
+  // 「このアプリのコードを読むタグがちょうど 1 本で、それがハッシュ付きか」
+  const scripts = (html.match(/<script[^>]*>/g) || [])
+    .filter((tag) => !/src="https?:\/\//.test(tag) && /src=/.test(tag));
+  assert.equal(scripts.length, 1, '自前の script タグは 1 つだけであるべき');
   assert.match(scripts[0], /src="app\.js\?v=[0-9a-f]{10}"/);
   assert.match(html, /href="styles\.css\?v=[0-9a-f]{10}"/);
   // モジュール読み込みが残っていると、古いキャッシュと混ざる余地ができる

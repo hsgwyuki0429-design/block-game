@@ -1,73 +1,67 @@
 // レベル定義。
 //
-// レベル1から無限に続く。同じレベルなら、どの端末でも必ず同じ譜面が出る
-// （レベル番号 -> シード -> 決定論的な生成、という一本道になっている）。
+// レベル1から**上限なく**続く。同じレベルなら、どの端末でも必ず同じ譜面が出る
+// （レベル番号 -> 焼いてあるデータ、という一本道になっている）。
 //
-// 盤面には「同じ色のブロックがちょうど2個ずつ」置かれる。
-// 消えるのは必ずその2個なので「消去は色数ぶん」だけ起きる。
-// ただし ―― ここがこのゲームの核 ――
+// 盤面には「同じ色のブロックがちょうど2個」と、消えない灰色ブロックが置かれる。
+// 勝ち筋はひとつだけ ―― 色つき2個を上下左右で触れさせること。触れた瞬間に
+// 2個とも消え、盤面がクリアになる。
 //
-//     ペアは、いきなりぶつけられる場所には置かれない。
+// 難しさは**最短手数そのもの**で測る。どのレベルも
 //
-// どのペアも「何手か滑らせて、やっと隣り合う」ところに置かれる。この
-// 「追い込み手（kind:'chain'）」があるおかげで、最短手数は
+//   「到達できる盤面を全部展開して、ゴールからちょうど N 手の配置」
 //
-//     PAR = 色数 + 追い込み手 + 仕込み手
+// を選んで作ってある（tools/harvest.mjs + tools/levels.mjs）。N は推定ではなく
+// 厳密な最短手数で、これより短く解く方法は存在しない。初期盤面から何を動かしても
+// 消えないし、途中でも消えない ―― 最後の1手だけが消去になる。
 //
-// になる。初期盤面では、どのブロックを動かしても何も消えない ―― まず通路を
-// 読み、どの順で追い込むかを頭の中で組み立てないと1個も消せない盤面を狙う。
+// レベルが上がると N が伸びる。伸び方は下の PAR_ANCHORS で決めてある:
 //
-// レベルが上がると
-//   ・色数（＝消すペアの数）が増える
-//   ・追い込みが深くなる（1組を消すまでに重ねるスライドが増える）
-//   ・仕込み手（一見関係ないブロックを先に退かす手）が混ざる
-// という順で難しくなる。
+//   Lv1 → 2手 ／ Lv20 → 20手 ／ Lv50 → 40手 ／ Lv100 → 80手
+//   Lv500 → 100手 ／ Lv1000 → 110手
+//
+// 前半は一気に、後半はゆっくり伸びる。100手を超えたあたりからは、手数を足しても
+// 「長い」だけで「難しい」にはならない ―― 代わりに盤面の詰まり具合や通路の作りで
+// 差が出るようにしてある（同じ手数でも盤面はレベルごとに別物）。
 
 import { hashSeed } from './rng.js';
-import { LEVEL_DATA } from './levelData.js';
+import { LEVEL_CODES } from './levelData.js';
+import { decodeLevel, optimalOf, sizeOf, fillOf } from './levelCodec.js';
 
+/** 盤面の一辺の下限・上限。8×8 を超えると全探索が終わらないので作れない */
+export const MIN_SIZE = 4;
+export const MAX_SIZE = 8;
 
-export const MIN_SIZE = 8;
-export const MAX_SIZE = 12;
-/**
- * 色数の上限。最大盤面 12×12 に「12色 × 2個 × 4マス = 96マス」で埋め率 67%
- * ―― 144 マスのうち空きは 48 マスだけ。
- *
- * 盤面が 12×12 で頭打ちになったあとは、色数を増やすことがそのまま
- * **埋め率を上げること**になる。難易度の最後のひと押しはここから取っている。
- *
- * ここが上限なのは「初期盤面では何をどう動かしても消えない」を守れる限界だから。
- * 追い込みも初手の掃除もブロックを手前へ戻す操作なので、戻す先の空きが要る。
- * 実測（1試行あたりの成立率）: 56%→8% / 67%→8% / 72%→0%（しかもペアを置く場所
- * 自体が見つからず、試行の4割が生成に失敗する）。72% は「詰まっている」のではなく
- * 「動かせない」。
- */
-export const MAX_COLORS = 10;
-/** 追い込み手の総数の上限 */
-export const MAX_CHAIN_MOVES = 64;
-/** 1組を消すまでに重ねるスライドの上限（追い込み手の深さ） */
-export const MAX_CHAIN_DEPTH = 8;
-/** 仕込み手の上限 */
-export const MAX_SETUP_MOVES = 20;
-/**
- * 灰色ブロック（どの色とも消えない邪魔者）の上限。
- * 色つきブロックと合わせて埋め率 75% 前後に収まるところで止めてある。
- */
-export const MAX_BLOCKERS = 8;
+/** ブロックの一辺の下限・上限（色つきも灰色も同じ）。1×2 から 3×3 まで */
+export const MIN_BLOCK = 2;
+export const MAX_BLOCK = 3;
 
 /**
- * 目標の埋め率。これを基準に色数から盤面サイズを決める。
- * 盤面が MAX_SIZE で頭打ちになると、以降は色数がそのまま埋め率になる
- * （9色=50% / 11色=61% / 13色=72%）。
+ * レベル -> 目標の最短手数を決める折れ線。
+ * ここを変えたら tools/levels.mjs を回し直してデータを作り直すこと。
  */
-const FILL = 0.5;
+export const PAR_ANCHORS = [
+  [1, 2],
+  [20, 20],
+  [50, 40],
+  [100, 80],
+  [500, 100],
+  [1000, 110],
+];
+
+/** 焼いてあるレベルの本数 */
+export const BAKED_LEVELS = LEVEL_CODES.length;
 
 /**
- * ブロック1個あたりのマス数の見積もり。
- * 形の平均（4.9）より小さいのは、大きい長方形ほど詰まった盤面に入る場所が
- * 無くなり、後半は小さい形ばかりが選ばれるから。実測の埋め率に合わせてある。
+ * 焼いたぶんを使い切ったあと、どこへ戻るか。
+ * 先頭（レベル1）に戻すと難易度が一気に落ちて「終わった」感じになるので、
+ * いちばん上の TAIL 本ぶんをぐるぐる回す ―― レベルは上限なく続き、
+ * 手数もいちばん上の帯のまま保たれる。
  */
-const EST_PIECE_CELLS = 4;
+export const TAIL_LEVELS = 200;
+
+/** 手数の上限（＝いちばん上のレベルの手数） */
+export const MAX_PAR = PAR_ANCHORS[PAR_ANCHORS.length - 1][1];
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -77,80 +71,66 @@ export function normalizeLevel(level) {
   return Number.isFinite(n) && n >= 1 ? n : 1;
 }
 
-/** レベル -> 色数（＝ブロックのペア数＝消去の回数） */
-export function colorsForLevel(level) {
+/**
+ * レベル -> 目標の最短手数。PAR_ANCHORS の折れ線を線形につないだもの。
+ * 実際に焼けた手数は levelConfig(level).par で見ること（ぴったりとは限らない）。
+ */
+export function targetPar(level) {
   const lv = normalizeLevel(level);
-  return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_COLORS);
+  const last = PAR_ANCHORS[PAR_ANCHORS.length - 1];
+  if (lv >= last[0]) return last[1];
+  for (let i = 1; i < PAR_ANCHORS.length; i++) {
+    const [l0, p0] = PAR_ANCHORS[i - 1];
+    const [l1, p1] = PAR_ANCHORS[i];
+    if (lv <= l1) return Math.round(p0 + ((p1 - p0) * (lv - l0)) / (l1 - l0));
+  }
+  return last[1];
 }
 
 /**
- * レベル -> 灰色ブロックの数。
- * 消えないので盤面は最後まで迷路のまま ―― 色つきが減っても通路が広がらない。
+ * レベル -> 焼いてあるデータの添字。
+ * 焼いたぶんを超えたら、いちばん上の TAIL_LEVELS 本を順に繰り返す。
  */
-export function blockersForLevel(level) {
+export function levelIndex(level) {
   const lv = normalizeLevel(level);
-  return clamp(Math.floor((lv - 2) / 3), 0, MAX_BLOCKERS);
+  if (lv <= BAKED_LEVELS) return lv - 1;
+  const tail = Math.min(TAIL_LEVELS, BAKED_LEVELS);
+  const base = BAKED_LEVELS - tail;
+  return base + ((lv - BAKED_LEVELS - 1) % tail);
 }
 
-/** レベル -> 盤面の埋め率（色つき＋灰色が占めるマスの割合の目安） */
-export function fillForLevel(level) {
-  const colors = colorsForLevel(level);
-  const size = boardSizeForColors(colors);
-  // 色つきは1個あたり平均4マス×2個、灰色は平均3.5マス
-  return (colors * 2 * EST_PIECE_CELLS + blockersForLevel(level) * 2.5) / (size * size);
+/** レベル -> 焼いてある符号 */
+export function levelCode(level) {
+  return LEVEL_CODES[levelIndex(level)];
 }
 
-/** 色数 -> 盤面サイズ。ブロックは色数×2個、1個4マスなので 8×色数 マスを敷く */
-export function boardSizeForColors(colors) {
-  const cells = clamp(Math.round(colors), 1, MAX_COLORS) * 2 * EST_PIECE_CELLS;
-  return clamp(Math.round(Math.sqrt(cells / FILL)), MIN_SIZE, MAX_SIZE);
+/** レベル -> 盤面データ（符号を展開したもの） */
+export function levelData(level) {
+  return decodeLevel(levelCode(level));
 }
 
-/** レベル -> 盤面サイズ */
+/** レベル -> 厳密な最短手数 */
+export function parForLevel(level) {
+  return optimalOf(levelCode(level));
+}
+
+/** レベル -> 盤面の一辺 */
 export function boardSizeForLevel(level) {
-  return boardSizeForColors(colorsForLevel(level));
+  return sizeOf(levelCode(level));
 }
 
-/**
- * レベル -> 追い込みの深さ。
- * 「1組を消すまでに、そのブロックを平均で何手ぶん滑らせる必要があるか」。
- *
- * レベル1でも 3 手から始める。「1手ずらせば届く」形は、見つけて押すだけで
- * 終わってしまい読む余地が無いので、入門レベルにも置かない。
- */
-export function chainDepthForLevel(level) {
-  const lv = normalizeLevel(level);
-  return clamp(3 + Math.floor((lv - 1) / 3), 3, MAX_CHAIN_DEPTH);
+/** レベル -> 盤面の埋め率 */
+export function fillForLevel(level) {
+  return fillOf(levelCode(level));
 }
 
-/**
- * レベル -> 追い込み手の総数。
- * 色数 × 深さ。ただし長すぎる手順は「難しい」ではなく「だるい」だけなので頭打ちにする。
- */
-export function chainMovesForLevel(level) {
-  const lv = normalizeLevel(level);
-  const colors = colorsForLevel(lv);
-  return clamp(colors * chainDepthForLevel(lv), colors, MAX_CHAIN_MOVES);
+/** レベル -> 灰色ブロックの数（色つき2個を除いた残り全部） */
+export function blockersForLevel(level) {
+  const code = levelCode(level);
+  return decodeLevel(code).pieces.length - 2;
 }
 
-/**
- * レベル -> 仕込み手の数。
- * 追い込みが「消したいブロック自身を動かす手」なのに対して、仕込み手は
- * 「まったく別のブロックを先に退かす手」。盤面全体を見る必要が生まれる。
- */
-export function setupMovesForLevel(level) {
-  const lv = normalizeLevel(level);
-  return clamp(Math.floor((lv - 3) / 2), 0, MAX_SETUP_MOVES);
-}
-
-/** レベル -> 生成の試行回数。詰まった盤面ほど当たりを引くまで回数が要る */
-export function attemptsForLevel(level) {
-  // 詰まった盤面では「初手が塞がった」当たりを引く確率が1割ほどまで落ちるので、
-  // 試行回数を増やして引き当てにいく（1回の試行は 50ms 前後）
-  return colorsForLevel(level) >= 10 ? 96 : 48;
-}
-
-/** レベル -> 生成シード。この一本道が「どの端末でも同じ譜面」を担保する */
+/** レベル -> 生成シード。譜面は焼いてあるので、今は表示・演出のゆらぎにだけ使う */
 export function levelSeed(level) {
   return hashSeed(`slidepop/level/${normalizeLevel(level)}`);
 }
@@ -162,11 +142,11 @@ export function levelSeed(level) {
  * 戻して試すのが罰になってしまう ―― このゲームで時間がかかるのは指が遅いからでは
  * なく、盤面を読んでいるからなので、時間のほうが素直に「読み切れたか」を表す。
  *
- * しきい値は実際の手数（PAR）と色数から決まる。手順が長いほど読む量も増えるため。
+ * しきい値は最短手数と盤面の広さから決まる。手順が長いほど読む量も増えるため。
  *   ★★★ gold 以内 ／ ★★ silver 以内 ／ ★ クリア
  */
-export function targetTimes(par, colors) {
-  const gold = Math.round(20 + Math.max(1, par) * 9 + Math.max(1, colors) * 4);
+export function targetTimes(par, size = 6) {
+  const gold = Math.round(20 + Math.max(1, par) * 9 + Math.max(1, size) * 4);
   return { gold, silver: gold * 2 };
 }
 
@@ -187,27 +167,24 @@ export function formatTime(seconds) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-/** レベル -> 焼いてあるデータ（使い切ったら先頭に戻る） */
-export function levelData(level) {
-  return LEVEL_DATA[(normalizeLevel(level) - 1) % LEVEL_DATA.length];
-}
-
-/** レベルの各種パラメータ */
+/** レベルの各種パラメータ（遊ぶ前でも出せる） */
 export function levelConfig(level) {
   const lv = normalizeLevel(level);
-  const d = levelData(lv);
-  const colors = 1;
+  const code = levelCode(lv);
+  const par = optimalOf(code);
+  const size = sizeOf(code);
   return {
     level: lv,
-    colors,
-    size: d.size,
-    blockers: d.pieces.length - 2,
-    fill: d.fill,
+    /** 色の数。色つきは常に1組（2個）なので 1 */
+    colors: 1,
+    size: clamp(size, MIN_SIZE, MAX_SIZE),
+    blockers: decodeLevel(code).pieces.length - 2,
+    fill: fillOf(code),
     /** 厳密な最短手数。推定ではない */
-    par: d.optimal,
+    par,
     pieces: 2,
-    chainDepth: d.optimal,
-    chainMoves: d.optimal - 1,
+    /** 消えるまでに重ねるスライドの数（最後の1手が消去） */
+    chainMoves: par - 1,
     setupMoves: 0,
     forced: false,
     attempts: 1,
