@@ -6,23 +6,29 @@
 // 先へ行って戻ってくればいいし、いきなり上から始めてもいい。進行状況は
 // 「到達レベル」と「レベルごとの星・自己ベスト」だけで表せる。
 //
-// 星は「解けるまでの時間」で決まる（手数ではない）。盤面を読むのに使った時間
-// だけを数えたいので、時計は下の条件がすべて満たされている間だけ進む。
+// 星は「何手で解いたか」で決まる。基準の par は厳密な最短手数なので、
+// ★★★ は「最短で解いた」という、あいまいさのない達成になる。
 
 import { Board, BLOCKER } from './board.js';
 import { DIRS } from './shapes.js';
 import { generateLevelAsync } from './generator.js';
 import {
   levelConfig, normalizeLevel, levelSummary, puzzleSummary,
-  targetTimes, starsForTime, formatTime,
+  targetMoves, starsForMoves, formatTime,
 } from './levels.js';
 import { Renderer, colorFor } from './render.js';
 import { attachInput } from './input.js';
 import { Sound } from './audio.js';
 
-const STORE_KEY = 'slidepop.v4';
-/** 手数で星を付けていた頃の記録。解放済みレベルだけ引き継ぐ */
-const LEGACY_KEY = 'slidepop.v3';
+/**
+ * 保存領域。
+ * 星の意味が「解けるまでの時間」から「解いた手数」に変わったので、v4 の記録を
+ * そのまま読むと数字の意味が食い違う。鍵を分けて、引き継ぐのは到達レベルと
+ * 設定だけにしてある。
+ */
+const STORE_KEY = 'slidepop.v5';
+/** 星を時間で付けていた頃（v4）と、手数で付けていた頃（v3）の記録 */
+const LEGACY_KEYS = ['slidepop.v4', 'slidepop.v3'];
 /** 初回にルールを開いたかどうか。「データを消す」はここも戻す */
 export const RULES_KEY = 'slidepop.seenRules';
 
@@ -32,31 +38,29 @@ const DEFAULT_SETTINGS = { sound: true, haptics: true, symbols: false, ghost: tr
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
 
-/**
- * ヒント1回ぶんの時間ペナルティ（秒）。
- * ヒントは「詰まったときの逃げ道」であって「速く解く手段」ではない、という線引き。
- */
-const HINT_PENALTY = 20;
-
 /** レベル一覧・ホームに出す、遊ぶ前のプレビュー文 */
 export function levelPreview(level) {
   return levelSummary(levelConfig(level));
 }
 
 /**
- * 旧版（手数で星を付けていた頃）の記録を引き継ぐ。
- * 星とベスト記録は意味が変わってしまうので持ち込まず、
- * 「どこまで開いていたか」だけを残す ―― 進みが巻き戻るのがいちばん理不尽なので。
+ * 前の版の記録を引き継ぐ。
+ * 星とベスト記録は意味が変わってしまうので持ち込まず、「どこまで進んでいたか」と
+ * 設定だけを残す ―― 進みが巻き戻るのがいちばん理不尽なので。
  */
 function migrateLegacy(data) {
   // 鍵をかけていた頃の「解放済みレベル」は、いまは「到達レベル」の意味で使う
   if (data.reached == null && data.unlocked) data.reached = data.unlocked;
   if (data.reached != null) return data;
-  try {
-    const old = JSON.parse(localStorage.getItem(LEGACY_KEY) || '{}');
-    if (old.unlocked) data.reached = old.unlocked;
-    if (old.settings) data.settings = { ...old.settings, ...(data.settings || {}) };
-  } catch { /* 読めなければ最初から */ }
+  for (const key of LEGACY_KEYS) {
+    try {
+      const old = JSON.parse(localStorage.getItem(key) || '{}');
+      const reached = old.reached || old.unlocked;
+      if (reached) data.reached = reached;
+      if (old.settings) data.settings = { ...old.settings, ...(data.settings || {}) };
+      if (data.reached != null) break;
+    } catch { /* 読めなければ次へ */ }
+  }
   return data;
 }
 
@@ -84,11 +88,9 @@ export class Game {
     this.sound = new Sound();
 
     this.puzzle = null;
-    this.solutionMap = new Map();
     this.history = [];
     this.moves = 0;
-    this.hintsUsed = 0;
-    /** 盤面を読んでいた時間（秒）。星はこれで決まる */
+    /** 解くのにかかった時間（秒）。星には使わない。記録として見せるだけ */
     this.elapsed = 0;
     this.shownTime = -1;
     this.status = 'idle';
@@ -104,12 +106,11 @@ export class Game {
     this.invalid = null;
     this.selected = null;
     this.ghost = null;
-    this.hint = null;
 
     this.lastFrame = performance.now();
     this.toastTimer = 0;
-    /** 星のしきい値（秒）。レベルを読み込んだ時点で実際の手数から決まる */
-    this.times = null;
+    /** 星のしきい値（手数）。レベルを読み込んだ時点で最短手数から決まる */
+    this.targets = null;
     this.newRecord = false;
     this.activeColors = [];
     /** 連続で消せた回数。増えるほど消去音の音程が上がる */
@@ -142,8 +143,8 @@ export class Game {
     return (this.store.stars || {})[String(normalizeLevel(level))] || 0;
   }
 
-  /** そのレベルの自己ベスト（秒）。未クリアなら null */
-  bestTimeOf(level) {
+  /** そのレベルの自己ベスト（手数）。未クリアなら null */
+  bestMovesOf(level) {
     const t = (this.store.best || {})[String(normalizeLevel(level))];
     return typeof t === 'number' ? t : null;
   }
@@ -174,7 +175,6 @@ export class Game {
     this.anim = null;
     this.selected = null;
     this.ghost = null;
-    this.hint = null;
     this.renderer.clearEffects();
     this.showLoading(lv);
     this.updateHud();
@@ -205,10 +205,9 @@ export class Game {
     this.board.restore(puzzle.snapshot);
     this.history = [];
     this.moves = 0;
-    this.hintsUsed = 0;
     this.elapsed = 0;
     this.combo = 0;
-    this.times = targetTimes(puzzle.par, puzzle.size);
+    this.targets = targetMoves(puzzle.par);
     this.status = 'playing';
 
     this.store.lastLevel = lv;
@@ -219,7 +218,6 @@ export class Game {
       .filter((p) => p.color !== BLOCKER).map((p) => p.color))].sort((a, b) => a - b);
     if (this.dom.legend) this.dom.legend.innerHTML = '';
 
-    this.buildSolutionMap();
     this.renderer.resize(this.board.size);
     this.hideOverlay();
     this.updateHud();
@@ -239,20 +237,6 @@ export class Game {
     });
   }
 
-  /**
-   * 保証解をたどり、各局面の指紋 -> 次の手 の対応表を作る。
-   * プレイヤーが解の道筋に乗っている間は、この表からヒントを出せる。
-   */
-  buildSolutionMap() {
-    this.solutionMap.clear();
-    const sim = new Board(this.puzzle.size);
-    sim.restore(this.puzzle.snapshot);
-    for (const step of this.puzzle.solution) {
-      this.solutionMap.set(sim.fingerprint(), step);
-      sim.applyMove(step.pieceId, step.dir);
-    }
-  }
-
   /** 次のレベルへ */
   nextLevel() {
     this.load(this.level + 1);
@@ -264,14 +248,11 @@ export class Game {
     this.board.restore(this.puzzle.snapshot);
     this.history = [];
     this.moves = 0;
-    this.hintsUsed = 0;
-    // 時計も 0 に戻す。同じ盤面をもう一度、読み切ったつもりで解き直せる
     this.elapsed = 0;
     this.combo = 0;
     this.status = 'playing';
     this.selected = null;
     this.ghost = null;
-    this.hint = null;
     this.anim = null;
     this.hideOverlay();
     this.updateHud();
@@ -289,11 +270,6 @@ export class Game {
     if (this.status !== 'playing' || this.screen !== 'game') return false;
     if (typeof document !== 'undefined' && document.hidden) return false;
     return !this.anyModalOpen();
-  }
-
-  /** 星の判定に使う時間。ヒントを使ったぶんだけ足す */
-  get ratedTime() {
-    return this.elapsed + this.hintsUsed * HINT_PENALTY;
   }
 
   // ------------------------------------------------------------ 手番
@@ -322,7 +298,6 @@ export class Game {
     this.history.push({ snap: this.board.snapshot(), moves: this.moves });
     if (this.history.length > 400) this.history.shift();
 
-    this.hint = null;
     this.ghost = null;
     this.selected = pieceId;
     this.moves++;
@@ -422,58 +397,9 @@ export class Game {
     this.sound.undo();
     this.selected = null;
     this.ghost = null;
-    this.hint = null;
     this.renderer.clearEffects();
     this.hideOverlay();
     this.updateHud();
-  }
-
-  /**
-   * ヒント。
-   * 出せるのは「最短手順の上にいる間」だけ。
-   *
-   * 最短手順は1本しか持っていないので、そこから外れた盤面については
-   * 次の1手を答えようがない（その場で全探索し直すには重すぎる ―― 上のレベルは
-   * 84手級で、これは事前に全状態を展開して初めて出せた数字）。
-   * 適当な手でお茶を濁すくらいなら、外れたことをはっきり伝えて
-   * **やり直すかどうかを訊く**。
-   */
-  showHint() {
-    if (!this.canInteract()) return;
-    const step = this.solutionMap.get(this.board.fingerprint());
-    if (step) {
-      this.useHint(step.pieceId, step.dir, step.kind === 'clear'
-        ? `最短手順の第${this.moves + 1}手：この色のペアが消えます`
-        : `最短手順の第${this.moves + 1}手：これ自体は何も消えません（後につながる手）`);
-      return;
-    }
-    this.askRestart();
-  }
-
-  useHint(pieceId, dir, message) {
-    this.hint = { pieceId, dir };
-    this.hintsUsed++;
-    this.toast(`${message}（+${HINT_PENALTY}秒）`);
-    this.updateHud();
-  }
-
-  /**
-   * 最短手順から外れているとき、やり直すかを訊く。
-   * ここでは時間を足さない ―― 訊かれただけで罰を受けるのは筋が通らない。
-   */
-  askRestart() {
-    this.showOverlay({
-      badge: '🧭',
-      title: '最短手順から外れています',
-      text: `ヒントを出せるのは、記録してある最短手順（${this.puzzle.par}手）をたどっている間だけです。`
-        + `いまはそこから外れているので、次の1手をお答えできません。`
-        + `最初からやり直すと、第1手からヒントを出せます。`,
-      stats: [],
-      actions: [
-        { label: '最初からやり直す', primary: true, onClick: () => this.restart() },
-        { label: 'このまま続ける', onClick: () => this.hideOverlay() },
-      ],
-    });
   }
 
   // ------------------------------------------------------------ 入力
@@ -490,10 +416,7 @@ export class Game {
         this.sound.unlock();
         this.selected = id;
         this.ghost = null;
-        if (id != null) {
-          this.hint = null;
-          this.sound.tap();
-        }
+        if (id != null) this.sound.tap();
       },
       onPreview: (id, dir) => this.setGhost(id, dir),
       onCommit: (id, dir) => this.tryMove(id, dir),
@@ -511,7 +434,6 @@ export class Game {
       }
       const k = key.toLowerCase();
       if (k === 'z' || k === 'u' || k === 'backspace') { e.preventDefault(); this.undo(); }
-      else if (k === 'h') { e.preventDefault(); this.showHint(); }
       else if (k === 'r') { e.preventDefault(); this.restart(); }
       else if (k === 'l') { e.preventDefault(); this.showLevels(); }
       else if (k === 'escape') {
@@ -557,7 +479,6 @@ export class Game {
     }, { passive: true });
 
     d.btnUndo.addEventListener('click', () => this.undo());
-    d.btnHint.addEventListener('click', () => this.showHint());
     d.btnRestart.addEventListener('click', () => this.restart());
     d.btnLevels.addEventListener('click', () => this.showLevels());
     d.btnHome.addEventListener('click', () => this.showHome());
@@ -804,7 +725,7 @@ export class Game {
     d.levelGrid.innerHTML = '';
     for (let lv = from; lv <= to; lv++) {
       const stars = this.starsOf(lv);
-      const best = this.bestTimeOf(lv);
+      const best = this.bestMovesOf(lv);
       const cell = document.createElement('button');
       cell.type = 'button';
       cell.className = 'level-cell';
@@ -814,9 +735,9 @@ export class Game {
       cell.dataset.level = String(lv);
       cell.innerHTML = `<span class="n">${lv}</span>`
         + `<span class="stars${stars ? '' : ' none'}">${'★'.repeat(stars) || '☆☆☆'}</span>`
-        + (best != null ? `<span class="cell-time">${formatTime(best)}</span>` : '');
+        + (best != null ? `<span class="cell-time">${best}手</span>` : '');
       cell.title = best != null
-        ? `レベル ${lv}：${levelPreview(lv)}／自己ベスト ${formatTime(best)}`
+        ? `レベル ${lv}：${levelPreview(lv)}／自己ベスト ${best}手`
         : `レベル ${lv}：${levelPreview(lv)}`;
       d.levelGrid.appendChild(cell);
     }
@@ -906,17 +827,14 @@ export class Game {
 
   /**
    * 時計の表示。毎フレーム呼ばれるので、秒が変わったときだけ DOM を触る。
-   * ★★★ の持ち時間を過ぎたら色を変えて、いま星いくつぶんの位置にいるかを伝える。
+   * 星には関わらないので、色は付けない ―― 急かす意味がない。
    */
   updateTimer() {
     const d = this.dom;
-    const t = Math.floor(this.ratedTime);
+    const t = Math.floor(this.elapsed);
     if (t === this.shownTime) return;
     this.shownTime = t;
     d.statTime.textContent = formatTime(t);
-    const times = this.times;
-    d.hudTime.classList.toggle('warm', !!times && t > times.gold && t <= times.silver);
-    d.hudTime.classList.toggle('late', !!times && t > times.silver);
   }
 
   updateHud() {
@@ -925,6 +843,11 @@ export class Game {
     d.statLeft.textContent = String(this.board.coloredCount);
     d.statLevel.textContent = String(this.level);
     d.levelInfo.textContent = this.puzzle ? puzzleSummary(this.puzzle) : '\u00a0';
+
+    // ★★★ の手数を過ぎたら色を変えて、いま星いくつぶんの位置にいるかを伝える
+    const g = this.targets;
+    d.hudMoves.classList.toggle('warm', !!g && this.moves > g.gold && this.moves <= g.silver);
+    d.hudMoves.classList.toggle('late', !!g && this.moves > g.silver);
 
     d.btnUndo.disabled = this.history.length === 0 || this.busy;
     if (this.moves !== this.shownMoves) {
@@ -941,48 +864,46 @@ export class Game {
   // ------------------------------------------------------------ 結果表示
 
   /**
-   * クリアを記録する。星は「解けるまでの時間」で決まり、最高記録だけが残る。
-   * ベストも手数ではなく秒で持つ―― 2周目で「読み切ってから指す」楽しみが残る。
+   * クリアを記録する。星は「何手で解いたか」で決まり、最高記録だけが残る。
+   * ベストは最少手数。★★★ は最短ちょうどなので、そこが上限になる。
    */
   recordResult() {
     if (!this.puzzle) return;
     const key = String(this.level);
-    const seconds = Math.max(1, Math.round(this.ratedTime));
-    const stars = starsForTime(seconds, this.times);
+    const moves = this.moves;
+    const stars = starsForMoves(moves, this.targets);
 
     this.store.best = this.store.best || {};
     this.store.stars = this.store.stars || {};
-    const prevBest = this.bestTimeOf(this.level);
+    const prevBest = this.bestMovesOf(this.level);
     const prevStars = this.store.stars[key] || 0;
 
-    this.newRecord = prevBest == null || seconds < prevBest;
-    if (this.newRecord) this.store.best[key] = seconds;
+    this.newRecord = prevBest == null || moves < prevBest;
+    if (this.newRecord) this.store.best[key] = moves;
     this.store.stars[key] = Math.max(prevStars, stars);
 
     // 到達レベルを進める（鍵ではない。「つづきから」の行き先になるだけ）
     this.store.reached = Math.max(this.reachedLevel, this.level + 1);
     saveStore(this.store);
 
-    this.clearTime = seconds;
+    this.clearMoves = moves;
+    this.clearTime = Math.max(1, Math.round(this.elapsed));
     this.lastStars = stars;
     this.newStars = stars > prevStars;
   }
 
   showWin() {
     const stars = this.lastStars;
-    const seconds = this.clearTime;
-    const best = this.bestTimeOf(this.level);
-    const next = levelConfig(this.level + 1);
+    const moves = this.clearMoves;
+    const best = this.bestMovesOf(this.level);
+    const par = this.puzzle.par;
     const badges = { 3: '👑', 2: '🎉', 1: '🎊' };
 
+    // ★★★ は「最短ちょうど」。近道が存在しないと分かっているので言い切れる
     let text = stars === 3
-      ? `${formatTime(this.times.gold)} 以内で読み切りました。最高の読みです。`
-      : `おめでとう！ ★★★ は ${formatTime(this.times.gold)} 以内、★★ は ${formatTime(this.times.silver)} 以内です。`;
-    if (next.size > this.puzzle.size) text += ` 次は盤面が ${next.size}×${next.size} に広がります。`;
-    else if (next.colors > this.puzzle.colors) text += ` 次は色が ${next.colors} 色に増えます。`;
-    else if (next.chainDepth > this.puzzle.config.chainDepth) text += ' 次は追い込みがさらに深くなります。';
-    else if (next.setupMoves > this.puzzle.config.setupMoves) text += ' 次は仕込み手が増えます。';
-    if (this.hintsUsed > 0) text += ` ヒント ${this.hintsUsed} 回ぶん +${this.hintsUsed * HINT_PENALTY}秒 を含みます。`;
+      ? `${par}手 ―― 最短で解きました。これより短い解き方は存在しません。`
+      : `おめでとう！ この盤面の最短は ${par}手 です`
+        + `（あと ${moves - par}手 縮められます）。★★★ は ${this.targets.gold}手、★★ は ${this.targets.silver}手 までです。`;
 
     this.showOverlay({
       badge: badges[stars] || '🎊',
@@ -991,10 +912,9 @@ export class Game {
       stars,
       text,
       stats: [
-        { k: 'タイム', n: formatTime(seconds) },
-        { k: 'ベスト', n: formatTime(best != null ? best : seconds) },
-        { k: '手数', n: `${this.moves}/${this.puzzle.par}` },
-        ...(this.hintsUsed > 0 ? [{ k: 'ヒント', n: this.hintsUsed }] : []),
+        { k: '手数', n: `${moves}/${par}` },
+        { k: 'ベスト', n: `${best != null ? best : moves}手` },
+        { k: 'タイム', n: formatTime(this.clearTime) },
       ],
       actions: [
         { label: `レベル ${this.level + 1} へ`, primary: true, onClick: () => this.nextLevel() },
@@ -1081,7 +1001,6 @@ export class Game {
       anim: this.anim,
       selected: this.selected,
       ghost: this.ghost,
-      hint: this.hint,
       invalid: this.invalid,
     }, dt);
 

@@ -6,7 +6,7 @@
 
 import { generateLevel, verifySolution } from '../src/generator.js';
 import { Board } from '../src/board.js';
-import { puzzleSummary, targetTimes, targetPar, BAKED_LEVELS } from '../src/levels.js';
+import { puzzleSummary, targetMoves, targetPar, BAKED_LEVELS } from '../src/levels.js';
 
 const maxLevel = Number(process.argv[2] || BAKED_LEVELS);
 const from = Number(process.argv[3] || 1);
@@ -60,12 +60,12 @@ for (let level = from; level <= maxLevel; level++) {
     pieces: puzzle.pieces,
     blockers: puzzle.blockers,
     dry: puzzle.analysis.dryStreak,
-    gold: targetTimes(puzzle.par, puzzle.size).gold,
+    silver: targetMoves(puzzle.par).silver,
     summary: puzzleSummary(puzzle),
   });
 }
 
-const head = 'Lv    盤面  埋め率   PAR  目標  ブロック   灰  無消去    ★★★';
+const head = 'Lv    盤面  埋め率   PAR  目標  ブロック   灰  無消去  ★★まで';
 console.log(head);
 console.log('-'.repeat(head.length + 4));
 const step = Math.max(1, Math.round((maxLevel - from) / 40));
@@ -80,7 +80,7 @@ for (const r of rows) {
     String(r.pieces).padStart(8),
     String(r.blockers).padStart(4),
     String(r.dry).padStart(6),
-    `${Math.floor(r.gold / 60)}:${String(r.gold % 60).padStart(2, '0')}`.padStart(6),
+    String(r.silver).padStart(6),
   );
 }
 
