@@ -123,8 +123,72 @@ export function colorFor(index) {
  * 盤面（ブロックを並べる面）。影も光沢も落とさない、平らな面。
  * 上端にだけ細い明るい線を引く ―― ガラス板の縁が光を拾ったときの1本で、
  * これだけで面が「浮いている」ように見える。
+ *
+ * 面の色そのものは進行度で動く（trayFor）。ここに残っているのは縁の光だけ。
  */
-const TRAY = { plate: '#dde2f0', hole: '#eef1f8', rim: 'rgba(255,255,255,.85)' };
+const TRAY = { rim: 'rgba(255,255,255,.85)' };
+
+// ---------------------------------------------------------------- 進行度の色
+//
+// 色つきブロックは盤面に1組しかないので、その色を**進行度そのもの**に使える。
+// 遠いうちは冷たい藍、近づくにつれて青緑 → 緑 → 琥珀 → 朱へ。
+// 盤面と背景も同じ色相をごく薄めて追いかけるので、
+// 「解に近づくほど画面全体があたたまっていく」ように見える。
+//
+// 数字で「あと何手」と出すより、こちらのほうが手を止めない ――
+// 見ていなくても視野の端で温度が変わる。
+
+/** 進行度 0 → 1 の色の道すじ（HSL） */
+const PROGRESS_STOPS = [
+  { h: 236, s: 58, l: 52 }, // 0.00 藍
+  { h: 202, s: 66, l: 47 }, // 0.28 青
+  { h: 158, s: 56, l: 41 }, // 0.55 翡翠
+  { h: 40, s: 84, l: 49 },  // 0.80 琥珀
+  { h: 10, s: 76, l: 53 },  // 1.00 朱
+];
+const PROGRESS_AT = [0, 0.28, 0.55, 0.8, 1];
+
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/** 進行度 t（0..1）の HSL を求める。色相は近いほうへ回して濁りを避ける */
+function progressHsl(t) {
+  const p = Math.max(0, Math.min(1, t));
+  let i = 1;
+  while (i < PROGRESS_AT.length - 1 && p > PROGRESS_AT[i]) i++;
+  const a = PROGRESS_STOPS[i - 1];
+  const b = PROGRESS_STOPS[i];
+  const span = PROGRESS_AT[i] - PROGRESS_AT[i - 1];
+  const k = span > 0 ? (p - PROGRESS_AT[i - 1]) / span : 0;
+  let dh = b.h - a.h;
+  if (dh > 180) dh -= 360;
+  else if (dh < -180) dh += 360;
+  return { h: (a.h + dh * k + 360) % 360, s: lerp(a.s, b.s, k), l: lerp(a.l, b.l, k) };
+}
+
+/** 進行度 -> 色つきブロックの色。colorFor と同じ形を返す */
+export function progressColor(t) {
+  const { h, s, l } = progressHsl(t);
+  return {
+    name: '色つきブロック',
+    base: hex(hsl(h, s, l)),
+    light: hex(hsl(h, s, Math.min(88, l + 14))),
+    dark: hex(hsl(h, Math.min(90, s + 10), Math.max(20, l - 22))),
+    shadow: hsl(h, Math.min(90, s + 10), Math.max(16, l - 30)).join(','),
+  };
+}
+
+/** 進行度 -> 盤面の面の色。ブロックと同じ色相を、ほとんど白まで薄めたもの */
+export function trayFor(t) {
+  const { h } = progressHsl(t);
+  return { plate: hex(hsl(h, 30, 89)), hole: hex(hsl(h, 34, 95)) };
+}
+
+/** 進行度 -> 画面の後ろに敷く淡い色（CSS へ渡す） */
+export function auraFor(t) {
+  const { h, s } = progressHsl(t);
+  const c = hsl(h, Math.min(70, s), 62);
+  return `rgba(${c.join(',')},0.24)`;
+}
 
 /** 色覚サポート用の記号。色数が増えても足りるよう繰り返して使う */
 const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', '☰'];
@@ -149,10 +213,45 @@ export class Renderer {
     this.shards = [];
     this.rings = [];
     this.flashes = [];
+    this.stamps = [];
     this.shake = 0;
     this.time = 0;
 
+    /**
+     * 解へどれだけ近いか（0..1）。
+     * 表示用の progress は目標へ毎フレーム少しずつ寄せる ―― 1手ごとに色が
+     * ぱっと変わると「点滅」に見えてしまう。ゆっくり動くから景色になる。
+     */
+    this.progress = 0;
+    this.progressTarget = 0;
+    this._tintAt = -1;
+    this.refreshTint();
+
     this.options = { symbols: false, ghost: true, calm: false };
+  }
+
+  /**
+   * 進行度を伝える。immediate はレベルを跨いだときだけ（前のレベルの色を
+   * 引きずったまま次の盤面が出ると、いま何色なのかが意味を失う）。
+   */
+  setProgress(t, immediate = false) {
+    this.progressTarget = Math.max(0, Math.min(1, t || 0));
+    if (immediate) this.progress = this.progressTarget;
+  }
+
+  /** 進行度から作った色。値が動いたときだけ作り直す */
+  refreshTint() {
+    const q = Math.round(this.progress * 400) / 400;
+    if (this._tintAt === q) return;
+    this._tintAt = q;
+    this.tint = progressColor(q);
+    this.tray = trayFor(q);
+  }
+
+  /** ブロックの色。灰色は不変、色つきは進行度で動く */
+  colorOf(colorIndex) {
+    if (colorIndex === -9) return BLOCKER_COLOR; // board.js の BLOCKER
+    return this.tint;
   }
 
   resize(size) {
@@ -205,7 +304,7 @@ export class Renderer {
 
   /** 消えたマスそのものが光になって開く */
   shatter(cells, colorIndex) {
-    const c = colorFor(colorIndex);
+    const c = this.colorOf(colorIndex);
     for (const [x, y] of cells) {
       this.shards.push({ x, y, color: c.light, life: 1 });
     }
@@ -213,7 +312,7 @@ export class Renderer {
 
   /** 砕けた破片が飛び散る */
   burst(cells, colorIndex, strength = 1) {
-    const c = colorFor(colorIndex);
+    const c = this.colorOf(colorIndex);
     const n = this.options.calm ? 3 : Math.round(9 + strength * 3);
     for (const [cx, cy] of cells) {
       const p = this.cellCenter(cx, cy);
@@ -241,7 +340,7 @@ export class Renderer {
 
   /** 色のついた光の輪が広がる */
   ring(x, y, colorIndex, strength = 1) {
-    const c = colorFor(colorIndex);
+    const c = this.colorOf(colorIndex);
     this.rings.push({
       x, y,
       r: this.cell * 0.3,
@@ -258,6 +357,33 @@ export class Renderer {
     this.flashes.push({ x, y, r: this.cell * (2.6 + strength * 1.8), life: 1 });
   }
 
+  /**
+   * ブロックの上にスタンプを貼る（👍）。
+   *
+   * 手が良かったことを伝える唯一の「文字」。数字でも文章でもないので読む必要がなく、
+   * 目を上げずに済む ―― 盤面から視線を外させないための形。
+   * ひとつずつ間を置いて出し、跳ねてから浮き上がって消える。
+   */
+  stamp(cells, text = '👍', count = 3) {
+    if (!cells || cells.length === 0) return;
+    for (let i = 0; i < count; i++) {
+      const [cx, cy] = cells[Math.floor(Math.random() * cells.length)];
+      const p = this.cellCenter(cx, cy);
+      this.stamps.push({
+        x: p.x + (Math.random() - 0.5) * this.cell * 0.9,
+        y: p.y + (Math.random() - 0.5) * this.cell * 0.7,
+        rot: (Math.random() - 0.5) * 0.44,
+        // マスに比例させつつ頭打ちを付ける。4×4 の盤面はマスが大きく、
+        // 比例させただけだとスタンプがブロックより大きくなって盤面が読めなくなる
+        size: Math.min(this.cell * (0.62 + Math.random() * 0.24), 46),
+        // 3個が同時に出ると1個の大きな塊に見える。少しずつずらして「増えていく」
+        delay: i * 0.11,
+        life: 1,
+        text,
+      });
+    }
+  }
+
   addShake(amount) {
     if (this.options.calm) amount *= 0.3;
     this.shake = Math.min(22, this.shake + amount);
@@ -268,6 +394,7 @@ export class Renderer {
     this.shards.length = 0;
     this.rings.length = 0;
     this.flashes.length = 0;
+    this.stamps.length = 0;
     this.shake = 0;
   }
 
@@ -276,6 +403,15 @@ export class Renderer {
   draw(view, dt) {
     const ctx = this.ctx;
     this.time += dt;
+
+    // 進行度は目標へ寄せるだけ。1フレームで 6% ずつ詰めると、1手ぶんの変化が
+    // 0.5秒ほどかけて渡る ―― 変化に気づけて、かつ気を取られない速さ
+    if (this.progress !== this.progressTarget) {
+      const k = 1 - Math.pow(1 - 0.06, Math.max(0.5, dt * 60));
+      this.progress += (this.progressTarget - this.progress) * k;
+      if (Math.abs(this.progressTarget - this.progress) < 0.0008) this.progress = this.progressTarget;
+    }
+    this.refreshTint();
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.viewW, this.viewH);
@@ -303,6 +439,7 @@ export class Renderer {
     this.drawRings(dt);
     this.drawFlashes(dt);
     this.drawParticles(dt);
+    this.drawStamps(dt);
 
     ctx.restore();
   }
@@ -324,7 +461,7 @@ export class Renderer {
     ctx.save();
     ctx.beginPath();
     ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
-    ctx.fillStyle = TRAY.plate;
+    ctx.fillStyle = this.tray.plate;
     ctx.fill();
     // ガラスの縁の光。上半分だけを 1px でなぞる
     ctx.save();
@@ -341,7 +478,7 @@ export class Renderer {
     const size = this.tileSize;
     const tr = this.tileRadius;
     ctx.save();
-    ctx.fillStyle = TRAY.hole;
+    ctx.fillStyle = this.tray.hole;
     ctx.beginPath();
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
@@ -389,7 +526,7 @@ export class Renderer {
 
   drawTrail(piece, d, anim, p) {
     const ctx = this.ctx;
-    const c = colorFor(piece.color);
+    const c = this.colorOf(piece.color);
     const total = anim.steps * this.cell;
     const cell = this.cell;
     for (let i = 1; i <= 3; i++) {
@@ -486,7 +623,7 @@ export class Renderer {
       ctx.translate(-cx, -cy);
     }
 
-    const c = colorFor(piece.color);
+    const c = this.colorOf(piece.color);
     const outline = this.outlineOf(rects, this.tileRadius);
 
     if (mode === 'outline') {
@@ -712,6 +849,43 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(r.x, r.y, rad * 0.93, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  /**
+   * 👍 のスタンプ。
+   * 出るときだけ勢いよく（跳ねながら大きくなる）、消えるときはただ浮いて薄れる ――
+   * 出現に力を入れて退場を静かにすると、視線を引いておいて返してくれる。
+   */
+  drawStamps(dt) {
+    const ctx = this.ctx;
+    for (let i = this.stamps.length - 1; i >= 0; i--) {
+      const s = this.stamps[i];
+      if (s.delay > 0) { s.delay -= dt; continue; }
+      s.life -= dt * 0.85;
+      if (s.life <= 0) {
+        this.stamps.splice(i, 1);
+        continue;
+      }
+      const t = 1 - s.life; // 0 -> 1
+      // 出てから 0.22 のあいだで跳ねる（行き過ぎて戻る）
+      const pop = t < 0.22
+        ? 1.28 * easeOutCubic(t / 0.22)
+        : 1.28 - 0.28 * easeOutCubic(Math.min(1, (t - 0.22) / 0.2));
+      const rise = easeOutCubic(t) * this.cell * 0.6;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, s.life * 2.2);
+      ctx.translate(s.x, s.y - rise);
+      ctx.rotate(s.rot * (1 - t * 0.6));
+      ctx.scale(pop, pop);
+      ctx.font = `${Math.round(s.size)}px ${UI_FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // 絵文字は色で描かれるので、後ろに白を敷いて盤面から浮かせる
+      ctx.shadowColor = 'rgba(0,0,0,.28)';
+      ctx.shadowBlur = s.size * 0.28;
+      ctx.fillText(s.text, 0, 0);
       ctx.restore();
     }
   }

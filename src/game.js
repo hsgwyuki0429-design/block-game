@@ -16,9 +16,13 @@ import {
   levelConfig, normalizeLevel, levelSummary, puzzleSummary,
   targetMoves, starsForMoves, formatTime,
 } from './levels.js';
-import { Renderer, colorFor } from './render.js';
+import { Renderer, colorFor, auraFor } from './render.js';
 import { attachInput } from './input.js';
 import { Sound } from './audio.js';
+import {
+  savedName, saveName, forgetName, sanitizeName, clearLocalRanking,
+  isGlobalRanking, fetchRanking, submitScore, RANK_LIMIT,
+} from './ranking.js';
 
 /**
  * 保存領域。
@@ -112,9 +116,29 @@ export class Game {
     /** 星のしきい値（手数）。レベルを読み込んだ時点で最短手数から決まる */
     this.targets = null;
     this.newRecord = false;
-    this.activeColors = [];
     /** 連続で消せた回数。増えるほど消去音の音程が上がる */
     this.combo = 0;
+
+    /* --- 解へどれだけ近いか（色のグラデーションと「いいね」の判定に使う） --- */
+    /** 手順どおりに指した各局面の指紋 -> 何手目か */
+    this.pathIndex = null;
+    /** 初期盤面での色つき2個の隙間。ここからどれだけ詰まったかを測る */
+    this.startGap = 0;
+    /** これまでに届いた「いちばん先」。ここを更新したときだけ褒める */
+    this.bestStep = 0;
+    this.bestGap = Infinity;
+    this.progress = 0;
+    /** 背景の光にいま塗ってある進行度（毎フレーム塗り直さないための控え） */
+    this.paintedProgress = -1;
+    /** 直前に動かしたブロック。スタンプを貼る場所になる */
+    this.lastMovedId = null;
+
+    /* --- ランキング --- */
+    /** 名前を決めきるまで閉じられないシート（クリア直後） */
+    this.nameLocked = false;
+    /** 投稿・取得の世代。レベルを跨いだ古い応答を捨てるために使う */
+    this.rankToken = 0;
+    this.rankViewToken = 0;
 
     this.applySettings();
     this.bindUi();
@@ -157,6 +181,94 @@ export class Game {
   /** クリア済みレベル数 */
   get clearedCount() {
     return Object.keys(this.store.stars || {}).length;
+  }
+
+  // ------------------------------------------------------------ 解への近さ
+  //
+  // 盤面の色も背景の光も、この「近さ」ひとつで決まる。数字は出さない ――
+  // 残り手数を数字で出すと、盤面ではなく数字を見ながら遊ぶことになる。
+  // 温度だけが変わっていくなら、視線を盤面から外さずに近さが伝わる。
+
+  /**
+   * 手順どおりに指した各局面の指紋 -> 何手目か、の索引。
+   *
+   * 焼いてある解答は**厳密な最短手順**なので、その線上にいるかどうかを
+   * 指紋の一致だけで判定できる。遠回りして戻ってきた場合も拾えるし、
+   * 「戻す」で巻き戻した場合も正しく手前の位置に落ちる。
+   */
+  buildPath(puzzle) {
+    const board = new Board(puzzle.size);
+    board.restore(puzzle.snapshot);
+    const index = new Map([[board.fingerprint(), 0]]);
+    for (let i = 0; i < puzzle.solution.length; i++) {
+      const step = puzzle.solution[i];
+      if (!board.applyMove(step.pieceId, step.dir)) break;
+      index.set(board.fingerprint(), i + 1);
+    }
+    return index;
+  }
+
+  /** 色つき2個の隙間（0 = 上下左右で隣り合っている＝解けた形） */
+  colorGap(board) {
+    const colored = [...board.pieces.values()].filter((p) => p.color !== BLOCKER);
+    if (colored.length < 2) return 0;
+    let best = Infinity;
+    for (const [ax, ay] of colored[0].cells) {
+      for (const [bx, by] of colored[1].cells) {
+        const d = Math.abs(ax - bx) + Math.abs(ay - by);
+        if (d < best) best = d;
+      }
+    }
+    return Math.max(0, best - 1);
+  }
+
+  /**
+   * 進み具合を測り直し、色に反映し、前に進んでいたら褒める。
+   *
+   * 測り方は2つあって、**大きいほうを採る**:
+   *   ・解法の線上にいるなら、そこが何手目か（いちばん確かな物差し）
+   *   ・外れているなら、色つき2個の隙間がどれだけ詰まったか
+   * 線から外れた瞬間に色が 0 まで戻ると、遠回りしただけで景色が真っ白に
+   * 巻き戻ってしまう。隙間のほうを保険に置くことでそれを防いでいる。
+   *
+   * @param {number|null} movedPieceId 直前に動かしたブロック（褒めるときの貼り先）
+   * @param {boolean} reset レベルを読み込み直したとき。色を瞬時に合わせ、記録も引き直す
+   */
+  updateProgress(movedPieceId = null, reset = false) {
+    if (!this.puzzle) return;
+    const par = Math.max(1, this.puzzle.par);
+    const step = this.pathIndex ? this.pathIndex.get(this.board.fingerprint()) : undefined;
+    const gap = this.colorGap(this.board);
+
+    const byPath = step == null ? 0 : step / par;
+    const byGap = this.startGap > 0 ? (this.startGap - gap) / this.startGap : 1;
+    this.progress = Math.max(0, Math.min(1, Math.max(byPath, byGap)));
+    this.renderer.setProgress(this.progress, reset);
+
+    if (reset) {
+      this.bestStep = step == null ? 0 : step;
+      this.bestGap = gap;
+      return;
+    }
+    if (movedPieceId == null) return; // 戻す・クリアなど。色だけ合わせる
+
+    // 「更新したときだけ」褒める。毎手だと相づちが安くなって効かなくなる
+    const advanced = (step != null && step > this.bestStep) || gap < this.bestGap;
+    if (step != null && step > this.bestStep) this.bestStep = step;
+    if (gap < this.bestGap) this.bestGap = gap;
+    if (advanced) this.cheer(movedPieceId);
+  }
+
+  /**
+   * 「いいね」のスタンプと、低いほめ音。
+   * 半々でしか出さない ―― 毎回出ると壁紙になり、出なくなると気づかない。
+   */
+  cheer(pieceId) {
+    if (Math.random() < 0.5) return;
+    const piece = this.board.pieces.get(pieceId);
+    if (!piece) return;
+    this.renderer.stamp(piece.cells, '👍', 3);
+    this.sound.praise();
   }
 
   // ------------------------------------------------------------ パズル
@@ -213,10 +325,11 @@ export class Game {
     this.store.lastLevel = lv;
     saveStore(this.store);
 
-    // このレベルに登場する色（レジェンドはこれだけを並べる）
-    this.activeColors = [...new Set([...this.board.pieces.values()]
-      .filter((p) => p.color !== BLOCKER).map((p) => p.color))].sort((a, b) => a - b);
-    if (this.dom.legend) this.dom.legend.innerHTML = '';
+    // 解への近さを測る道具立て。ここで引き直さないと前のレベルの色を引きずる
+    this.pathIndex = this.buildPath(puzzle);
+    this.startGap = this.colorGap(this.board);
+    this.lastMovedId = null;
+    this.updateProgress(null, true);
 
     this.renderer.resize(this.board.size);
     this.hideOverlay();
@@ -254,6 +367,8 @@ export class Game {
     this.selected = null;
     this.ghost = null;
     this.anim = null;
+    this.lastMovedId = null;
+    this.updateProgress(null, true);
     this.hideOverlay();
     this.updateHud();
     this.toast('最初からやり直します');
@@ -300,17 +415,14 @@ export class Game {
 
     this.ghost = null;
     this.selected = pieceId;
+    this.lastMovedId = pieceId;
     this.moves++;
 
     this.board.movePiece(pieceId, dir, steps);
-    this.anim = {
-      phase: 'slide',
-      pieceId,
-      dir,
-      steps,
-      t: 0,
-      duration: Math.min(0.36, 0.1 + steps * 0.033),
-    };
+    const duration = Math.min(0.36, 0.1 + steps * 0.033);
+    this.anim = { phase: 'slide', pieceId, dir, steps, t: 0, duration };
+    // 摩擦の音は滑走アニメと同じ長さで鳴らす（音だけ先に終わると軽くなる）
+    this.sound.slide(steps, duration);
     this.updateHud();
   }
 
@@ -379,11 +491,14 @@ export class Game {
    */
   afterMove() {
     this.updateHud();
-    if (this.board.isCleared) {
+    const won = this.board.isCleared;
+    // 勝った手はスタンプを出さない ―― クリアの音と重なって、どちらも痩せる
+    this.updateProgress(won ? null : this.lastMovedId);
+    if (won) {
       this.status = 'won';
       this.recordResult();
       this.sound.win();
-      setTimeout(() => this.showWin(), 640);
+      setTimeout(() => this.finishLevel(), 640);
     }
   }
 
@@ -397,7 +512,11 @@ export class Game {
     this.sound.undo();
     this.selected = null;
     this.ghost = null;
+    this.lastMovedId = null;
     this.renderer.clearEffects();
+    // 色は巻き戻すが、「いちばん先まで行った記録」は残す
+    // （戻して指し直すたびに褒められると、褒め言葉の意味が無くなる）
+    this.updateProgress(null);
     this.hideOverlay();
     this.updateHud();
   }
@@ -425,6 +544,10 @@ export class Game {
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement) return;
       const key = e.key;
+      // シートが開いているあいだ、後ろの盤面には触らせない。
+      // とくに「名前を決める」は決めるまで閉じないので、ここから抜け出せると
+      // 名無しのまま先へ進めてしまう
+      if (this.anyModalOpen() && key !== 'Escape') return;
       const arrows = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
       if (arrows[key]) {
         e.preventDefault();
@@ -504,17 +627,46 @@ export class Game {
       if (el) el.addEventListener('click', () => this.openModal(d.modalRules));
     }
     for (const el of [d.btnSettings, d.btnSettings2]) {
-      if (el) el.addEventListener('click', () => this.openModal(d.modalSettings));
+      if (el) {
+        el.addEventListener('click', () => {
+          this.updateSettingsName();
+          this.openModal(d.modalSettings);
+        });
+      }
     }
 
-    for (const modal of [d.modalRules, d.modalSettings, d.modalInstall]) {
+    for (const modal of this.modals()) {
       modal.addEventListener('click', (e) => {
+        // 名前を決めきるまでは、背景タップでも閉じない
+        if (modal === d.modalName && this.nameLocked) return;
         // 閉じるボタンの中身（SVG）が押されることもあるので closest で辿る
         if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) {
           this.closeModals();
         }
       });
     }
+
+    // ランキング
+    if (d.btnRank) d.btnRank.addEventListener('click', () => this.showRanking(this.level));
+    if (d.btnNameSave) d.btnNameSave.addEventListener('click', () => this.commitName());
+    if (d.nameInput) {
+      d.nameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); this.commitName(); }
+      });
+      // 打ち始めたらエラーは引っ込める（打っている最中に赤いのは邪魔）
+      d.nameInput.addEventListener('input', () => {
+        d.nameInput.classList.remove('bad');
+        if (d.nameError) d.nameError.hidden = true;
+      });
+    }
+    if (d.btnChangeName) {
+      d.btnChangeName.addEventListener('click', () => {
+        // 設定シートは畳んでから開く（同じ高さに2枚重なると、どちらも操作しづらい）
+        d.modalSettings.hidden = true;
+        this.askName(false);
+      });
+    }
+    this.updateSettingsName();
 
     // 「データを消す」でも既定に戻せるよう、対応表を持っておく
     this.toggles = {
@@ -558,7 +710,7 @@ export class Game {
     d.btnReset.textContent = '本当に消す（もう一度タップ）';
     if (d.resetNote) {
       d.resetNote.textContent = `星 ${this.totalStars} 個・クリア ${this.clearedCount} レベル`
-        + `・自己ベスト・設定が消えます。元には戻せません。`;
+        + `・自己ベスト・設定・ランキングの名前が消えます。元には戻せません。`;
     }
     clearTimeout(this.resetTimer);
     this.resetTimer = setTimeout(() => this.disarmReset(), 5000);
@@ -570,14 +722,20 @@ export class Game {
     this.resetArmed = false;
     clearTimeout(this.resetTimer);
     if (d.btnReset) d.btnReset.textContent = 'この端末のデータを消す';
-    if (d.resetNote) d.resetNote.textContent = '星・自己ベスト・設定を消して、最初の状態に戻します。';
+    if (d.resetNote) {
+      d.resetNote.textContent = '星・自己ベスト・設定・ランキングの名前を消して、最初の状態に戻します。';
+    }
   }
 
   resetAll() {
     this.disarmReset();
-    for (const key of [STORE_KEY, LEGACY_KEY, RULES_KEY]) {
+    for (const key of [STORE_KEY, ...LEGACY_KEYS, RULES_KEY]) {
       try { localStorage.removeItem(key); } catch { /* 消せない環境では諦める */ }
     }
+    // 名前とこの端末のランキングも一緒に消す。「最初の状態」に名前は残らない
+    forgetName();
+    clearLocalRanking();
+    this.updateSettingsName();
 
     this.store = {};
     this.settings = { ...DEFAULT_SETTINGS };
@@ -757,15 +915,22 @@ export class Game {
     el.hidden = false;
   }
 
-  anyModalOpen() {
+  /** 開け閉めの対象になるシート一覧（HTML に無いものは飛ばす） */
+  modals() {
     const d = this.dom;
-    return !d.modalRules.hidden || !d.modalSettings.hidden || !d.modalInstall.hidden;
+    return [d.modalRules, d.modalSettings, d.modalInstall, d.modalRank, d.modalName].filter(Boolean);
+  }
+
+  anyModalOpen() {
+    return this.modals().some((m) => !m.hidden);
   }
 
   closeModals() {
-    this.dom.modalRules.hidden = true;
-    this.dom.modalSettings.hidden = true;
-    this.dom.modalInstall.hidden = true;
+    for (const modal of this.modals()) {
+      // 名前を決めきるまでは閉じない。名無しの記録をランキングに残さないため
+      if (modal === this.dom.modalName && this.nameLocked) continue;
+      modal.hidden = true;
+    }
     // 開き直したら「本当に消す」は最初から訊き直す
     this.disarmReset();
   }
@@ -789,43 +954,6 @@ export class Game {
   }
 
   /**
-   * 色ごとの残りブロック数。
-   * そのレベルに実際に出てくる色だけを並べ、1個だけ残っている色
-   * （＝相棒がいないので単独では消せない）は白く縁取って警告する。
-   */
-  updateLegend() {
-    const d = this.dom;
-    if (!d.legend) return;
-    const counts = new Map();
-    for (const p of this.board.pieces.values()) counts.set(p.color, (counts.get(p.color) || 0) + 1);
-
-    const colors = this.activeColors || [];
-    if (d.legend.childElementCount !== colors.length) {
-      d.legend.innerHTML = '';
-      for (const i of colors) {
-        const chip = document.createElement('div');
-        chip.className = 'legend-chip';
-        chip.innerHTML = `<span class="legend-swatch" style="background:${colorFor(i).base}"></span><span class="legend-n">0</span>`;
-        chip.title = `${colorFor(i).name}の残りブロック数`;
-        d.legend.appendChild(chip);
-      }
-      // 色数はレベルによって変わる。1行6個までで、行が均等に埋まる列数にする
-      const rows = Math.max(1, Math.ceil(colors.length / 6));
-      const cols = Math.max(1, Math.ceil(colors.length / rows));
-      d.legend.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-      d.legend.style.maxWidth = `${cols * 76}px`;
-    }
-    colors.forEach((color, i) => {
-      const chip = d.legend.children[i];
-      if (!chip) return;
-      const n = counts.get(color) || 0;
-      chip.querySelector('.legend-n').textContent = String(n);
-      chip.classList.toggle('empty', n === 0);
-      chip.classList.toggle('lone', n === 1);
-    });
-  }
-
-  /**
    * 時計の表示。毎フレーム呼ばれるので、秒が変わったときだけ DOM を触る。
    * 星には関わらないので、色は付けない ―― 急かす意味がない。
    */
@@ -840,7 +968,6 @@ export class Game {
   updateHud() {
     const d = this.dom;
     d.statMoves.textContent = String(this.moves);
-    d.statLeft.textContent = String(this.board.coloredCount);
     d.statLevel.textContent = String(this.level);
     d.levelInfo.textContent = this.puzzle ? puzzleSummary(this.puzzle) : '\u00a0';
 
@@ -858,7 +985,6 @@ export class Game {
     }
     this.shownTime = -1; // 表示を作り直す（レベルを跨いだ直後など）
     this.updateTimer();
-    this.updateLegend();
   }
 
   // ------------------------------------------------------------ 結果表示
@@ -892,6 +1018,23 @@ export class Game {
     this.newStars = stars > prevStars;
   }
 
+  /**
+   * クリアの後始末。
+   *
+   * 記録は**必ず**ランキングに出す ―― 「保存しますか？」は訊かない。
+   * 訊いてしまうと、押し忘れた回のぶんだけランキングが実態からずれて、
+   * 「1位の人が本当に1位なのか」が誰にも分からなくなる。
+   * そのぶん名前だけは自分で決めてもらう（初回だけ。以後は自動）。
+   */
+  finishLevel() {
+    this.showWin();
+    if (savedName()) {
+      this.submitResult();
+      return;
+    }
+    this.askName(true);
+  }
+
   showWin() {
     const stars = this.lastStars;
     const moves = this.clearMoves;
@@ -918,6 +1061,7 @@ export class Game {
       ],
       actions: [
         { label: `レベル ${this.level + 1} へ`, primary: true, onClick: () => this.nextLevel() },
+        { label: 'ランキングを見る', onClick: () => this.showRanking(this.level) },
         { label: 'もう一度あそぶ', onClick: () => this.restart() },
         { label: 'レベル一覧', onClick: () => this.showLevels() },
       ],
@@ -943,6 +1087,11 @@ export class Game {
     }
 
     d.overlayExtra.textContent = cfg.extra || '';
+    // 順位は非同期で入る。ここでは必ず空にしておく（前のレベルの順位が残らないように）
+    if (d.overlayRank) {
+      d.overlayRank.textContent = '';
+      d.overlayRank.classList.remove('pending');
+    }
 
     d.overlayStats.innerHTML = '';
     for (const s of cfg.stats || []) {
@@ -965,6 +1114,167 @@ export class Game {
 
   hideOverlay() {
     this.dom.overlay.hidden = true;
+  }
+
+  // ------------------------------------------------------------ ランキング
+
+  /**
+   * 名前を訊く。
+   * @param {boolean} locked クリア直後。決めるまで閉じられない
+   */
+  askName(locked = false) {
+    const d = this.dom;
+    if (!d.modalName) return;
+    this.nameLocked = locked;
+    if (d.nameClose) d.nameClose.hidden = locked;
+    if (d.nameTitle) d.nameTitle.textContent = locked ? '名前を決める' : 'ランキングの名前';
+    if (d.nameLead) {
+      d.nameLead.innerHTML = locked
+        ? 'クリアの記録は、レベルごとのランキングに残ります。<b>この名前で載ります。</b><br>'
+          + '一度決めれば、次からは自動でこの名前が使われます。'
+        : 'ランキングに載せる名前です。変えると、<b>次の記録から</b>新しい名前で載ります。';
+    }
+    if (d.btnNameSave) d.btnNameSave.textContent = locked ? 'この名前で記録する' : 'この名前にする';
+    d.nameInput.value = locked ? '' : savedName();
+    d.nameInput.classList.remove('bad');
+    if (d.nameError) d.nameError.hidden = true;
+    this.openModal(d.modalName);
+    // シートが上がりきってから当てる。上がっている最中だと iOS で外れることがある
+    setTimeout(() => { try { d.nameInput.focus(); } catch { /* 当てられなければそのまま */ } }, 280);
+  }
+
+  /** 入力された名前を確定する。空なら閉じさせない */
+  commitName() {
+    const d = this.dom;
+    const clean = sanitizeName(d.nameInput.value);
+    if (!clean) {
+      if (d.nameError) d.nameError.hidden = false;
+      d.nameInput.classList.add('bad');
+      try { d.nameInput.focus(); } catch { /* 当てられなければそのまま */ }
+      return;
+    }
+    saveName(clean);
+    this.updateSettingsName();
+
+    const wasLocked = this.nameLocked;
+    this.nameLocked = false;
+    d.modalName.hidden = true;
+    if (wasLocked) this.submitResult();
+    else this.toast(`ランキングの名前を「${clean}」にしました`);
+  }
+
+  /** 設定シートに出す、いまの名前 */
+  updateSettingsName() {
+    const el = this.dom.settingsName;
+    if (!el) return;
+    const name = savedName();
+    el.textContent = name || 'まだ決めていません';
+  }
+
+  /**
+   * クリアの記録をランキングへ出す。
+   * 通信が失敗しても端末には残るので、ここで失敗しても記録は消えない。
+   */
+  async submitResult() {
+    const d = this.dom;
+    const level = this.level;
+    const token = ++this.rankToken;
+
+    if (d.overlayRank) {
+      d.overlayRank.classList.add('pending');
+      d.overlayRank.textContent = isGlobalRanking() ? 'ランキングに記録しています…' : '記録しています…';
+    }
+
+    const res = await submitScore({
+      level,
+      name: savedName(),
+      moves: this.clearMoves,
+      time: this.clearTime,
+      stars: this.lastStars,
+    });
+    // 待っているあいだに次のレベルへ行かれていたら、もう出す場所が無い
+    if (token !== this.rankToken || this.level !== level) return;
+    if (!d.overlayRank) return;
+
+    d.overlayRank.classList.remove('pending');
+    d.overlayRank.innerHTML = '';
+    const scope = res.global && !res.offline ? '世界' : 'この端末';
+    const line = document.createElement('span');
+    if (res.rank) {
+      line.innerHTML = `${scope}ランキング <b>${res.rank}位</b>`
+        + `<span class="muted"> ／ ${res.entries.length}人中</span>`;
+    } else {
+      line.textContent = `${scope}ランキングに記録しました`;
+    }
+    d.overlayRank.appendChild(line);
+
+    if (res.offline) {
+      const note = document.createElement('div');
+      note.className = 'muted';
+      note.textContent = 'サーバーにつながらなかったので、この端末に残しました。';
+      d.overlayRank.appendChild(note);
+    }
+  }
+
+  /** レベル別のランキングを開く */
+  async showRanking(level = this.level) {
+    const d = this.dom;
+    if (!d.modalRank) return;
+    const lv = normalizeLevel(level);
+    const token = ++this.rankViewToken;
+
+    d.rankTitle.textContent = `レベル ${lv} のランキング`;
+    d.rankScope.textContent = isGlobalRanking() ? '世界共通 ― 手数の少ない順' : 'この端末 ― 手数の少ない順';
+    d.rankList.innerHTML = '<div class="rank-empty">読み込んでいます…</div>';
+    d.rankNote.textContent = ' ';
+    this.openModal(d.modalRank);
+
+    const res = await fetchRanking(lv);
+    if (token !== this.rankViewToken) return; // 別のレベルを開き直された
+    this.renderRanking(res);
+  }
+
+  /**
+   * ランキングの一覧を組み立てる。
+   * 名前はサーバーから来る他人の文字列なので、必ず textContent で入れる
+   * （innerHTML に流すと、名前に書いた HTML がこちらの画面で動いてしまう）。
+   */
+  renderRanking(res) {
+    const d = this.dom;
+    const me = savedName();
+    d.rankList.innerHTML = '';
+
+    if (!res.entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'rank-empty';
+      empty.textContent = 'まだ誰も記録していません。最初のひとりになりましょう。';
+      d.rankList.appendChild(empty);
+    } else {
+      res.entries.slice(0, RANK_LIMIT).forEach((e, i) => {
+        const row = document.createElement('div');
+        row.className = 'rank-row' + (me && e.name === me ? ' me' : '');
+        const pos = document.createElement('span');
+        pos.className = 'rank-pos';
+        pos.textContent = String(i + 1);
+        const name = document.createElement('span');
+        name.className = 'rank-name';
+        name.textContent = e.name;
+        const moves = document.createElement('span');
+        moves.className = 'rank-moves';
+        moves.textContent = `${e.moves}手`;
+        const time = document.createElement('span');
+        time.className = 'rank-time';
+        time.textContent = formatTime(e.time);
+        row.append(pos, name, moves, time);
+        d.rankList.appendChild(row);
+      });
+    }
+
+    d.rankNote.textContent = res.offline
+      ? 'サーバーにつながらないので、この端末の記録を出しています。'
+      : (res.global
+        ? `世界中の記録から、手数の少ない順に${RANK_LIMIT}位まで。`
+        : 'いまはこの端末の記録だけです。');
   }
 
   // ------------------------------------------------------------ ループ
@@ -1003,6 +1313,15 @@ export class Game {
       ghost: this.ghost,
       invalid: this.invalid,
     }, dt);
+
+    // 背景の光は盤面の色と同じ速さで動かす。別々に動くと2つの色がすれ違って濁る。
+    // 進行度は毎フレーム少しずつしか動かないので、動いたときだけ CSS を触る
+    if (Math.abs(this.renderer.progress - this.paintedProgress) > 0.004) {
+      this.paintedProgress = this.renderer.progress;
+      try {
+        document.documentElement.style.setProperty('--game-tint', auraFor(this.paintedProgress));
+      } catch { /* 触れない環境では光が無いだけ */ }
+    }
 
     requestAnimationFrame((t) => this.loop(t));
   }

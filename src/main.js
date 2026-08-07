@@ -36,9 +36,7 @@ const dom = {
   hudMoves: $('hud-moves'),
   statTime: $('stat-time'),
   hudTime: $('hud-time'),
-  statLeft: $('stat-left'),
   levelInfo: $('level-info'),
-  legend: $('legend'),
 
   overlay: $('overlay'),
   overlayBadge: $('overlay-badge'),
@@ -47,6 +45,7 @@ const dom = {
   overlayText: $('overlay-text'),
   overlayExtra: $('overlay-extra'),
   overlayStats: $('overlay-stats'),
+  overlayRank: $('overlay-rank'),
   overlayActions: $('overlay-actions'),
 
   btnUndo: $('btn-undo'),
@@ -70,6 +69,25 @@ const dom = {
   btnShare: $('btn-share'),
   btnReset: $('btn-reset'),
   resetNote: $('reset-note'),
+
+  // ランキング（レベル別・世界共通）
+  btnRank: $('btn-rank'),
+  modalRank: $('modal-rank'),
+  rankTitle: $('rank-title'),
+  rankScope: $('rank-scope'),
+  rankList: $('rank-list'),
+  rankNote: $('rank-note'),
+
+  // 名前（初回だけ訊いて、以後は自動で使う）
+  modalName: $('modal-name'),
+  nameTitle: $('name-title'),
+  nameLead: $('name-lead'),
+  nameInput: $('name-input'),
+  nameError: $('name-error'),
+  nameClose: $('name-close'),
+  btnNameSave: $('btn-name-save'),
+  btnChangeName: $('btn-change-name'),
+  settingsName: $('settings-name'),
 };
 
 const game = new Game(dom);
