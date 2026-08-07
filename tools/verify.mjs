@@ -4,7 +4,7 @@
 
 import { generateLevel, verifySolution } from '../src/generator.js';
 import { Board } from '../src/board.js';
-import { puzzleSummary, targetTimes } from '../src/levels.js';
+import { puzzleSummary, targetMoves } from '../src/levels.js';
 
 const maxLevel = Number(process.argv[2] || 60);
 const from = Number(process.argv[3] || 1);
@@ -60,13 +60,13 @@ for (let level = from; level <= maxLevel; level++) {
     open: puzzle.analysis.clearAtStart,
     dry: puzzle.analysis.dryStreak,
     forced: puzzle.analysis.forced,
-    gold: targetTimes(puzzle.par, puzzle.colors).gold,
+    silver: targetMoves(puzzle.par).silver,
     summary: puzzleSummary(puzzle),
     ms,
   });
 }
 
-const head = 'Lv   盤面  埋め率  PAR  個数  色  追込  仕込  初手  連続  ★★★    ms';
+const head = 'Lv   盤面  埋め率  PAR  個数  色  追込  仕込  初手  連続  ★★まで   ms';
 console.log(head);
 console.log('-'.repeat(head.length + 4));
 for (const r of rows) {
@@ -82,7 +82,7 @@ for (const r of rows) {
     String(r.setup).padStart(5),
     String(r.open).padStart(5),
     String(r.dry).padStart(5),
-    `${Math.floor(r.gold / 60)}:${String(r.gold % 60).padStart(2, '0')}`.padStart(6),
+    String(r.silver).padStart(6),
     String(r.ms).padStart(5),
   );
 }

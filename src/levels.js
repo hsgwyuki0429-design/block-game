@@ -156,24 +156,26 @@ export function levelSeed(level) {
 }
 
 /**
- * 星の時間しきい値（秒）。
+ * 星の手数しきい値。
  *
- * 星は手数ではなく「解けるまでの時間」で決まる。手数で測ると、詰まったときに
- * 戻して試すのが罰になってしまう ―― このゲームで時間がかかるのは指が遅いからでは
- * なく、盤面を読んでいるからなので、時間のほうが素直に「読み切れたか」を表す。
+ * 星は「何手で解いたか」で決まる。しきい値の基準になる par は**厳密な最短手数**
+ * なので、★★★ は「最短で解いた」という、あいまいさのない達成になる ――
+ * それより短い解き方は存在しないと分かっているので、上振れの余地がない。
  *
- * しきい値は実際の手数（PAR）と色数から決まる。手順が長いほど読む量も増えるため。
- *   ★★★ gold 以内 ／ ★★ silver 以内 ／ ★ クリア
+ *   ★★★ 最短ちょうど ／ ★★ silver 以内 ／ ★ クリア
+ *
+ * silver に少し余裕（+2）を足してあるのは、2手のレベルで1手ずれただけで
+ * ★1 まで落ちるのを避けるため。短い問題ほど1手の重みが大きくなりすぎる。
  */
-export function targetTimes(par, colors) {
-  const gold = Math.round(20 + Math.max(1, par) * 9 + Math.max(1, colors) * 4);
-  return { gold, silver: gold * 2 };
+export function targetMoves(par) {
+  const gold = Math.max(1, Math.round(par));
+  return { gold, silver: Math.ceil(gold * 1.5) + 2 };
 }
 
-/** 解けるまでの秒数 -> 星（3/2/1） */
-export function starsForTime(seconds, times) {
-  if (seconds <= times.gold) return 3;
-  if (seconds <= times.silver) return 2;
+/** 解いた手数 -> 星（3/2/1） */
+export function starsForMoves(moves, targets) {
+  if (moves <= targets.gold) return 3;
+  if (moves <= targets.silver) return 2;
   return 1;
 }
 

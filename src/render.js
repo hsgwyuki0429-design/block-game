@@ -298,7 +298,6 @@ export class Renderer {
       this.drawMoveHints(view.board, view.selected);
     }
     if (view.ghost && this.options.ghost) this.drawGhost(view);
-    if (view.hint) this.drawHint(view);
 
     this.drawShards(dt);
     this.drawRings(dt);
@@ -619,47 +618,6 @@ export class Renderer {
         ctx.stroke(this.outlineOf(r2, this.tileRadius));
       }
     }
-    ctx.restore();
-  }
-
-  /** ヒント: 金色の脈動 + 方向矢印 */
-  drawHint(view) {
-    const { hint, board } = view;
-    const piece = board.pieces.get(hint.pieceId);
-    if (!piece) return;
-    const ctx = this.ctx;
-    const cell = this.cell;
-    const pulse = 0.5 + 0.5 * Math.sin(this.time * 5.5);
-
-    ctx.save();
-    ctx.globalAlpha = 0.45 + 0.5 * pulse;
-    ctx.strokeStyle = '#ffd60a';
-    ctx.lineWidth = Math.max(2.5, cell * 0.1);
-    ctx.shadowColor = 'rgba(255,214,10,.9)';
-    ctx.shadowBlur = cell * 0.6;
-    ctx.stroke(this.outlineOf(this.cellRects(piece, 0, 0), this.tileRadius));
-    ctx.restore();
-
-    const d = DIRS[hint.dir];
-    const cxs = piece.cells.reduce((s, c) => s + c[0], 0) / piece.cells.length;
-    const cys = piece.cells.reduce((s, c) => s + c[1], 0) / piece.cells.length;
-    const base = this.cellCenter(cxs, cys);
-    const off = cell * (0.9 + 0.35 * pulse);
-    const ax = base.x + d.x * off;
-    const ay = base.y + d.y * off;
-    const s = cell * 0.38;
-
-    ctx.save();
-    ctx.globalAlpha = 0.75 + 0.25 * pulse;
-    ctx.fillStyle = '#ffd60a';
-    ctx.shadowColor = 'rgba(255,214,10,.9)';
-    ctx.shadowBlur = cell * 0.5;
-    ctx.beginPath();
-    ctx.moveTo(ax + d.x * s, ay + d.y * s);
-    ctx.lineTo(ax - d.x * s * 0.4 + d.y * s * 0.7, ay - d.y * s * 0.4 + d.x * s * 0.7);
-    ctx.lineTo(ax - d.x * s * 0.4 - d.y * s * 0.7, ay - d.y * s * 0.4 - d.x * s * 0.7);
-    ctx.closePath();
-    ctx.fill();
     ctx.restore();
   }
 

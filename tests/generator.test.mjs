@@ -208,7 +208,7 @@ test('乱数はシード決定的', () => {
   for (let i = 0; i < 50; i++) assert.equal(a(), b());
 });
 
-test('ヒント用の局面テーブルが解答の全ステップを覆う', () => {
+test('解答の各ステップは相異なる局面を通る', () => {
   const p = generatePuzzle(31415);
   const sim = new Board(p.size);
   sim.restore(p.snapshot);
