@@ -67,10 +67,13 @@ test('焼いてある手数は、レベルが上がるほど伸びる（1レベ�
     prev = par;
   }
   assert.equal(parForLevel(1), targetPar(1));
-  assert.ok(prev >= 100, `いちばん上でも ${prev} 手しかない`);
+  assert.ok(prev >= 250, `いちばん上でも ${prev} 手しかない`);
 });
 
 test('焼いてある手数は目標カーブから大きく外れない', () => {
+  // 上端（250手超）は在庫がそもそも数枚しか無いので、狙いどおりの手数が
+  // 見つからないことがある。ずれても手数が減ることは無い（並べ直すため）ので、
+  // 効いてくるのは「狙った形になっているか」だけ
   let worst = 0;
   let total = 0;
   for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
@@ -78,8 +81,8 @@ test('焼いてある手数は目標カーブから大きく外れない', () =>
     worst = Math.max(worst, gap);
     total += gap;
   }
-  assert.ok(worst <= 6, `いちばんずれたレベルで ${worst} 手ずれている`);
-  assert.ok(total / BAKED_LEVELS <= 1, `平均で ${(total / BAKED_LEVELS).toFixed(2)} 手ずれている`);
+  assert.ok(worst <= 40, `いちばんずれたレベルで ${worst} 手ずれている`);
+  assert.ok(total / BAKED_LEVELS <= 3, `平均で ${(total / BAKED_LEVELS).toFixed(2)} 手ずれている`);
 });
 
 test('どのレベルも解答手順で必ず全消しできる', () => {
@@ -284,6 +287,53 @@ test('同じレベルなら、どの端末でも同じ譜面になる', () => {
 
 test('焼いてあるレベルはすべて別の譜面', () => {
   assert.equal(new Set(LEVEL_CODES).size, LEVEL_CODES.length, '同じ盤面が2回出てくる');
+});
+
+test('同じ配役の使い回しになっていない', () => {
+  // 全探索の距離マップは1枚の盤面から何十問でも切り出せる。切り出したものは
+  // 灰色の位置まで違うが、ブロックの顔ぶれ（大きさの多重集合）は同じままなので、
+  // 並べると「さっきと同じ盤面」に見える。1枚から1レベルしか取らないことで
+  // 避けているが、別々の盤面がたまたま同じ顔ぶれになることはある
+  const casts = new Map();
+  for (const code of LEVEL_CODES) {
+    const d = decodeLevel(code);
+    const cast = `${d.size}:${d.pieces.map((p) => `${p.w}x${p.h}`).sort().join(',')}`;
+    casts.set(cast, (casts.get(cast) || 0) + 1);
+  }
+  // 別々の盤面でも、たまたま同じ大きさのブロックが同じ数だけ入ることはある
+  // （並びは違う）。使い回しは 0 だが、顔ぶれの一致まではゼロにできない
+  const worst = Math.max(...casts.values());
+  assert.ok(worst <= 20, `同じ顔ぶれの盤面が ${worst} レベルに使われている`);
+  assert.ok(
+    casts.size >= LEVEL_CODES.length / 3,
+    `顔ぶれが ${casts.size} 通りしかない（${LEVEL_CODES.length} レベルに対して少なすぎる）`,
+  );
+});
+
+test('盤面はできるだけ小さく、手数が要求したときだけ広がる', () => {
+  const bySize = new Map();
+  let smallPars = [];
+  let bigPars = [];
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const size = boardSizeForLevel(lv);
+    const par = parForLevel(lv);
+    bySize.set(size, Math.max(bySize.get(size) || 0, par));
+    if (size <= 5) smallPars.push(par);
+    if (size >= 7) bigPars.push(par);
+  }
+  // 大きい盤面は「小さい盤面では出せない手数」のために使う。
+  // 4×4/5×5 で足りる手数の帯に、7×7/8×8 がまとめて居座っていないこと
+  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+  if (smallPars.length && bigPars.length) {
+    assert.ok(
+      avg(bigPars) > avg(smallPars),
+      `広い盤面の平均手数 ${avg(bigPars).toFixed(0)} が、小さい盤面の ${avg(smallPars).toFixed(0)} を上回っていない`,
+    );
+  }
+  // いちばん易しい帯は小さい盤面から取る
+  for (let lv = 1; lv <= 10; lv++) {
+    assert.ok(boardSizeForLevel(lv) <= 6, `Lv${lv}: ${boardSizeForLevel(lv)}×${boardSizeForLevel(lv)} は入門には広すぎる`);
+  }
 });
 
 test('レベル1は入門用 ―― 短いが、1手では終わらない', () => {

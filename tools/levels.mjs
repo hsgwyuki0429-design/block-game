@@ -11,8 +11,17 @@
 // 1手ずれても並べたほうがカーブは滑らかになる）。最後に手数の昇順へ並べ直すので、
 // レベルが上がって手数が減ることは絶対に起きない。
 //
-// 同じ盤面（灰色の並びが同じ配役）ばかりが続かないよう、同じ手数の在庫は
-// 元になった盤面ごとに輪番で取る。
+// 選び方の決まりは2つ:
+//
+//   ① 1枚の盤面からは1レベルまで。
+//      全探索の距離マップは1枚から何十問でも切り出せるが、切り出したものは
+//      灰色の位置こそ違え、ブロックの顔ぶれ（配役）が同じままになる。
+//      並べると「さっきと同じ盤面」に見えるので、使い回さない。
+//
+//   ② 盤面はできるだけ小さいものから使う。
+//      同じ手数なら小さい盤面のほうが読みやすく、詰まった手触りも出る。
+//      4×4 で足りるなら 4×4、そこに無ければ 5×5、6×6 …と広げていく。
+//      110手級は 6×6 以上でしか出ないので、上のレベルだけが自然に広くなる。
 
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
@@ -81,48 +90,70 @@ if (broken) {
   }
 }
 
-// 同じ手数の在庫は、元になった盤面ごとに輪番へ並べ替える
-for (const [par, rows] of stock) {
-  const byLayout = new Map();
-  for (const row of rows) {
-    if (!byLayout.has(row.lay)) byLayout.set(row.lay, []);
-    byLayout.get(row.lay).push(row);
-  }
-  const lanes = [...byLayout.values()];
-  const mixed = [];
-  for (let i = 0; lanes.some((l) => l.length > i); i++) {
-    for (const lane of lanes) if (lane[i]) mixed.push(lane[i]);
-  }
-  stock.set(par, mixed);
+// 同じ手数の在庫は「盤面が小さい順」に並べる。同点は符号順（毎回同じ結果になるように）
+for (const rows of stock.values()) {
+  rows.sort((a, b) => a.size - b.size || (a.code < b.code ? -1 : 1));
 }
 
-const cursor = new Map();
-const takeFrom = (par) => {
+const usedLayouts = new Map();
+const usedCodes = new Set();
+
+/**
+ * 手数 par の在庫から1本取る。すでに maxUse 回使った盤面のものは飛ばす。
+ * 在庫は小さい盤面から並んでいるので、先頭から見るだけで②が満たされる。
+ */
+const takeFrom = (par, maxUse) => {
   const rows = stock.get(par);
   if (!rows) return null;
-  const i = cursor.get(par) || 0;
-  if (i >= rows.length) return null;
-  cursor.set(par, i + 1);
-  return rows[i];
+  for (const row of rows) {
+    if (usedCodes.has(row.code)) continue;
+    if ((usedLayouts.get(row.lay) || 0) >= maxUse) continue;
+    usedCodes.add(row.code);
+    usedLayouts.set(row.lay, (usedLayouts.get(row.lay) || 0) + 1);
+    return row;
+  }
+  return null;
+};
+
+/** 目標 target に近い手数から順に1本取る。無ければ null */
+const takeNear = (target, maxUse, radius) => {
+  const hit = takeFrom(target, maxUse);
+  if (hit) return hit;
+  for (let d = 1; d <= radius; d++) {
+    const row = takeFrom(target - d, maxUse) || takeFrom(target + d, maxUse);
+    if (row) return row;
+  }
+  return null;
 };
 
 // ── レベルに割り当てる ──
+// 探す順は「①ぴったりの手数 → ②近い手数 → ③盤面の使い回しを許す」。
+// 使い回しは最後の手段で、在庫が足りているかぎり起きない。
+//
+// **長い手数から先に割り当てる。** 300手の盤面は在庫に1枚しか無いのに、
+// 掘り直したものは元の（浅い）行と同じ盤面から出ているので、浅いレベルに
+// 先に取られると300手のほうが使えなくなる ―― 希少なほうから押さえる。
+const widest = Math.max(...stock.keys(), 1);
 const chosen = [];
 const substituted = [];
-for (let lv = 1; lv <= want; lv++) {
+const order = [];
+for (let lv = 1; lv <= want; lv++) order.push(lv);
+order.sort((a, b) => targetPar(b) - targetPar(a));
+for (const lv of order) {
   const target = targetPar(lv);
-  let row = takeFrom(target);
-  if (!row) {
-    // いちばん近い手数で代用する。近いほうから外へ広げていく
-    for (let d = 1; d <= 40 && !row; d++) {
-      row = takeFrom(target - d) || takeFrom(target + d);
-    }
-    if (row) substituted.push([lv, target, row.par]);
+  let row = null;
+  for (let maxUse = 1; maxUse <= 4 && !row; maxUse++) {
+    // 近い手数から探し、無ければ手数がどれだけ離れていても在庫から埋める。
+    // **盤面の使い回し（maxUse を上げること）はいちばん最後**にしか許さない
+    // ―― 手数が狙いから外れるより、同じ盤面が2回出るほうが目につくため。
+    // カーブは最後に手数の昇順へ並べ直すので、崩れるのは「狙いどおりか」だけ
+    row = takeNear(target, maxUse, 40) || takeNear(target, maxUse, widest);
   }
   if (!row) {
-    console.error(`Lv${lv}（${target}手）の在庫がありません。採集をもう少し回してください。`);
+    console.error(`在庫を使い切りました（${chosen.length} 本で打ち止め）`);
     break;
   }
+  if (row.par !== target) substituted.push([lv, target, row.par]);
   chosen.push(row);
 }
 
@@ -167,6 +198,7 @@ const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
 console.error('');
 console.error(`在庫 ${read} 行 / 重複を除いて ${seen.size} 件 / 使った盤面 ${layouts.size} 枚`);
 console.error(`レベル ${chosen.length} 本 / 最短手数 ${chosen[0].par} 〜 ${chosen[chosen.length - 1].par}`);
+console.error(`盤面を使い回したレベル: ${chosen.length - layouts.size} 本（0 なら全レベルが別の盤面）`);
 console.error(`目標カーブとのずれ: 平均 ${avg(err).toFixed(2)}手 / 最大 ${Math.max(...err)}手 / 代用 ${substituted.length} 件`);
 console.error(`盤面の広さ: ${[...sizes.entries()].sort((a, b) => a[0] - b[0]).map(([s, n]) => `${s}×${s}:${n}`).join(' ')}`);
 console.error(`色つきの形: ${[...colorShapes.entries()].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${s}:${n}`).join(' ')}`);

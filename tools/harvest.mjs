@@ -1,6 +1,7 @@
 // 盤面の採集。
 //   node tools/harvest.mjs [--seconds 600] [--shard 0] [--shards 1]
 //                          [--levels 1000] [--color mixed|small|big|huge]
+//                          [--sizes 4,5,6,7,8] [--slack 1.15] [--resume]
 //                          [--out data/pool-0.jsonl]
 //
 // 「欲しい最短手数を先に決めて、それになる盤面を探す」のがこのツール。
@@ -19,7 +20,12 @@
 //   ・まだ足りていない手数のうち、その盤面で出せるいちばん長いものから順に取る
 //
 // 深い盤面ほど貴重（110手の問題は深さ110以上の盤面からしか出ない）ので、
-// 深い盤面ほど「上の手数」に回す。1枚の盤面から取りすぎないよう上限も置く。
+// 深い盤面ほど「上の手数」に回す。
+//
+// **1枚の盤面から取るのは1問だけ。**
+// 距離マップは1枚から何十問でも切り出せるが、切り出したものは灰色の位置こそ違え、
+// ブロックの顔ぶれ（配役）が同じままになる。並べると「さっきと同じ盤面」に見える。
+// 効率は4分の1になるが、1000レベルすべてを別の盤面にするにはこれしかない。
 //
 // 出力は JSONL（1行1問）。tools/levels.mjs がこれを読んでレベルに割り当てる。
 // 複数プロセスで別 shard を同時に回してよい（shard が違えばシードが被らない）。
@@ -29,7 +35,7 @@
 // 既定（mixed）は小さめに寄せてある。大きい色つきのレベルも並べたいときは、
 // big / huge で回した shard を混ぜる。
 
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { layout, compile, Explorer, GREY_RECTS } from '../src/exact.js';
@@ -45,6 +51,7 @@ const arg = (name, fallback) => {
 };
 
 const seconds = Number(arg('seconds', 600));
+const onlySizes = arg('sizes', '') ? new Set(arg('sizes', '').split(',').map(Number)) : null;
 const shard = Number(arg('shard', 0));
 const shards = Number(arg('shards', 1));
 const levels = Number(arg('levels', 1000));
@@ -98,23 +105,56 @@ const COLOR_POOL = COLOR_POOLS[arg('color', 'mixed')] || COLOR_POOLS.mixed;
 /** 灰色は全種類を等しく。大小が混ざるほど通路の形が読みにくくなる */
 const GREY_POOL = GREY_RECTS;
 
-/** 1枚の盤面から取る問題数の上限。同じ盤面ばかりにならないための蓋 */
-const PER_LAYOUT = 12;
-/** 深い盤面はそれ自体が貴重（110手はここからしか出ない）ので、多めに取る */
-const PER_DEEP_LAYOUT = 24;
-const DEEP = 90;
-/** 同じ手数を1枚の盤面から取る数の上限 */
-const PER_LAYOUT_PER_PAR = 2;
-/** 探索を諦める状態数。深い盤面はここに収まる（実測で最大5万強） */
-const CAP = 70000;
+/**
+ * 1枚の盤面から取る問題数。1 ―― 配役の使い回しを作らないため。
+ * ここを 2 以上にすると、その本数ぶんだけ「同じ顔ぶれのレベル」が並ぶ。
+ */
+const PER_LAYOUT = 1;
+/**
+ * 探索を諦める状態数。
+ * 大きくすると「広いが深い」盤面も拾えるが、外れの1枚にかける時間も伸びる。
+ * 実測では 7万で深い盤面の大半が収まる（打ち切りは試行の2割ほど）。
+ */
+const CAP = Number(arg('cap', 70000));
 
-// ── 欲しい手数の表を作る。shard ごとに頭数を割る ──
+// ── 欲しい手数の表を作る ──
+// 目標より少し多めに集める。焼く側は「小さい盤面から先に使う」ので、
+// 同じ手数でも大きさ違いの在庫があったほうがよい（余りは捨てられる）
+const slack = Number(arg('slack', 1.15));
 const need = new Map();
 for (let lv = 1; lv <= levels; lv++) {
   const p = targetPar(lv);
   need.set(p, (need.get(p) || 0) + 1);
 }
-for (const [p, n] of need) need.set(p, Math.ceil(n / shards) + 1);
+
+// --resume: すでに貯まっている在庫を数えて、足りないぶんだけを目標にする。
+// 深い手数は1枚見つけるのに数分かかるので、何度も回して積み上げられるようにしておく。
+if (process.argv.includes('--resume')) {
+  const dir = dirname(out);
+  const have = new Map();
+  for (const file of (await readdir(dir).catch(() => [])).filter((f) => f.endsWith('.jsonl'))) {
+    if (resolve(dir, file) === out) continue; // 自分の出力はこれから空にする
+    for (const line of (await readFile(resolve(dir, file), 'utf8')).split('\n')) {
+      if (!line.trim()) continue;
+      const par = JSON.parse(line).par;
+      have.set(par, (have.get(par) || 0) + 1);
+    }
+  }
+  let left = 0;
+  for (const [p, n] of need) {
+    const short = Math.ceil(n * slack) - (have.get(p) || 0);
+    need.set(p, Math.max(0, short));
+    left += Math.max(0, short);
+  }
+  console.error(`[${shard}] 既存の在庫を差し引いた残り: ${left} 本`);
+}
+
+const resumed = process.argv.includes('--resume');
+for (const [p, n] of need) {
+  const want = resumed ? n : Math.ceil(n * slack);
+  if (want <= 0) { need.delete(p); continue; }
+  need.set(p, Math.ceil(want / shards) + 1);
+}
 const pars = [...need.keys()].sort((a, b) => b - a); // 深いほうから埋める
 
 /**
@@ -125,7 +165,13 @@ const pars = [...need.keys()].sort((a, b) => b - a); // 深いほうから埋め
  * 固定の重みだと後半ずっと無駄を踏むので、**1秒あたり何問採れたか**でレシピを
  * 選び直す（ε-greedy: 1割は当たりに関係なく試して、様子見も切らさない）。
  */
-const stats = RECIPES.map((r) => ({ recipe: r, ms: 200, got: r.weight / 4 }));
+const stats = RECIPES
+  .filter((r) => !onlySizes || onlySizes.has(r.size))
+  .map((r) => ({ recipe: r, ms: 200, got: r.weight / 4 }));
+if (!stats.length) {
+  console.error(`--sizes ${arg('sizes', '')} に合うレシピがありません`);
+  process.exit(1);
+}
 const pickRecipe = (rng) => {
   if (rng() < 0.1) return stats[Math.floor(rng() * stats.length)];
   let total = 0;
@@ -191,17 +237,12 @@ while (Date.now() < deadline && remaining() > 0) {
 
     // まだ足りていない手数のうち、この盤面で出せるいちばん長いものから順に取る。
     // どの距離を何件取るかを先に決めて、表の走査は1回で済ませる
-    const budget = ex.depth >= DEEP ? PER_DEEP_LAYOUT : PER_LAYOUT;
     const limits = new Map();
-    let planned = 0;
     for (const par of pars) {
-      if (planned >= budget) break;
       if (par > ex.depth) continue;
-      const want = need.get(par);
-      if (!want) continue;
-      const take = Math.min(PER_LAYOUT_PER_PAR, want, budget - planned);
-      limits.set(par, take);
-      planned += take;
+      if (!need.get(par)) continue;
+      limits.set(par, PER_LAYOUT); // いちばん長い「まだ足りない手数」を1本だけ
+      break;
     }
     if (limits.size === 0) break attempt;
 
