@@ -126,8 +126,7 @@ body {
   gap: 10px;
 }
 .screen-game .nav,
-.screen-game .segments,
-.screen-game .legend { padding-inline: 6px; }
+.screen-game .segments { padding-inline: 6px; }
 
 svg {
   fill: none;
@@ -441,7 +440,7 @@ svg .fill { fill: currentColor; stroke: none; }
 
 .segments {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 8px;
 }
 
@@ -478,42 +477,6 @@ svg .fill { fill: currentColor; stroke: none; }
   100% { transform: scale(1); }
 }
 
-/* ============================================================ 色チップ */
-
-.legend {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 6px;
-  min-height: 28px;
-  margin-inline: auto;
-  width: 100%;
-}
-.legend-chip {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 5px 2px;
-  border-radius: 999px;
-  background: var(--fill);
-  font-size: 12px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--label-2);
-  transition: opacity 0.35s var(--ease), box-shadow 0.3s, color 0.3s;
-}
-.legend-swatch {
-  width: 11px;
-  height: 11px;
-  border-radius: 4px;
-  flex: none;
-}
-.legend-chip.empty { opacity: 0.32; }
-.legend-chip.lone {
-  box-shadow: inset 0 0 0 1.5px var(--gold);
-  color: var(--label);
-}
-
 /* ============================================================ 盤面 */
 
 .board-wrap {
@@ -531,6 +494,22 @@ svg .fill { fill: currentColor; stroke: none; }
   display: block;
   touch-action: none;
   cursor: pointer;
+  position: relative;
+  z-index: 1;
+}
+
+/*
+ * 盤面の後ろに広がる光。色は進行度から JS が決めて --game-tint に入れる。
+ * 盤面そのものの色も同じ色相で動くので、画面全体が同じ温度になる ――
+ * 「あと何手」と数字で出すより、目を上げずに済む。
+ */
+.game-aura {
+  position: absolute;
+  inset: -18%;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(58% 42% at 50% 50%, var(--game-tint, transparent), transparent 72%);
+  filter: blur(30px);
 }
 
 .toast {
@@ -651,6 +630,10 @@ svg .fill { fill: currentColor; stroke: none; }
 
 .overlay-card {
   width: min(94%, 330px);
+  /* 背が低い端末でも下のボタンに届くように。行数はレベルによって変わる */
+  max-height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 26px 22px 20px;
   border-radius: var(--r-card);
   text-align: center;
@@ -738,6 +721,141 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 
 .overlay-actions { display: flex; flex-direction: column; gap: 8px; }
+
+/* クリア直後に出る順位。読み込み中は同じ高さのまま文字だけ薄くする */
+.overlay-rank {
+  margin: -6px 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--label-2);
+  min-height: 18px;
+}
+.overlay-rank:empty { display: none; }
+.overlay-rank b {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.overlay-rank.pending { opacity: 0.5; }
+
+/* ============================================================ ランキング */
+
+.rank-scope {
+  margin: -12px 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label-2);
+}
+
+.rank-list {
+  border-radius: 20px;
+  background: var(--fill);
+  overflow: hidden;
+  margin-bottom: 14px;
+  min-height: 64px;
+}
+
+.rank-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  position: relative;
+  font-size: 14.5px;
+  letter-spacing: -0.012em;
+}
+.rank-row + .rank-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 0;
+  height: 0.5px;
+  background: var(--separator);
+}
+/* 自分の行。ランキングは自分がどこにいるかが分かって初めて意味を持つ */
+.rank-row.me { background: var(--accent-fill); }
+.rank-row.me .rank-name { color: var(--accent); font-weight: 700; }
+
+.rank-pos {
+  flex: none;
+  min-width: 30px;
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  color: var(--label-2);
+}
+/* 上位3人だけ色を付ける。全部に付けると順位の意味が薄れる */
+.rank-row:nth-child(1) .rank-pos,
+.rank-row:nth-child(2) .rank-pos,
+.rank-row:nth-child(3) .rank-pos { color: var(--gold); }
+
+.rank-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.rank-moves {
+  flex: none;
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.rank-time {
+  flex: none;
+  min-width: 44px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-3);
+}
+
+.rank-empty {
+  padding: 20px 16px;
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--label-2);
+}
+
+/* ============================================================ 名前を決める */
+
+.name-field { margin-bottom: 16px; }
+
+#name-input {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  border-radius: 16px;
+  background: var(--fill);
+  color: var(--label);
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  padding: 14px 16px;
+  /* 選べないと打った字を直せない。ここだけ選択を戻す */
+  -webkit-user-select: text;
+  user-select: text;
+  box-shadow: inset 0 0 0 1.5px transparent;
+  transition: box-shadow 0.2s;
+}
+#name-input:focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--accent); }
+#name-input.bad { box-shadow: inset 0 0 0 1.5px var(--warn); }
+
+.name-error {
+  margin: 8px 2px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--warn);
+}
 
 /* ============================================================ ボタン */
 
