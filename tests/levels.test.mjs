@@ -181,6 +181,22 @@ test('色つきにも灰色にも、大きいブロックが実際に出てく�
   }
 });
 
+test('灰色の2マスブロックは抑えられている（ただし絶滅はしていない）', () => {
+  // 1×2・2×1 の小さい灰色が並ぶと盤面が細切れに見えるので、採集も選定も
+  // 「少ないほう」に寄せてある。ただし禁止はできない ―― 2マスが無いと盤面が
+  // 動かなくなって手数が伸びない（実測で最深90手まで落ちる）
+  let dominoes = 0;
+  let greys = 0;
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const pieces = levelData(lv).pieces.slice(2);
+    greys += pieces.length;
+    dominoes += pieces.filter((p) => p.w * p.h === 2).length;
+  }
+  const ratio = dominoes / greys;
+  assert.ok(ratio < 0.65, `灰色の ${(ratio * 100).toFixed(0)}% が2マスになっている`);
+  assert.ok(ratio > 0, '2マスが1個も無い ―― 深い盤面が作れなくなっているはず');
+});
+
 test('どのレベルも盤面が詰まっている', () => {
   for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
     const fill = fillForLevel(lv);
@@ -281,9 +297,10 @@ test('同じ配役の使い回しになっていない', () => {
     casts.set(cast, (casts.get(cast) || 0) + 1);
   }
   // 別々の盤面でも、たまたま同じ大きさのブロックが同じ数だけ入ることはある
-  // （並びは違う）。使い回しは 0 だが、顔ぶれの一致まではゼロにできない
+  // （並びは違う）。使い回しは 0 だが、顔ぶれの一致まではゼロにできない ――
+  // 「2マスの灰色が少ない盤面」を選ぶほど、選ばれる顔ぶれは似通っていく
   const worst = Math.max(...casts.values());
-  assert.ok(worst <= 20, `同じ顔ぶれの盤面が ${worst} レベルに使われている`);
+  assert.ok(worst <= 30, `同じ顔ぶれの盤面が ${worst} レベルに使われている`);
   assert.ok(
     casts.size >= LEVEL_CODES.length / 3,
     `顔ぶれが ${casts.size} 通りしかない（${LEVEL_CODES.length} レベルに対して少なすぎる）`,

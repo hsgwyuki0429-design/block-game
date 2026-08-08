@@ -1,7 +1,8 @@
 // 盤面の採集。
 //   node tools/harvest.mjs [--seconds 600] [--shard 0] [--shards 1]
 //                          [--levels 1000] [--color mixed|small|big|huge]
-//                          [--sizes 4,5,6,7,8] [--slack 1.15] [--resume]
+//                          [--sizes 4,5,6,7,8] [--grey half|all|few|none]
+//                          [--slack 1.15] [--maxpar 999] [--resume]
 //                          [--out data/pool-0.jsonl]
 //
 // 「欲しい最短手数を先に決めて、それになる盤面を探す」のがこのツール。
@@ -52,6 +53,13 @@ const arg = (name, fallback) => {
 
 const seconds = Number(arg('seconds', 600));
 const onlySizes = arg('sizes', '') ? new Set(arg('sizes', '').split(',').map(Number)) : null;
+/**
+ * この手数より上は採らない。
+ * 深い手数は1枚に何分もかかるので、放っておくと shard の時間が全部そこへ行く。
+ * レベルの大半を占める帯（80〜110手あたり）の在庫を厚くしたいときに使う ――
+ * 在庫が厚いほど tools/levels.mjs が「2マスの灰色が少ない盤面」を選べる。
+ */
+const maxPar = Number(arg('maxpar', 9999));
 const shard = Number(arg('shard', 0));
 const shards = Number(arg('shards', 1));
 const levels = Number(arg('levels', 1000));
@@ -102,8 +110,41 @@ const COLOR_POOLS = {
 };
 const COLOR_POOL = COLOR_POOLS[arg('color', 'mixed')] || COLOR_POOLS.mixed;
 
-/** 灰色は全種類を等しく。大小が混ざるほど通路の形が読みにくくなる */
-const GREY_POOL = GREY_RECTS;
+/**
+ * 灰色ブロックの大きさの寄り方。
+ *
+ * 2マス（1×2・2×1）は見た目にうるさいので減らしたいのだが、**深い盤面には
+ * 構造的に要る** ―― 華容道の「縦棒」と同じで、大きい塊の隙間を通り抜けて
+ * 場所を入れ替える役をこれが担っている。実測（6×6・空き3マス、1分あたり）:
+ *
+ *   全種類を等しく  深さ110以上 1.25枚  最深131  2マス率 67%
+ *   2マスを半分に   深さ110以上 3.00枚  最深332  2マス率 60%   ←採用
+ *   2マスを1/4に    深さ110以上 0.50枚  最深147  2マス率 51%
+ *   2マスを禁止     深さ110以上 0枚     最深 90  2マス率  0%
+ *
+ * 禁止すると盤面が動かなくなって手数が伸びない（そもそも空き3マスぴったりに
+ * 詰められず、組み立て自体が14万回失敗した）。半分に抑えるのが、見た目と
+ * 深さの両方がいちばん良くなる点だった ―― 減らしたほうが深くなる、というのは
+ * 意外だが、2マスが多いと盤面がゆるくなって手数が縮むということらしい。
+ *
+ * 最後にどれを使うかは tools/levels.mjs が選ぶ。同じ手数・同じ広さなら
+ * **2マスの少ない盤面から**採るので、ここは在庫の寄り方を決めるだけでよい。
+ */
+const GREY_POOLS = {
+  all: GREY_RECTS,
+  half: [
+    [1, 2], [2, 1],
+    ...Array(2).fill([1, 3]), ...Array(2).fill([3, 1]), ...Array(2).fill([2, 2]),
+    ...Array(2).fill([2, 3]), ...Array(2).fill([3, 2]), ...Array(2).fill([3, 3]),
+  ],
+  few: [
+    [1, 2], [2, 1],
+    ...Array(4).fill([1, 3]), ...Array(4).fill([3, 1]), ...Array(4).fill([2, 2]),
+    ...Array(4).fill([2, 3]), ...Array(4).fill([3, 2]), ...Array(4).fill([3, 3]),
+  ],
+  none: [[1, 3], [3, 1], [2, 2], [2, 3], [3, 2], [3, 3]],
+};
+const GREY_POOL = GREY_POOLS[arg('grey', 'half')] || GREY_POOLS.half;
 
 /**
  * 1枚の盤面から取る問題数。1 ―― 配役の使い回しを作らないため。
@@ -124,6 +165,7 @@ const slack = Number(arg('slack', 1.15));
 const need = new Map();
 for (let lv = 1; lv <= levels; lv++) {
   const p = targetPar(lv);
+  if (p > maxPar) continue;
   need.set(p, (need.get(p) || 0) + 1);
 }
 
