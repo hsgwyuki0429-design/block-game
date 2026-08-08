@@ -9,7 +9,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Board, BLOCKER } from '../src/board.js';
 import { DIR_KEYS } from '../src/shapes.js';
-import { layout, compile, Explorer, GREY_RECTS, COLOR_RECTS } from '../src/exact.js';
+import { layout, compile, positionsOf, Explorer, GREY_RECTS, COLOR_RECTS } from '../src/exact.js';
+import { levelPuzzle } from '../src/generator.js';
 import { encodeLevel, decodeLevel } from '../src/levelCodec.js';
 import { makeRng, hashSeed } from '../src/rng.js';
 
@@ -179,4 +180,97 @@ test('符号は 1 レベル 1 文字列に収まる（読めない文字を混�
   assert.deepEqual(back.solution, puzzle.solution);
   assert.deepEqual(back.pieces.map((p) => p.s), puzzle.pieces.map((p) => p.s));
   assert.equal(back.cells, 2 + 4 + 6);
+});
+
+// ---------------------------------------------------------------- 遊んでいる最中の残り手数
+
+/*
+ * 焼いてある手順は最短の 1 本でしかないので、そこから外れると「あと何手か」が
+ * 分からなくなる。遊んでいる最中に色を 1 手ずつ動かすには、**どの局面からでも**
+ * 残り手数が引けないといけない ―― それが positionsOf + distanceOf の役目。
+ */
+
+test('生きている盤面から、その局面の残り手数がそのまま引ける', () => {
+  const ex = new Explorer(120000);
+  for (const lv of [1, 12, 60, 300]) {
+    const pz = levelPuzzle(lv);
+    const board = new Board(pz.size);
+    board.restore(pz.snapshot);
+    const colorIds = [...board.pieces.values()]
+      .filter((p) => p.color !== BLOCKER).map((p) => p.id);
+
+    const ctx = compile(board, colorIds);
+    assert.ok(ex.run(ctx), `レベル${lv}: 距離を配りきれなかった`);
+
+    // 初期盤面の残り手数は、焼いてある最短手数と一致するはず
+    const at = () => ex.distanceOf(positionsOf(ctx, board, colorIds));
+    assert.equal(at(), pz.par, `レベル${lv}: 初期の残り手数が par と違う`);
+
+    // 手順どおりに指すと、1 手ごとにきっかり 1 ずつ減る
+    for (let i = 0; i < pz.solution.length - 1; i++) {
+      const step = pz.solution[i];
+      board.applyMove(step.pieceId, step.dir);
+      assert.equal(at(), pz.par - (i + 1), `レベル${lv}: ${i + 1}手目で残りがずれた`);
+    }
+  }
+});
+
+test('遠ざかる手を指すと残り手数は増える（色が戻る根拠）', () => {
+  const ex = new Explorer(120000);
+  const pz = levelPuzzle(40);
+  const board = new Board(pz.size);
+  board.restore(pz.snapshot);
+  const colorIds = [...board.pieces.values()]
+    .filter((p) => p.color !== BLOCKER).map((p) => p.id);
+  const ctx = compile(board, colorIds);
+  assert.ok(ex.run(ctx));
+
+  const at = () => ex.distanceOf(positionsOf(ctx, board, colorIds));
+  const start = at();
+  // 「1 手指して戻す」を全通り試すと、必ず ±1 の範囲に収まる
+  let sawFarther = false;
+  for (const id of [...board.pieces.keys()]) {
+    for (const dir of DIR_KEYS) {
+      if (board.slideDistance(id, dir) <= 0) continue;
+      const snap = board.snapshot();
+      board.applyMove(id, dir);
+      const d = at();
+      board.restore(snap);
+      assert.ok(d !== undefined, '指した先の局面が距離マップに無い');
+      assert.ok(Math.abs(d - start) <= 1, `1 手で ${Math.abs(d - start)} も動いた`);
+      if (d > start) sawFarther = true;
+    }
+  }
+  assert.ok(sawFarther, '遠ざかる手がひとつも無い盤面では試験にならない');
+  assert.equal(at(), start, '試したあとに盤面が元へ戻っていない');
+});
+
+test('ブロックを入れ替えただけの盤面は、同じ局面として同じ残り手数になる', () => {
+  const ex = new Explorer(120000);
+  const pz = levelPuzzle(60);
+  const board = new Board(pz.size);
+  board.restore(pz.snapshot);
+  const colorIds = [...board.pieces.values()]
+    .filter((p) => p.color !== BLOCKER).map((p) => p.id);
+  const ctx = compile(board, colorIds);
+  assert.ok(ex.run(ctx));
+  const base = ex.distanceOf(positionsOf(ctx, board, colorIds));
+
+  // 同じ形の灰色ブロック 2 個を入れ替えても、盤面の見た目は変わらない
+  const greys = [...board.pieces.values()].filter((p) => p.color === BLOCKER);
+  const pair = [];
+  for (let i = 0; i < greys.length && pair.length < 2; i++) {
+    for (let j = i + 1; j < greys.length; j++) {
+      const a = greys[i];
+      const b = greys[j];
+      if (a.shape === b.shape) { pair.push(a, b); break; }
+    }
+  }
+  if (pair.length < 2) return; // 同形が無い盤面ならこの試験は成り立たない
+  const cellsA = pair[0].cells.map(([x, y]) => [x, y]);
+  const cellsB = pair[1].cells.map(([x, y]) => [x, y]);
+  pair[0].cells = cellsB;
+  pair[1].cells = cellsA;
+  assert.equal(ex.distanceOf(positionsOf(ctx, board, colorIds)), base,
+    '同形を入れ替えただけで別の局面になっている');
 });

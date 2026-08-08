@@ -12,6 +12,7 @@ const dom = {
 
   canvas: $('board'),
   toast: $('toast'),
+  gameAura: $('game-aura'),
 
   // ホーム
   btnStart: $('btn-start'),

@@ -54,8 +54,24 @@ export const MAX_BOARD = 8;
 /** 1 盤面あたりのブロック数の上限（ハッシュ表の 1 レコード長） */
 const STRIDE = 32;
 
-/** ハッシュ表の空きスロット印。到達済み未確定は -1、確定した距離は 0 以上 */
-const EMPTY = -2;
+/**
+ * ハッシュ表の空きスロット印。到達済み未確定は -1、確定した距離は 0 以上。
+ * board.js の EMPTY（空きマス）とは別物なので、名前を分けてある
+ * ―― 配信物は 1 つのスコープに連結されるので、同じ名前は置けない。
+ */
+const SLOT_EMPTY = -2;
+
+/**
+ * ブロックの「形の指紋」。色つき/灰色の別と、アンカーからのマスの並びで決まる。
+ *
+ * 並びは必ず**昇順に揃えてから**文字にする。同じ形でも、盤面データの書かれ方に
+ * よってマスの順序は違いうるので、揃えないと同じ形が別の形として数えられ、
+ * 入れ替えの正規化（canon）が効かなくなる。
+ */
+export function pieceKey(kind, offs) {
+  const sorted = offs.map(([x, y]) => `${x},${y}`).sort();
+  return `${kind}|${sorted.join(' ')}`;
+}
 
 export const rectCells = (w, h) => {
   const out = [];
@@ -155,7 +171,7 @@ export function compile(board, colorIds) {
     return { offs, anchor: ax + ay * size, kind: colorSet.has(p.id) ? 'c' : 'g' };
   });
   if (raw.length > STRIDE) throw new Error(`ブロックが多すぎます: ${raw.length}`);
-  const keyOf = (p) => `${p.kind}|${p.offs.map(([x, y]) => `${x},${y}`).join(' ')}`;
+  const keyOf = (p) => pieceKey(p.kind, p.offs);
   // 'c' < 'g' なので、色つきが必ず先頭ふたつに来る
   raw.sort((a, b) => {
     const ka = keyOf(a);
@@ -214,8 +230,49 @@ export function compile(board, colorIds) {
     groupLo: Int32Array.from(groupLo),
     groupHi: Int32Array.from(groupHi),
     shapes: raw.map((p) => p.offs),
+    /** 各ブロックの形の指紋。生きている盤面と突き合わせるのに使う */
+    keys: raw.map(keyOf),
     delta: Int32Array.from([-size, 1, size, -1]),
   };
+}
+
+/**
+ * 生きている Board -> 探索が使う位置の並び（アンカーの配列）。
+ *
+ * compile はブロックを形の順に並べ替えるので、盤面のブロック id とは並びが違う。
+ * 同じ形のブロックは互いに入れ替えても同じ盤面なので（canon が昇順に均す）、
+ * 「同じ指紋の枠へ順に詰めていく」だけで正しい位置の並びになる。
+ *
+ * @returns {Uint8Array|null} 盤面と ctx が食い違っていれば null
+ */
+export function positionsOf(ctx, board, colorIds) {
+  const colorSet = colorIds instanceof Set ? colorIds : new Set(colorIds);
+  const slots = new Map();
+  ctx.keys.forEach((k, i) => {
+    if (!slots.has(k)) slots.set(k, []);
+    slots.get(k).push(i);
+  });
+
+  const used = new Map();
+  const pos = new Uint8Array(ctx.n);
+  let placed = 0;
+  for (const p of board.pieces.values()) {
+    let ax = Infinity;
+    let ay = Infinity;
+    for (const [x, y] of p.cells) {
+      if (x < ax) ax = x;
+      if (y < ay) ay = y;
+    }
+    const offs = p.cells.map(([x, y]) => [x - ax, y - ay]);
+    const key = pieceKey(colorSet.has(p.id) ? 'c' : 'g', offs);
+    const list = slots.get(key);
+    const at = used.get(key) || 0;
+    if (!list || at >= list.length) return null;
+    used.set(key, at + 1);
+    pos[list[at]] = ax + ay * ctx.size;
+    placed++;
+  }
+  return placed === ctx.n ? pos : null;
 }
 
 /** k 番のブロックのマスを occ に v で書く */
@@ -326,7 +383,7 @@ export class Explorer {
     for (let i = 0; i < n; i++) { h = Math.imul(h ^ buf[i], 0x01000193); }
     let s = (h >>> 0) & mask;
     for (;;) {
-      if (vals[s] === EMPTY) {
+      if (vals[s] === SLOT_EMPTY) {
         this.inserted = false;
         if (!insert) return s;
         const at = s * STRIDE;
@@ -360,7 +417,7 @@ export class Explorer {
     this.canon(pos);
     const slot = this.slotOf(false);
     const v = this.vals[slot];
-    return v === EMPTY ? undefined : v;
+    return v === SLOT_EMPTY ? undefined : v;
   }
 
   /**
@@ -369,7 +426,7 @@ export class Explorer {
    */
   run(ctx) {
     this.ctx = ctx;
-    this.vals.fill(EMPTY);
+    this.vals.fill(SLOT_EMPTY);
     // 接触判定の世代印。持ち越すと前回の印を「今回の印」と読み違えて、
     // 触れていない盤面をゴールと見なしてしまう（距離が全部おかしくなる）
     this.stamp.fill(0);

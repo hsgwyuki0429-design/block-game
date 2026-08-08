@@ -12,7 +12,7 @@
 // 影のぼかしや面取りの扇を毎フレーム描くと、それだけで 60fps が出ない。
 
 import { DIRS, DIR_KEYS } from './shapes.js';
-import { mix, shade, mixHex, hexRgb } from './color.js';
+import { mix, shade, mixHex, hexRgb, rgba, tintTowards } from './color.js';
 import {
   LIGHT, materialFor, DEFAULT_MATERIAL, paletteFor, trayPaletteFor,
   scaledTile, facetColor, edgeColor, makeCanvas, texturePaletteFor,
@@ -177,11 +177,19 @@ export function progressColor(t) {
   };
 }
 
-/** 進行度 -> 画面の後ろに敷く淡い色（CSS へ渡す） */
-export function auraFor(t) {
-  const { h, s } = progressHsl(t);
-  const c = hsl(h, Math.min(70, s), 62);
-  return `rgba(${c.join(',')},0.24)`;
+/**
+ * 進行度 -> 画面の後ろに敷く色（CSS へ渡す）。
+ *
+ * 素材の地（baseHex）を渡すと、**色つきブロックとまったく同じ色**を薄めて返す ――
+ * 背景だけが blocks と違う色だと、2 つの色が画面で喧嘩する。
+ * 渡さなければ進行度の色そのもの。
+ *
+ * ここは段に丸めない。ブロックの色は手数の目盛りとして段で動くが、
+ * 背景まで段で動くと、1 手ごとに画面全体がカクッと変わって落ち着かない。
+ */
+export function auraFor(t, baseHex = null, strength = 1, alpha = 0.22) {
+  const hue = progressColor(t).base;
+  return rgba(baseHex ? tintTowards(baseHex, hue, strength) : hue, alpha);
 }
 
 /** 色覚サポート用の記号。色数が増えても足りるよう繰り返して使う */
@@ -286,6 +294,8 @@ export class Renderer {
     this.progress = 0;
     this.progressTarget = 0;
     this._tintAt = -1;
+    /** 色を何段に分けるか。レベルの最短手数がそのまま段数になる */
+    this.steps = 32;
 
     /** ブロックの素材。設定で切り替わる */
     this.material = materialFor(DEFAULT_MATERIAL);
@@ -320,6 +330,19 @@ export class Renderer {
   }
 
   /**
+   * 色を何段に分けるか。**そのレベルの最短手数**を渡す。
+   * 40 手の盤面なら色は 40 段。1 手進めば 1 段進み、1 手遠ざかれば 1 段戻る。
+   * 上下の丸めは念のための歯止めで、実際の手数（2〜300）は必ずこの中に入る。
+   */
+  setSteps(n) {
+    const next = Math.max(4, Math.min(400, Math.round(n) || 32));
+    if (next === this.steps) return;
+    this.steps = next;
+    this._tintAt = -1;
+    this.refreshTint();
+  }
+
+  /**
    * 進行度を伝える。immediate はレベルを跨いだときだけ（前のレベルの色を
    * 引きずったまま次の盤面が出ると、いま何色なのかが意味を失う）。
    */
@@ -331,19 +354,31 @@ export class Renderer {
   /**
    * 進行度から作った色。値が動いたときだけ作り直す。
    *
-   * 刻みを 1/32 に粗くしてあるのは、ブロックの絵とテクスチャを焼き直す回数を
-   * 抑えるため ―― 連続値のままだと、進行度が動くたびに色つきブロックの
-   * テクスチャを焼き直すことになり、遊んでいる最中に引っかかる。
-   * 目で見て段が分かる粗さではないし、背景の光は連続値のまま動かしている。
+   * 刻みは**そのレベルの最短手数**（setSteps）に合わせる。残り手数が 1 減れば
+   * 色がちょうど 1 段進み、遠ざかれば 1 段戻る ―― 色そのものが手数の目盛りになる。
+   * 連続値のまま焼くと、進行度が動くたびに焼き直すことになって引っかかるので、
+   * ここで段に丸めることが速さの担保も兼ねている。
+   * 背景の光だけは丸めずに動かすので、段は目には見えない。
    */
   refreshTint() {
-    const q = Math.round(this.progress * 32) / 32;
+    const q = Math.round(this.progress * this.steps) / this.steps;
     if (this._tintAt === q) return;
     this._tintAt = q;
     this.tint = progressColor(q);
     this.stonePal = paletteFor(this.material, false, null);
     this.litPal = paletteFor(this.material, true, this.tint.base);
     this.trayPal = trayPaletteFor(this.material);
+  }
+
+  /** 背景に敷く色。色つきブロックと同じ色を、うんと薄めて返す */
+  auraColor(alpha = 0.22) {
+    const m = this.material;
+    return auraFor(this.progress, m.colors.lit.mid, m.tint, alpha);
+  }
+
+  /** 背景の色がどこまで満ちているか（画面の下からの割合） */
+  auraRise() {
+    return 26 + this.progress * 68;
   }
 
   /** ブロックの色。灰色は素材そのまま、色つきは進行度の色を素材に混ぜたもの */
@@ -1307,8 +1342,20 @@ export class Renderer {
     let baked = this.pieceCache.get(key);
     if (baked === undefined) {
       baked = this.bakePiece(piece.cells, pal, variant, piece.color !== -9);
-      // 盤上の形は数種類しかないが、進行度で色が動くので上限は付けておく
-      if (this.pieceCache.size > 48) this.pieceCache.clear();
+      /*
+       * 盤上の形は数種類しかないが、色つきの絵は残り手数が 1 動くたびに増える。
+       * 300 手のレベルなら 600 枚まで積み上がるので、上限を超えたら**古いものから**
+       * 捨てる。全部捨てると、灰色ブロック（色が動かない＝ずっと使い回せる）まで
+       * 巻き添えで焼き直しになり、そこで一瞬止まる。
+       */
+      while (this.pieceCache.size >= 64) {
+        this.pieceCache.delete(this.pieceCache.keys().next().value);
+      }
+      this.pieceCache.set(key, baked);
+    } else {
+      // 使ったものを新しい側へ回す（Map は入れた順に並ぶので、これで最近使った順になる）。
+      // これをしないと、いちばん長く使い回せる灰色ブロックが最初に捨てられる
+      this.pieceCache.delete(key);
       this.pieceCache.set(key, baked);
     }
     if (baked) {
