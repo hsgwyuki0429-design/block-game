@@ -27,7 +27,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SLIDE POP!">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="stylesheet" href="styles.css?v=cb2fe398a8">
+<link rel="stylesheet" href="styles.css?v=b4654fa15e">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
@@ -122,13 +122,11 @@
   <div class="segments">
     <div class="seg" id="hud-time"><span class="k">タイム</span><span class="v" id="stat-time">0:00</span></div>
     <div class="seg" id="hud-moves"><span class="k">手数</span><span class="v" id="stat-moves">0</span></div>
-    <div class="seg"><span class="k">残り</span><span class="v" id="stat-left">–</span></div>
   </div>
 
-  <!-- 色ごとの残りブロック数（同色ペアを見つけるための補助） -->
-  <div class="legend" id="legend" aria-label="色ごとの残りブロック数"></div>
-
   <main class="board-wrap">
+    <!-- 解に近づくほど温度が上がる、ごく淡い光。色は JS が進行度から決める -->
+    <div class="game-aura" aria-hidden="true"></div>
     <canvas id="board" aria-label="ゲーム盤面"></canvas>
 
     <div class="overlay" id="overlay" hidden>
@@ -139,6 +137,8 @@
         <p id="overlay-text"></p>
         <div class="overlay-extra" id="overlay-extra"></div>
         <div class="overlay-stats" id="overlay-stats"></div>
+        <!-- クリア直後にその場で出す順位。ランキングを開かなくても分かるように -->
+        <div class="overlay-rank" id="overlay-rank"></div>
         <div class="overlay-actions" id="overlay-actions"></div>
       </div>
     </div>
@@ -154,6 +154,10 @@
       <button class="dock-item" id="btn-restart" type="button">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.4-5.3"/><path d="M19.2 4.6V9h-4.4"/></svg>
         <span>やり直す</span>
+      </button>
+      <button class="dock-item" id="btn-rank" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 20V13h4v7"/><path d="M10 20V5h4v15"/><path d="M15.5 20v-9h4v9"/></svg>
+        <span>ランキング</span>
       </button>
     </div>
     <button class="dock-circle" id="btn-levels" type="button" aria-label="レベル一覧">
@@ -280,6 +284,45 @@
   </div>
 </div>
 
+<!-- ============================================================ 名前を決める
+     クリアの記録は必ず残るので、名前が無いまま先へは進めない。
+     閉じるボタンも背景タップも用意しない（設定から開いたときだけ閉じられる）。 -->
+<div class="sheet" id="modal-name" hidden>
+  <div class="sheet-card sheet-narrow">
+    <div class="grabber"></div>
+    <button class="sheet-close" data-close type="button" aria-label="閉じる" id="name-close" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+    </button>
+    <h2 id="name-title">名前を決める</h2>
+    <p id="name-lead">クリアの記録はレベルごとのランキングに残ります。<b>この名前で載ります。</b><br>
+      一度決めれば、次からは自動でこの名前が使われます。</p>
+
+    <div class="name-field">
+      <input type="text" id="name-input" maxlength="12" autocomplete="nickname"
+             enterkeyhint="done" placeholder="なまえ（12文字まで）" aria-label="ランキングに載せる名前">
+      <p class="name-error" id="name-error" hidden>名前を入れてください</p>
+    </div>
+
+    <button class="btn btn-primary" id="btn-name-save" type="button">この名前で記録する</button>
+    <p class="muted center">あとから設定で変えられます。</p>
+  </div>
+</div>
+
+<!-- ============================================================ ランキング -->
+<div class="sheet" id="modal-rank" hidden>
+  <div class="sheet-card sheet-narrow">
+    <div class="grabber"></div>
+    <button class="sheet-close" data-close type="button" aria-label="閉じる">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+    </button>
+    <h2 id="rank-title">ランキング</h2>
+    <p class="rank-scope" id="rank-scope">&nbsp;</p>
+
+    <div class="rank-list" id="rank-list"></div>
+    <p class="muted center" id="rank-note">&nbsp;</p>
+  </div>
+</div>
+
 <!-- ============================================================ 設定 -->
 <div class="sheet" id="modal-settings" hidden>
   <div class="sheet-card sheet-narrow">
@@ -312,6 +355,13 @@
       </label>
     </div>
 
+    <div class="list">
+      <div class="row">
+        <span class="row-label"><b>ランキングの名前</b><span class="muted" id="settings-name">まだ決めていません</span></span>
+        <button class="link-btn" id="btn-change-name" type="button">変える</button>
+      </div>
+    </div>
+
     <button class="btn btn-plain" id="btn-share" type="button">いま挑戦中のレベルのリンクをコピー</button>
     <p class="muted center">同じレベルなら、どの端末でも必ず同じ盤面になります。</p>
 
@@ -322,6 +372,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=cb2fe398a8"></script>
+<script defer src="app.js?v=b4654fa15e"></script>
 </body>
 </html>

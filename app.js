@@ -1467,8 +1467,72 @@ function colorFor(index) {
  * 盤面（ブロックを並べる面）。影も光沢も落とさない、平らな面。
  * 上端にだけ細い明るい線を引く ―― ガラス板の縁が光を拾ったときの1本で、
  * これだけで面が「浮いている」ように見える。
+ *
+ * 面の色そのものは進行度で動く（trayFor）。ここに残っているのは縁の光だけ。
  */
-const TRAY = { plate: '#dde2f0', hole: '#eef1f8', rim: 'rgba(255,255,255,.85)' };
+const TRAY = { rim: 'rgba(255,255,255,.85)' };
+
+// ---------------------------------------------------------------- 進行度の色
+//
+// 色つきブロックは盤面に1組しかないので、その色を**進行度そのもの**に使える。
+// 遠いうちは冷たい藍、近づくにつれて青緑 → 緑 → 琥珀 → 朱へ。
+// 盤面と背景も同じ色相をごく薄めて追いかけるので、
+// 「解に近づくほど画面全体があたたまっていく」ように見える。
+//
+// 数字で「あと何手」と出すより、こちらのほうが手を止めない ――
+// 見ていなくても視野の端で温度が変わる。
+
+/** 進行度 0 → 1 の色の道すじ（HSL） */
+const PROGRESS_STOPS = [
+  { h: 236, s: 58, l: 52 }, // 0.00 藍
+  { h: 202, s: 66, l: 47 }, // 0.28 青
+  { h: 158, s: 56, l: 41 }, // 0.55 翡翠
+  { h: 40, s: 84, l: 49 },  // 0.80 琥珀
+  { h: 10, s: 76, l: 53 },  // 1.00 朱
+];
+const PROGRESS_AT = [0, 0.28, 0.55, 0.8, 1];
+
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/** 進行度 t（0..1）の HSL を求める。色相は近いほうへ回して濁りを避ける */
+function progressHsl(t) {
+  const p = Math.max(0, Math.min(1, t));
+  let i = 1;
+  while (i < PROGRESS_AT.length - 1 && p > PROGRESS_AT[i]) i++;
+  const a = PROGRESS_STOPS[i - 1];
+  const b = PROGRESS_STOPS[i];
+  const span = PROGRESS_AT[i] - PROGRESS_AT[i - 1];
+  const k = span > 0 ? (p - PROGRESS_AT[i - 1]) / span : 0;
+  let dh = b.h - a.h;
+  if (dh > 180) dh -= 360;
+  else if (dh < -180) dh += 360;
+  return { h: (a.h + dh * k + 360) % 360, s: lerp(a.s, b.s, k), l: lerp(a.l, b.l, k) };
+}
+
+/** 進行度 -> 色つきブロックの色。colorFor と同じ形を返す */
+function progressColor(t) {
+  const { h, s, l } = progressHsl(t);
+  return {
+    name: '色つきブロック',
+    base: hex(hsl(h, s, l)),
+    light: hex(hsl(h, s, Math.min(88, l + 14))),
+    dark: hex(hsl(h, Math.min(90, s + 10), Math.max(20, l - 22))),
+    shadow: hsl(h, Math.min(90, s + 10), Math.max(16, l - 30)).join(','),
+  };
+}
+
+/** 進行度 -> 盤面の面の色。ブロックと同じ色相を、ほとんど白まで薄めたもの */
+function trayFor(t) {
+  const { h } = progressHsl(t);
+  return { plate: hex(hsl(h, 30, 89)), hole: hex(hsl(h, 34, 95)) };
+}
+
+/** 進行度 -> 画面の後ろに敷く淡い色（CSS へ渡す） */
+function auraFor(t) {
+  const { h, s } = progressHsl(t);
+  const c = hsl(h, Math.min(70, s), 62);
+  return `rgba(${c.join(',')},0.24)`;
+}
 
 /** 色覚サポート用の記号。色数が増えても足りるよう繰り返して使う */
 const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '▼', '⬢', '♦', '☰'];
@@ -1493,10 +1557,45 @@ class Renderer {
     this.shards = [];
     this.rings = [];
     this.flashes = [];
+    this.stamps = [];
     this.shake = 0;
     this.time = 0;
 
+    /**
+     * 解へどれだけ近いか（0..1）。
+     * 表示用の progress は目標へ毎フレーム少しずつ寄せる ―― 1手ごとに色が
+     * ぱっと変わると「点滅」に見えてしまう。ゆっくり動くから景色になる。
+     */
+    this.progress = 0;
+    this.progressTarget = 0;
+    this._tintAt = -1;
+    this.refreshTint();
+
     this.options = { symbols: false, ghost: true, calm: false };
+  }
+
+  /**
+   * 進行度を伝える。immediate はレベルを跨いだときだけ（前のレベルの色を
+   * 引きずったまま次の盤面が出ると、いま何色なのかが意味を失う）。
+   */
+  setProgress(t, immediate = false) {
+    this.progressTarget = Math.max(0, Math.min(1, t || 0));
+    if (immediate) this.progress = this.progressTarget;
+  }
+
+  /** 進行度から作った色。値が動いたときだけ作り直す */
+  refreshTint() {
+    const q = Math.round(this.progress * 400) / 400;
+    if (this._tintAt === q) return;
+    this._tintAt = q;
+    this.tint = progressColor(q);
+    this.tray = trayFor(q);
+  }
+
+  /** ブロックの色。灰色は不変、色つきは進行度で動く */
+  colorOf(colorIndex) {
+    if (colorIndex === -9) return BLOCKER_COLOR; // board.js の BLOCKER
+    return this.tint;
   }
 
   resize(size) {
@@ -1549,7 +1648,7 @@ class Renderer {
 
   /** 消えたマスそのものが光になって開く */
   shatter(cells, colorIndex) {
-    const c = colorFor(colorIndex);
+    const c = this.colorOf(colorIndex);
     for (const [x, y] of cells) {
       this.shards.push({ x, y, color: c.light, life: 1 });
     }
@@ -1557,7 +1656,7 @@ class Renderer {
 
   /** 砕けた破片が飛び散る */
   burst(cells, colorIndex, strength = 1) {
-    const c = colorFor(colorIndex);
+    const c = this.colorOf(colorIndex);
     const n = this.options.calm ? 3 : Math.round(9 + strength * 3);
     for (const [cx, cy] of cells) {
       const p = this.cellCenter(cx, cy);
@@ -1585,7 +1684,7 @@ class Renderer {
 
   /** 色のついた光の輪が広がる */
   ring(x, y, colorIndex, strength = 1) {
-    const c = colorFor(colorIndex);
+    const c = this.colorOf(colorIndex);
     this.rings.push({
       x, y,
       r: this.cell * 0.3,
@@ -1602,6 +1701,33 @@ class Renderer {
     this.flashes.push({ x, y, r: this.cell * (2.6 + strength * 1.8), life: 1 });
   }
 
+  /**
+   * ブロックの上にスタンプを貼る（👍）。
+   *
+   * 手が良かったことを伝える唯一の「文字」。数字でも文章でもないので読む必要がなく、
+   * 目を上げずに済む ―― 盤面から視線を外させないための形。
+   * ひとつずつ間を置いて出し、跳ねてから浮き上がって消える。
+   */
+  stamp(cells, text = '👍', count = 3) {
+    if (!cells || cells.length === 0) return;
+    for (let i = 0; i < count; i++) {
+      const [cx, cy] = cells[Math.floor(Math.random() * cells.length)];
+      const p = this.cellCenter(cx, cy);
+      this.stamps.push({
+        x: p.x + (Math.random() - 0.5) * this.cell * 0.9,
+        y: p.y + (Math.random() - 0.5) * this.cell * 0.7,
+        rot: (Math.random() - 0.5) * 0.44,
+        // マスに比例させつつ頭打ちを付ける。4×4 の盤面はマスが大きく、
+        // 比例させただけだとスタンプがブロックより大きくなって盤面が読めなくなる
+        size: Math.min(this.cell * (0.62 + Math.random() * 0.24), 46),
+        // 3個が同時に出ると1個の大きな塊に見える。少しずつずらして「増えていく」
+        delay: i * 0.11,
+        life: 1,
+        text,
+      });
+    }
+  }
+
   addShake(amount) {
     if (this.options.calm) amount *= 0.3;
     this.shake = Math.min(22, this.shake + amount);
@@ -1612,6 +1738,7 @@ class Renderer {
     this.shards.length = 0;
     this.rings.length = 0;
     this.flashes.length = 0;
+    this.stamps.length = 0;
     this.shake = 0;
   }
 
@@ -1620,6 +1747,15 @@ class Renderer {
   draw(view, dt) {
     const ctx = this.ctx;
     this.time += dt;
+
+    // 進行度は目標へ寄せるだけ。1フレームで 6% ずつ詰めると、1手ぶんの変化が
+    // 0.5秒ほどかけて渡る ―― 変化に気づけて、かつ気を取られない速さ
+    if (this.progress !== this.progressTarget) {
+      const k = 1 - Math.pow(1 - 0.06, Math.max(0.5, dt * 60));
+      this.progress += (this.progressTarget - this.progress) * k;
+      if (Math.abs(this.progressTarget - this.progress) < 0.0008) this.progress = this.progressTarget;
+    }
+    this.refreshTint();
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.viewW, this.viewH);
@@ -1647,6 +1783,7 @@ class Renderer {
     this.drawRings(dt);
     this.drawFlashes(dt);
     this.drawParticles(dt);
+    this.drawStamps(dt);
 
     ctx.restore();
   }
@@ -1668,7 +1805,7 @@ class Renderer {
     ctx.save();
     ctx.beginPath();
     ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
-    ctx.fillStyle = TRAY.plate;
+    ctx.fillStyle = this.tray.plate;
     ctx.fill();
     // ガラスの縁の光。上半分だけを 1px でなぞる
     ctx.save();
@@ -1685,7 +1822,7 @@ class Renderer {
     const size = this.tileSize;
     const tr = this.tileRadius;
     ctx.save();
-    ctx.fillStyle = TRAY.hole;
+    ctx.fillStyle = this.tray.hole;
     ctx.beginPath();
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
@@ -1733,7 +1870,7 @@ class Renderer {
 
   drawTrail(piece, d, anim, p) {
     const ctx = this.ctx;
-    const c = colorFor(piece.color);
+    const c = this.colorOf(piece.color);
     const total = anim.steps * this.cell;
     const cell = this.cell;
     for (let i = 1; i <= 3; i++) {
@@ -1830,7 +1967,7 @@ class Renderer {
       ctx.translate(-cx, -cy);
     }
 
-    const c = colorFor(piece.color);
+    const c = this.colorOf(piece.color);
     const outline = this.outlineOf(rects, this.tileRadius);
 
     if (mode === 'outline') {
@@ -2060,6 +2197,43 @@ class Renderer {
     }
   }
 
+  /**
+   * 👍 のスタンプ。
+   * 出るときだけ勢いよく（跳ねながら大きくなる）、消えるときはただ浮いて薄れる ――
+   * 出現に力を入れて退場を静かにすると、視線を引いておいて返してくれる。
+   */
+  drawStamps(dt) {
+    const ctx = this.ctx;
+    for (let i = this.stamps.length - 1; i >= 0; i--) {
+      const s = this.stamps[i];
+      if (s.delay > 0) { s.delay -= dt; continue; }
+      s.life -= dt * 0.85;
+      if (s.life <= 0) {
+        this.stamps.splice(i, 1);
+        continue;
+      }
+      const t = 1 - s.life; // 0 -> 1
+      // 出てから 0.22 のあいだで跳ねる（行き過ぎて戻る）
+      const pop = t < 0.22
+        ? 1.28 * easeOutCubic(t / 0.22)
+        : 1.28 - 0.28 * easeOutCubic(Math.min(1, (t - 0.22) / 0.2));
+      const rise = easeOutCubic(t) * this.cell * 0.6;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, s.life * 2.2);
+      ctx.translate(s.x, s.y - rise);
+      ctx.rotate(s.rot * (1 - t * 0.6));
+      ctx.scale(pop, pop);
+      ctx.font = `${Math.round(s.size)}px ${UI_FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // 絵文字は色で描かれるので、後ろに白を敷いて盤面から浮かせる
+      ctx.shadowColor = 'rgba(0,0,0,.28)';
+      ctx.shadowBlur = s.size * 0.28;
+      ctx.fillText(s.text, 0, 0);
+      ctx.restore();
+    }
+  }
+
   drawFlashes(dt) {
     const ctx = this.ctx;
     const k = dt * 60;
@@ -2197,16 +2371,24 @@ function attachInput(canvas, handlers) {
 // ===== src/audio.js =====
 // 効果音。音源ファイルは持たず、WebAudio でその場で合成する。
 //
-// 音の設計は 2 種類だけ。
+// いちばん大事なのは**ブロックを動かした音**なので、そこだけ独立した設計にしてある。
 //
-//   ウッドクリック  掴む・滑る・着地する・UI を押す ―― 操作すべて。
-//                   乾いた「カチッ／コトン」。木片を叩いたときの、芯があって
-//                   すぐ消える音。マリンバの丸みを少しだけ混ぜてある。
-//                   操作が全部これになることで、プレイがリズムになる。
+//   石を押す（slide → land）
+//                   このゲームで唯一「重さ」を伝える音。押し出しの抵抗 →
+//                   引きずる摩擦 → ぶつかって沈む衝撃、の3段階で作る。
+//                   軽い「カチッ」で済ませると、盤面が紙のように感じられて
+//                   「壁を押しのけている」実感が消える。
+//                   詳しくは slide() / land() のコメントに書いた。
+//
+//   ウッドクリック  掴む・UI を押す。乾いた「カチッ」。木片を叩いたときの、
+//                   芯があってすぐ消える音。操作の合図だけを担う。
 //
 //   グラスシャター  消えた瞬間。薄い氷が砕けるような「シャラン」。
 //                   非整数倍の高い partial を重ねると、鐘でも打楽器でもない
 //                   「ガラス」の質感になる。連鎖するほど音程が階段状に上がる。
+//
+//   低いほめ音      解法どおりに進んでいるときの相づち。低く、丸く、短い和音。
+//                   祝う音ではないので、消去音より下の音域に置いて重ならせない。
 //
 // ハプティクスは音と同じ関数の中で鳴らす。指と耳がずれない。
 //
@@ -2380,7 +2562,80 @@ class Sound {
   }
 
   /**
-   * 乾いたウッドクリック。この音がゲーム中のすべての操作音になる。
+   * 沈み込む低音。「重い」の芯はこれ 1 本で決まる。
+   *
+   * 同じ低さでも、一定の周波数を鳴らすと "ブーッ" というただの低音にしかならない。
+   * 上から下へ落とすと、はじめて**質量のあるものが着いた**ように聴こえる ――
+   * 実際の衝突音でも、材料がたわんで戻るあいだに基音が下がっていく。
+   * 落とし切るまでの時間を decay より短くしてあるのは、下がりきったあとに
+   * 「residual（余韻）」を残したいから。ここが無いと音が痩せる。
+   */
+  thump(from, to, { gain = 0.5, decay = 0.4, delay = 0, type = 'sine' } = {}) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime + delay;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(Math.max(20, from), t);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(18, to), t + decay * 0.5);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.014);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+    osc.connect(g);
+    g.connect(this.master);
+    osc.start(t);
+    osc.stop(t + decay + 0.03);
+  }
+
+  /**
+   * 引きずる摩擦。ブロックが滑っているあいだだけ鳴る。
+   *
+   * ノイズをループさせ、ローパスの角を「開いて閉じる」ように動かす。
+   * 開くところが加速、閉じるところが減速に聴こえるので、
+   * 目で見えている滑走とひとつながりの動きになる。
+   * 帯域を 600Hz 以下に抑えているのが要点 ―― 上が出ると砂や紙になってしまい、
+   * 石や木の塊には聴こえない。
+   */
+  rumble(duration = 0.3, { gain = 1 } = {}) {
+    if (!this.ready || !this.noise) return;
+    const t = this.ctx.currentTime;
+    const dur = Math.max(0.07, duration);
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    src.playbackRate.value = 0.45 + Math.random() * 0.12;
+
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.value = 0.9;
+    lp.frequency.setValueAtTime(210, t);
+    lp.frequency.linearRampToValueAtTime(600, t + dur * 0.55);
+    lp.frequency.linearRampToValueAtTime(300, t + dur);
+
+    // ざらつきの芯。低い帯域をひとつ持ち上げると「ゴロゴロ」が出る
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'peaking';
+    bp.frequency.value = 150;
+    bp.Q.value = 1.1;
+    bp.gain.value = 7;
+
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, 0.055 * gain), t + 0.05);
+    g.gain.setValueAtTime(0.055 * gain, t + dur * 0.72);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    src.connect(lp);
+    lp.connect(bp);
+    bp.connect(g);
+    g.connect(this.master);
+    src.start(t);
+    src.stop(t + dur + 0.03);
+  }
+
+  /**
+   * 乾いたウッドクリック。掴む合図と UI のボタンに使う。
    *
    *   ・帯域を絞ったノイズの一撃  = 木を叩いた「カチッ」という芯
    *   ・上から落ちてくる基音      = 木片の詰まった鳴り
@@ -2422,24 +2677,67 @@ class Sound {
 
   // ---------------------------------------------------------------- 効果音
 
-  /** ブロックをつかんだ合図 */
+  /** ブロックをつかんだ合図。掴むのは重い塊なので、低く short に */
   tap() {
-    this.wood(880, { gain: 0.42, decay: 0.06 });
-    this.vibrate(5);
+    this.wood(430, { gain: 0.4, decay: 0.055 });
+    this.thump(150, 104, { gain: 0.14, decay: 0.1 });
+    this.vibrate(7);
   }
 
-  /** UI のボタン。盤面と同じ手触りに揃える */
+  /** UI のボタン。盤面の重さとは切り離した、軽い操作音 */
   click() {
     this.wood(700, { gain: 0.5, decay: 0.07 });
     this.vibrate(6);
   }
 
-  /** 滑って壁にぶつかった瞬間。距離が長いほど低く重い音 */
+  /**
+   * 押し出して滑り始めた瞬間 ―― と、滑っているあいだ。
+   *
+   * 「重いものを動かした」感じは、着地の一撃だけでは出ない。動き出しの抵抗と、
+   * 動いているあいだ鳴りっぱなしの摩擦があって、はじめて**ぶつかった音に意味が出る**。
+   * 摩擦は滑走アニメと同じ長さで鳴らして、音が先に終わったり残ったりしないようにする。
+   *
+   * @param {number} distance 滑るマス数（多いほど重く長い）
+   * @param {number} duration 滑走アニメの長さ（秒）
+   */
+  slide(distance = 1, duration = 0.3) {
+    const d = Math.min(distance, 10);
+    const w = Math.min(1, d / 8); // 0..1 の「重さ」
+    // 押し出しの抵抗。低く短い一撃で、動き出しの "グッ" を作る
+    this.thump(132 - w * 22, 80 - w * 14, { gain: 0.2 + w * 0.14, decay: 0.14 });
+    this.burst({ type: 'lowpass', freq: 320, q: 0.8, gain: 0.07 + w * 0.03, decay: 0.05 });
+    this.rumble(duration, { gain: 0.55 + w * 0.8 });
+    this.vibrate(Math.round(5 + d * 1.4));
+  }
+
+  /**
+   * 滑って壁にぶつかって止まった瞬間 ―― この音がこのゲームの手触りを決める。
+   *
+   * 重さは 5 層の重ね方で作る。どれか 1 つでも抜けると軽くなる:
+   *
+   *   ① 沈む芯   100Hz 台から 40Hz 台へ落ちる正弦波。腹に来る「ドスッ」
+   *   ② 胴鳴り   塊そのものの質量。三角波を少し上から落として詰まりを出す
+   *   ③ 接触面   低く絞ったノイズの一撃。木と木がぶつかる面の「ゴッ」
+   *   ④ 輪郭     ごく短い中高域を一撃だけ。**これが無いと低音がぼやけて、
+   *              重いのではなく「こもった」音になる**。混ぜるのは一瞬でいい
+   *   ⑤ 余韻     受け止めた板が残す低い響き。ここで「置かれた」と分かる
+   *
+   * 距離が長いほど低く・長く・強くなる。10マス滑らせた1手が、
+   * 1マスの1手と同じ音で終わらないようにするため。
+   */
   land(distance = 1) {
     const d = Math.min(distance, 10);
-    this.wood(430 - d * 18, { gain: 1, decay: 0.13 + d * 0.006 });
-    this.tone(96, { type: 'sine', gain: 0.07, attack: 0.002, decay: 0.09 });
-    this.vibrate(Math.round(7 + d));
+    const w = Math.min(1, d / 8);
+    const decay = 0.4 + w * 0.3;
+
+    this.thump(102 - w * 20, 44 - w * 10, { gain: 0.5 + w * 0.4, decay });                                  // ①
+    this.tone(166 - w * 44, { type: 'triangle', gain: 0.26, attack: 0.003, decay: 0.19 + w * 0.1, glide: 0.16 }); // ②
+    this.burst({ type: 'lowpass', freq: 400 + w * 160, q: 0.9, gain: 0.19 + w * 0.06, decay: 0.075 });      // ③
+    this.burst({ type: 'bandpass', freq: 1900, q: 1.5, gain: 0.045, decay: 0.016 });                        // ④
+    this.tone(58, { type: 'sine', gain: 0.09 + w * 0.07, attack: 0.02, decay: 0.46 + w * 0.3, delay: 0.02 }); // ⑤
+
+    // 触覚も同じ形にする。短い前触れ → 間 → 長く重い本体
+    this.vibrate([8, 24, Math.round(20 + d * 6)]);
   }
 
   /**
@@ -2456,9 +2754,33 @@ class Sound {
     this.vibrate(pieces >= 3 ? [12, 24, 18] : 13);
   }
 
-  /** 動かせない方向。木を押さえて叩いたような、詰まった短い音 */
+  /**
+   * 解法どおりに進んでいる／解に近づいたときの相づち。
+   *
+   * 祝う音ではない ―― 祝ってしまうと、最後にクリアしたときの音が軽くなる。
+   * 消去音（C6 まわり）よりずっと下の F3 に完全五度を重ねただけの、
+   * 低くて丸い和音にしてある。減衰も長めで、鳴っても手を止めさせない。
+   */
+  praise() {
+    const root = 174.61; // F3
+    [1, 1.5, 2].forEach((mul, i) => {
+      this.tone(root * mul, {
+        type: 'sine', gain: 0.17 / (1 + i * 0.4), attack: 0.024, decay: 0.66, delay: i * 0.045,
+      });
+      this.tone(root * mul * 2, {
+        type: 'triangle', gain: 0.035 / (1 + i * 0.5), attack: 0.02, decay: 0.34, delay: i * 0.045,
+      });
+    });
+    // 和音だけだと始まりがぼやける。輪郭に低いウッドをひとつ置く
+    this.wood(262, { gain: 0.34, decay: 0.14 });
+    this.vibrate([10, 40, 14]);
+  }
+
+  /** 動かせない方向。重い塊が動かず、押した力だけが返ってくる詰まった音 */
   invalid() {
-    this.wood(150, { gain: 0.7, decay: 0.05 });
+    this.thump(92, 68, { gain: 0.38, decay: 0.13 });
+    this.burst({ type: 'lowpass', freq: 300, q: 0.9, gain: 0.13, decay: 0.055 });
+    this.wood(130, { gain: 0.5, decay: 0.05 });
     this.vibrate([9, 36, 9]);
   }
 
@@ -2485,6 +2807,261 @@ class Sound {
       try { navigator.vibrate(pattern); } catch { /* 非対応端末は黙って無視 */ }
     }
   }
+}
+
+// ===== src/config.js =====
+// 外部につなぐ設定。ここ以外に URL を書かない。
+//
+// なぜ 1 ファイルに切り出してあるか:
+//   ランキングのサーバは持ち主が自分で立てるもので、このリポジトリの中には無い。
+//   URL をコードのあちこちに散らすと、配信先を変えるたびに探し回ることになる。
+//   ここ 1 行だけを書き換えれば、世界共通ランキングに切り替わる。
+
+/**
+ * 世界共通ランキングの接続先。
+ *
+ * 空のあいだは**この端末の中だけ**にランキングを貯める（遊べなくはならない）。
+ * URL を入れると、そこへ投稿・取得しにいく。末尾のスラッシュは付けても付けなくてもよい。
+ *
+ *   例) 'https://slidepop-rank.example.workers.dev/scores'
+ *
+ * サーバに求める約束ごとは 2 つだけ:
+ *
+ *   GET  <URL>?level=12&limit=50
+ *        -> { "entries": [ { "name":"...", "moves":18, "time":73, "stars":3, "at":1700000000000 }, ... ] }
+ *           手数の少ない順に並べて返す。素の配列を返してもよい。
+ *
+ *   POST <URL>   Content-Type: application/json
+ *        body    { "level":12, "name":"...", "moves":18, "time":73, "stars":3 }
+ *        -> { "ok":true, "rank":4, "entries":[ ... ] }
+ *           rank と entries は省略してよい（省略されたら改めて GET しに行く）。
+ *
+ * CORS を許す（Access-Control-Allow-Origin）ことだけ忘れないこと。
+ */
+const RANKING_ENDPOINT = '';
+
+// ===== src/ranking.js =====
+// レベル別ランキング。
+//
+// 方針:
+//
+//   ・**クリアしたら必ず記録される**。「保存しますか？」は訊かない。
+//     訊くと、押し忘れた回のぶんだけランキングが実態とずれる。
+//   ・名前は**自分で打つ**。初回だけ入力させ、以後はその名前を自動で使う。
+//     毎回訊くのは邪魔だし、途中で変えられるとランキングが同一人物で埋まる
+//     （変えたいときは設定から変えられる）。
+//   ・順位は**手数の少ない順**。同着はタイムの短い順、それも同じなら先に出した方が上。
+//     星ではなく手数で並べるのは、星が手数から決まる粗い階段でしかないから。
+//
+// 接続先（src/config.js の RANKING_ENDPOINT）が空のあいだは、この端末の
+// localStorage にだけ貯める。世界共通に切り替えても記録の見た目は変わらない ――
+// 画面には「世界」か「この端末」かだけを出す。
+//
+// 通信が失敗したときも、必ず端末側には残す。ランキングに載らなかったせいで
+// クリアそのものが無かったことになる、という事故を起こさない。
+
+/** 保存した名前。一度決めたら以後は自動で使う */
+const NAME_KEY = 'slidepop.name';
+/** 端末内ランキングの置き場 */
+const RANK_KEY = 'slidepop.rank.v1';
+
+/** 名前の長さの上限。長い名前は一覧で他人の行を潰す */
+const NAME_MAX = 12;
+/** 1レベルあたり持っておく順位の数 */
+const RANK_LIMIT = 50;
+
+/** 通信を諦めるまで。待たせるくらいなら端末内の記録を出す */
+const TIMEOUT_MS = 7000;
+
+/** 接続先。末尾のスラッシュは落として揃える */
+function endpoint() {
+  const url = (RANKING_ENDPOINT || '').trim();
+  return url ? url.replace(/\/+$/, '') : '';
+}
+
+/** 世界共通ランキングに繋がる設定になっているか */
+function isGlobalRanking() {
+  return endpoint() !== '';
+}
+
+/**
+ * 名前を整える。
+ * 制御文字と前後の空白を落とし、連続する空白を1つに詰めてから長さで切る。
+ * 空になるような入力（空白だけ・記号だけ）は受け付けない ―― 呼び出し側で弾く。
+ */
+function sanitizeName(raw) {
+  return String(raw == null ? '' : raw)
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, NAME_MAX);
+}
+
+function savedName() {
+  try {
+    return sanitizeName(localStorage.getItem(NAME_KEY) || '');
+  } catch {
+    return '';
+  }
+}
+
+function saveName(name) {
+  const clean = sanitizeName(name);
+  if (!clean) return '';
+  try { localStorage.setItem(NAME_KEY, clean); } catch { /* 保存できない環境では今回だけ有効 */ }
+  return clean;
+}
+
+function forgetName() {
+  try { localStorage.removeItem(NAME_KEY); } catch { /* 消せなければ諦める */ }
+}
+
+// ---------------------------------------------------------------- 端末内の記録
+
+function loadLocal() {
+  try {
+    const data = JSON.parse(localStorage.getItem(RANK_KEY) || '{}');
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocal(data) {
+  try { localStorage.setItem(RANK_KEY, JSON.stringify(data)); } catch { /* 諦める */ }
+}
+
+/**
+ * 並べ替えと重複の始末。
+ * 同じ名前は**その人のいちばん良い1件**だけを残す。同じ人が上位を埋めると、
+ * 何人が挑んだのかが分からなくなる。
+ */
+function rankSort(entries) {
+  const best = new Map();
+  for (const e of entries) {
+    const name = sanitizeName(e.name) || '???';
+    const row = {
+      name,
+      moves: Math.max(0, Math.round(Number(e.moves) || 0)),
+      time: Math.max(0, Math.round(Number(e.time) || 0)),
+      stars: Math.max(0, Math.min(3, Math.round(Number(e.stars) || 0))),
+      at: Number(e.at) || 0,
+    };
+    const cur = best.get(name);
+    if (!cur || row.moves < cur.moves || (row.moves === cur.moves && row.time < cur.time)) {
+      best.set(name, row);
+    }
+  }
+  return [...best.values()].sort((a, b) => a.moves - b.moves || a.time - b.time || a.at - b.at);
+}
+
+/** 端末内ランキングを読む */
+function localEntries(level) {
+  return rankSort(loadLocal()[String(level)] || []);
+}
+
+/** 端末内ランキングに1件足して、並べ直したものを返す */
+function pushLocal(level, entry) {
+  const data = loadLocal();
+  const key = String(level);
+  data[key] = rankSort([...(data[key] || []), entry]).slice(0, RANK_LIMIT);
+  saveLocal(data);
+  return data[key];
+}
+
+/** 端末内ランキングを空にする（「データを消す」から呼ぶ） */
+function clearLocalRanking() {
+  try { localStorage.removeItem(RANK_KEY); } catch { /* 諦める */ }
+}
+
+// ---------------------------------------------------------------- 通信
+
+/** 応答の形を吸収する。素の配列でも { entries: [...] } でも受け取る */
+function entriesOf(payload) {
+  if (Array.isArray(payload)) return rankSort(payload);
+  if (payload && Array.isArray(payload.entries)) return rankSort(payload.entries);
+  return null;
+}
+
+async function request(url, init = {}) {
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), TIMEOUT_MS) : 0;
+  try {
+    const res = await fetch(url, { ...init, signal: ctrl ? ctrl.signal : undefined });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * ランキングを取る。
+ * @returns {Promise<{entries:Object[], global:boolean, offline:boolean}>}
+ *   offline = 世界共通に繋ぐ設定なのに届かなかった（端末内の記録を返している）
+ */
+async function fetchRanking(level) {
+  const base = endpoint();
+  if (!base) return { entries: localEntries(level), global: false, offline: false };
+  try {
+    const url = `${base}${base.includes('?') ? '&' : '?'}level=${encodeURIComponent(level)}&limit=${RANK_LIMIT}`;
+    const entries = entriesOf(await request(url, { headers: { Accept: 'application/json' } }));
+    if (!entries) throw new Error('形式が違う応答');
+    return { entries, global: true, offline: false };
+  } catch {
+    return { entries: localEntries(level), global: true, offline: true };
+  }
+}
+
+/**
+ * 記録を出す。**端末内には必ず残す**ので、通信が失敗しても記録は消えない。
+ *
+ * @returns {Promise<{entries:Object[], rank:number|null, global:boolean, offline:boolean}>}
+ *   rank は 1 始まりの順位。分からなければ null
+ */
+async function submitScore({ level, name, moves, time, stars }) {
+  const entry = {
+    name: sanitizeName(name) || '???',
+    moves: Math.max(0, Math.round(Number(moves) || 0)),
+    time: Math.max(0, Math.round(Number(time) || 0)),
+    stars: Math.max(0, Math.min(3, Math.round(Number(stars) || 0))),
+    at: Date.now(),
+  };
+  const local = pushLocal(level, entry);
+  const base = endpoint();
+
+  if (!base) {
+    return { entries: local, rank: rankOf(local, entry), global: false, offline: false };
+  }
+
+  try {
+    const payload = await request(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ level, ...entry }),
+    });
+    // サーバが一覧を返してくれたらそれを使う。返さないなら改めて取りに行く
+    let entries = entriesOf(payload);
+    if (!entries) {
+      const got = await fetchRanking(level);
+      if (got.offline) throw new Error('投稿後の取得に失敗');
+      entries = got.entries;
+    }
+    const rank = payload && Number.isFinite(payload.rank) && payload.rank > 0
+      ? Math.round(payload.rank)
+      : rankOf(entries, entry);
+    return { entries, rank, global: true, offline: false };
+  } catch {
+    return { entries: local, rank: rankOf(local, entry), global: true, offline: true };
+  }
+}
+
+/** 一覧の中でその記録が何位か（1 始まり）。見つからなければ null */
+function rankOf(entries, entry) {
+  if (!entries) return null;
+  const name = sanitizeName(entry.name) || '???';
+  const i = entries.findIndex((e) => e.name === name && e.moves === entry.moves);
+  return i >= 0 ? i + 1 : null;
 }
 
 // ===== src/game.js =====
@@ -2591,9 +3168,29 @@ class Game {
     /** 星のしきい値（手数）。レベルを読み込んだ時点で最短手数から決まる */
     this.targets = null;
     this.newRecord = false;
-    this.activeColors = [];
     /** 連続で消せた回数。増えるほど消去音の音程が上がる */
     this.combo = 0;
+
+    /* --- 解へどれだけ近いか（色のグラデーションと「いいね」の判定に使う） --- */
+    /** 手順どおりに指した各局面の指紋 -> 何手目か */
+    this.pathIndex = null;
+    /** 初期盤面での色つき2個の隙間。ここからどれだけ詰まったかを測る */
+    this.startGap = 0;
+    /** これまでに届いた「いちばん先」。ここを更新したときだけ褒める */
+    this.bestStep = 0;
+    this.bestGap = Infinity;
+    this.progress = 0;
+    /** 背景の光にいま塗ってある進行度（毎フレーム塗り直さないための控え） */
+    this.paintedProgress = -1;
+    /** 直前に動かしたブロック。スタンプを貼る場所になる */
+    this.lastMovedId = null;
+
+    /* --- ランキング --- */
+    /** 名前を決めきるまで閉じられないシート（クリア直後） */
+    this.nameLocked = false;
+    /** 投稿・取得の世代。レベルを跨いだ古い応答を捨てるために使う */
+    this.rankToken = 0;
+    this.rankViewToken = 0;
 
     this.applySettings();
     this.bindUi();
@@ -2636,6 +3233,94 @@ class Game {
   /** クリア済みレベル数 */
   get clearedCount() {
     return Object.keys(this.store.stars || {}).length;
+  }
+
+  // ------------------------------------------------------------ 解への近さ
+  //
+  // 盤面の色も背景の光も、この「近さ」ひとつで決まる。数字は出さない ――
+  // 残り手数を数字で出すと、盤面ではなく数字を見ながら遊ぶことになる。
+  // 温度だけが変わっていくなら、視線を盤面から外さずに近さが伝わる。
+
+  /**
+   * 手順どおりに指した各局面の指紋 -> 何手目か、の索引。
+   *
+   * 焼いてある解答は**厳密な最短手順**なので、その線上にいるかどうかを
+   * 指紋の一致だけで判定できる。遠回りして戻ってきた場合も拾えるし、
+   * 「戻す」で巻き戻した場合も正しく手前の位置に落ちる。
+   */
+  buildPath(puzzle) {
+    const board = new Board(puzzle.size);
+    board.restore(puzzle.snapshot);
+    const index = new Map([[board.fingerprint(), 0]]);
+    for (let i = 0; i < puzzle.solution.length; i++) {
+      const step = puzzle.solution[i];
+      if (!board.applyMove(step.pieceId, step.dir)) break;
+      index.set(board.fingerprint(), i + 1);
+    }
+    return index;
+  }
+
+  /** 色つき2個の隙間（0 = 上下左右で隣り合っている＝解けた形） */
+  colorGap(board) {
+    const colored = [...board.pieces.values()].filter((p) => p.color !== BLOCKER);
+    if (colored.length < 2) return 0;
+    let best = Infinity;
+    for (const [ax, ay] of colored[0].cells) {
+      for (const [bx, by] of colored[1].cells) {
+        const d = Math.abs(ax - bx) + Math.abs(ay - by);
+        if (d < best) best = d;
+      }
+    }
+    return Math.max(0, best - 1);
+  }
+
+  /**
+   * 進み具合を測り直し、色に反映し、前に進んでいたら褒める。
+   *
+   * 測り方は2つあって、**大きいほうを採る**:
+   *   ・解法の線上にいるなら、そこが何手目か（いちばん確かな物差し）
+   *   ・外れているなら、色つき2個の隙間がどれだけ詰まったか
+   * 線から外れた瞬間に色が 0 まで戻ると、遠回りしただけで景色が真っ白に
+   * 巻き戻ってしまう。隙間のほうを保険に置くことでそれを防いでいる。
+   *
+   * @param {number|null} movedPieceId 直前に動かしたブロック（褒めるときの貼り先）
+   * @param {boolean} reset レベルを読み込み直したとき。色を瞬時に合わせ、記録も引き直す
+   */
+  updateProgress(movedPieceId = null, reset = false) {
+    if (!this.puzzle) return;
+    const par = Math.max(1, this.puzzle.par);
+    const step = this.pathIndex ? this.pathIndex.get(this.board.fingerprint()) : undefined;
+    const gap = this.colorGap(this.board);
+
+    const byPath = step == null ? 0 : step / par;
+    const byGap = this.startGap > 0 ? (this.startGap - gap) / this.startGap : 1;
+    this.progress = Math.max(0, Math.min(1, Math.max(byPath, byGap)));
+    this.renderer.setProgress(this.progress, reset);
+
+    if (reset) {
+      this.bestStep = step == null ? 0 : step;
+      this.bestGap = gap;
+      return;
+    }
+    if (movedPieceId == null) return; // 戻す・クリアなど。色だけ合わせる
+
+    // 「更新したときだけ」褒める。毎手だと相づちが安くなって効かなくなる
+    const advanced = (step != null && step > this.bestStep) || gap < this.bestGap;
+    if (step != null && step > this.bestStep) this.bestStep = step;
+    if (gap < this.bestGap) this.bestGap = gap;
+    if (advanced) this.cheer(movedPieceId);
+  }
+
+  /**
+   * 「いいね」のスタンプと、低いほめ音。
+   * 半々でしか出さない ―― 毎回出ると壁紙になり、出なくなると気づかない。
+   */
+  cheer(pieceId) {
+    if (Math.random() < 0.5) return;
+    const piece = this.board.pieces.get(pieceId);
+    if (!piece) return;
+    this.renderer.stamp(piece.cells, '👍', 3);
+    this.sound.praise();
   }
 
   // ------------------------------------------------------------ パズル
@@ -2692,10 +3377,11 @@ class Game {
     this.store.lastLevel = lv;
     saveStore(this.store);
 
-    // このレベルに登場する色（レジェンドはこれだけを並べる）
-    this.activeColors = [...new Set([...this.board.pieces.values()]
-      .filter((p) => p.color !== BLOCKER).map((p) => p.color))].sort((a, b) => a - b);
-    if (this.dom.legend) this.dom.legend.innerHTML = '';
+    // 解への近さを測る道具立て。ここで引き直さないと前のレベルの色を引きずる
+    this.pathIndex = this.buildPath(puzzle);
+    this.startGap = this.colorGap(this.board);
+    this.lastMovedId = null;
+    this.updateProgress(null, true);
 
     this.renderer.resize(this.board.size);
     this.hideOverlay();
@@ -2733,6 +3419,8 @@ class Game {
     this.selected = null;
     this.ghost = null;
     this.anim = null;
+    this.lastMovedId = null;
+    this.updateProgress(null, true);
     this.hideOverlay();
     this.updateHud();
     this.toast('最初からやり直します');
@@ -2779,17 +3467,14 @@ class Game {
 
     this.ghost = null;
     this.selected = pieceId;
+    this.lastMovedId = pieceId;
     this.moves++;
 
     this.board.movePiece(pieceId, dir, steps);
-    this.anim = {
-      phase: 'slide',
-      pieceId,
-      dir,
-      steps,
-      t: 0,
-      duration: Math.min(0.36, 0.1 + steps * 0.033),
-    };
+    const duration = Math.min(0.36, 0.1 + steps * 0.033);
+    this.anim = { phase: 'slide', pieceId, dir, steps, t: 0, duration };
+    // 摩擦の音は滑走アニメと同じ長さで鳴らす（音だけ先に終わると軽くなる）
+    this.sound.slide(steps, duration);
     this.updateHud();
   }
 
@@ -2858,11 +3543,14 @@ class Game {
    */
   afterMove() {
     this.updateHud();
-    if (this.board.isCleared) {
+    const won = this.board.isCleared;
+    // 勝った手はスタンプを出さない ―― クリアの音と重なって、どちらも痩せる
+    this.updateProgress(won ? null : this.lastMovedId);
+    if (won) {
       this.status = 'won';
       this.recordResult();
       this.sound.win();
-      setTimeout(() => this.showWin(), 640);
+      setTimeout(() => this.finishLevel(), 640);
     }
   }
 
@@ -2876,7 +3564,11 @@ class Game {
     this.sound.undo();
     this.selected = null;
     this.ghost = null;
+    this.lastMovedId = null;
     this.renderer.clearEffects();
+    // 色は巻き戻すが、「いちばん先まで行った記録」は残す
+    // （戻して指し直すたびに褒められると、褒め言葉の意味が無くなる）
+    this.updateProgress(null);
     this.hideOverlay();
     this.updateHud();
   }
@@ -2904,6 +3596,10 @@ class Game {
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement) return;
       const key = e.key;
+      // シートが開いているあいだ、後ろの盤面には触らせない。
+      // とくに「名前を決める」は決めるまで閉じないので、ここから抜け出せると
+      // 名無しのまま先へ進めてしまう
+      if (this.anyModalOpen() && key !== 'Escape') return;
       const arrows = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
       if (arrows[key]) {
         e.preventDefault();
@@ -2983,17 +3679,46 @@ class Game {
       if (el) el.addEventListener('click', () => this.openModal(d.modalRules));
     }
     for (const el of [d.btnSettings, d.btnSettings2]) {
-      if (el) el.addEventListener('click', () => this.openModal(d.modalSettings));
+      if (el) {
+        el.addEventListener('click', () => {
+          this.updateSettingsName();
+          this.openModal(d.modalSettings);
+        });
+      }
     }
 
-    for (const modal of [d.modalRules, d.modalSettings, d.modalInstall]) {
+    for (const modal of this.modals()) {
       modal.addEventListener('click', (e) => {
+        // 名前を決めきるまでは、背景タップでも閉じない
+        if (modal === d.modalName && this.nameLocked) return;
         // 閉じるボタンの中身（SVG）が押されることもあるので closest で辿る
         if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) {
           this.closeModals();
         }
       });
     }
+
+    // ランキング
+    if (d.btnRank) d.btnRank.addEventListener('click', () => this.showRanking(this.level));
+    if (d.btnNameSave) d.btnNameSave.addEventListener('click', () => this.commitName());
+    if (d.nameInput) {
+      d.nameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); this.commitName(); }
+      });
+      // 打ち始めたらエラーは引っ込める（打っている最中に赤いのは邪魔）
+      d.nameInput.addEventListener('input', () => {
+        d.nameInput.classList.remove('bad');
+        if (d.nameError) d.nameError.hidden = true;
+      });
+    }
+    if (d.btnChangeName) {
+      d.btnChangeName.addEventListener('click', () => {
+        // 設定シートは畳んでから開く（同じ高さに2枚重なると、どちらも操作しづらい）
+        d.modalSettings.hidden = true;
+        this.askName(false);
+      });
+    }
+    this.updateSettingsName();
 
     // 「データを消す」でも既定に戻せるよう、対応表を持っておく
     this.toggles = {
@@ -3037,7 +3762,7 @@ class Game {
     d.btnReset.textContent = '本当に消す（もう一度タップ）';
     if (d.resetNote) {
       d.resetNote.textContent = `星 ${this.totalStars} 個・クリア ${this.clearedCount} レベル`
-        + `・自己ベスト・設定が消えます。元には戻せません。`;
+        + `・自己ベスト・設定・ランキングの名前が消えます。元には戻せません。`;
     }
     clearTimeout(this.resetTimer);
     this.resetTimer = setTimeout(() => this.disarmReset(), 5000);
@@ -3049,14 +3774,20 @@ class Game {
     this.resetArmed = false;
     clearTimeout(this.resetTimer);
     if (d.btnReset) d.btnReset.textContent = 'この端末のデータを消す';
-    if (d.resetNote) d.resetNote.textContent = '星・自己ベスト・設定を消して、最初の状態に戻します。';
+    if (d.resetNote) {
+      d.resetNote.textContent = '星・自己ベスト・設定・ランキングの名前を消して、最初の状態に戻します。';
+    }
   }
 
   resetAll() {
     this.disarmReset();
-    for (const key of [STORE_KEY, LEGACY_KEY, RULES_KEY]) {
+    for (const key of [STORE_KEY, ...LEGACY_KEYS, RULES_KEY]) {
       try { localStorage.removeItem(key); } catch { /* 消せない環境では諦める */ }
     }
+    // 名前とこの端末のランキングも一緒に消す。「最初の状態」に名前は残らない
+    forgetName();
+    clearLocalRanking();
+    this.updateSettingsName();
 
     this.store = {};
     this.settings = { ...DEFAULT_SETTINGS };
@@ -3236,15 +3967,22 @@ class Game {
     el.hidden = false;
   }
 
-  anyModalOpen() {
+  /** 開け閉めの対象になるシート一覧（HTML に無いものは飛ばす） */
+  modals() {
     const d = this.dom;
-    return !d.modalRules.hidden || !d.modalSettings.hidden || !d.modalInstall.hidden;
+    return [d.modalRules, d.modalSettings, d.modalInstall, d.modalRank, d.modalName].filter(Boolean);
+  }
+
+  anyModalOpen() {
+    return this.modals().some((m) => !m.hidden);
   }
 
   closeModals() {
-    this.dom.modalRules.hidden = true;
-    this.dom.modalSettings.hidden = true;
-    this.dom.modalInstall.hidden = true;
+    for (const modal of this.modals()) {
+      // 名前を決めきるまでは閉じない。名無しの記録をランキングに残さないため
+      if (modal === this.dom.modalName && this.nameLocked) continue;
+      modal.hidden = true;
+    }
     // 開き直したら「本当に消す」は最初から訊き直す
     this.disarmReset();
   }
@@ -3268,43 +4006,6 @@ class Game {
   }
 
   /**
-   * 色ごとの残りブロック数。
-   * そのレベルに実際に出てくる色だけを並べ、1個だけ残っている色
-   * （＝相棒がいないので単独では消せない）は白く縁取って警告する。
-   */
-  updateLegend() {
-    const d = this.dom;
-    if (!d.legend) return;
-    const counts = new Map();
-    for (const p of this.board.pieces.values()) counts.set(p.color, (counts.get(p.color) || 0) + 1);
-
-    const colors = this.activeColors || [];
-    if (d.legend.childElementCount !== colors.length) {
-      d.legend.innerHTML = '';
-      for (const i of colors) {
-        const chip = document.createElement('div');
-        chip.className = 'legend-chip';
-        chip.innerHTML = `<span class="legend-swatch" style="background:${colorFor(i).base}"></span><span class="legend-n">0</span>`;
-        chip.title = `${colorFor(i).name}の残りブロック数`;
-        d.legend.appendChild(chip);
-      }
-      // 色数はレベルによって変わる。1行6個までで、行が均等に埋まる列数にする
-      const rows = Math.max(1, Math.ceil(colors.length / 6));
-      const cols = Math.max(1, Math.ceil(colors.length / rows));
-      d.legend.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-      d.legend.style.maxWidth = `${cols * 76}px`;
-    }
-    colors.forEach((color, i) => {
-      const chip = d.legend.children[i];
-      if (!chip) return;
-      const n = counts.get(color) || 0;
-      chip.querySelector('.legend-n').textContent = String(n);
-      chip.classList.toggle('empty', n === 0);
-      chip.classList.toggle('lone', n === 1);
-    });
-  }
-
-  /**
    * 時計の表示。毎フレーム呼ばれるので、秒が変わったときだけ DOM を触る。
    * 星には関わらないので、色は付けない ―― 急かす意味がない。
    */
@@ -3319,7 +4020,6 @@ class Game {
   updateHud() {
     const d = this.dom;
     d.statMoves.textContent = String(this.moves);
-    d.statLeft.textContent = String(this.board.coloredCount);
     d.statLevel.textContent = String(this.level);
     d.levelInfo.textContent = this.puzzle ? puzzleSummary(this.puzzle) : '\u00a0';
 
@@ -3337,7 +4037,6 @@ class Game {
     }
     this.shownTime = -1; // 表示を作り直す（レベルを跨いだ直後など）
     this.updateTimer();
-    this.updateLegend();
   }
 
   // ------------------------------------------------------------ 結果表示
@@ -3371,6 +4070,23 @@ class Game {
     this.newStars = stars > prevStars;
   }
 
+  /**
+   * クリアの後始末。
+   *
+   * 記録は**必ず**ランキングに出す ―― 「保存しますか？」は訊かない。
+   * 訊いてしまうと、押し忘れた回のぶんだけランキングが実態からずれて、
+   * 「1位の人が本当に1位なのか」が誰にも分からなくなる。
+   * そのぶん名前だけは自分で決めてもらう（初回だけ。以後は自動）。
+   */
+  finishLevel() {
+    this.showWin();
+    if (savedName()) {
+      this.submitResult();
+      return;
+    }
+    this.askName(true);
+  }
+
   showWin() {
     const stars = this.lastStars;
     const moves = this.clearMoves;
@@ -3397,6 +4113,7 @@ class Game {
       ],
       actions: [
         { label: `レベル ${this.level + 1} へ`, primary: true, onClick: () => this.nextLevel() },
+        { label: 'ランキングを見る', onClick: () => this.showRanking(this.level) },
         { label: 'もう一度あそぶ', onClick: () => this.restart() },
         { label: 'レベル一覧', onClick: () => this.showLevels() },
       ],
@@ -3422,6 +4139,11 @@ class Game {
     }
 
     d.overlayExtra.textContent = cfg.extra || '';
+    // 順位は非同期で入る。ここでは必ず空にしておく（前のレベルの順位が残らないように）
+    if (d.overlayRank) {
+      d.overlayRank.textContent = '';
+      d.overlayRank.classList.remove('pending');
+    }
 
     d.overlayStats.innerHTML = '';
     for (const s of cfg.stats || []) {
@@ -3444,6 +4166,167 @@ class Game {
 
   hideOverlay() {
     this.dom.overlay.hidden = true;
+  }
+
+  // ------------------------------------------------------------ ランキング
+
+  /**
+   * 名前を訊く。
+   * @param {boolean} locked クリア直後。決めるまで閉じられない
+   */
+  askName(locked = false) {
+    const d = this.dom;
+    if (!d.modalName) return;
+    this.nameLocked = locked;
+    if (d.nameClose) d.nameClose.hidden = locked;
+    if (d.nameTitle) d.nameTitle.textContent = locked ? '名前を決める' : 'ランキングの名前';
+    if (d.nameLead) {
+      d.nameLead.innerHTML = locked
+        ? 'クリアの記録は、レベルごとのランキングに残ります。<b>この名前で載ります。</b><br>'
+          + '一度決めれば、次からは自動でこの名前が使われます。'
+        : 'ランキングに載せる名前です。変えると、<b>次の記録から</b>新しい名前で載ります。';
+    }
+    if (d.btnNameSave) d.btnNameSave.textContent = locked ? 'この名前で記録する' : 'この名前にする';
+    d.nameInput.value = locked ? '' : savedName();
+    d.nameInput.classList.remove('bad');
+    if (d.nameError) d.nameError.hidden = true;
+    this.openModal(d.modalName);
+    // シートが上がりきってから当てる。上がっている最中だと iOS で外れることがある
+    setTimeout(() => { try { d.nameInput.focus(); } catch { /* 当てられなければそのまま */ } }, 280);
+  }
+
+  /** 入力された名前を確定する。空なら閉じさせない */
+  commitName() {
+    const d = this.dom;
+    const clean = sanitizeName(d.nameInput.value);
+    if (!clean) {
+      if (d.nameError) d.nameError.hidden = false;
+      d.nameInput.classList.add('bad');
+      try { d.nameInput.focus(); } catch { /* 当てられなければそのまま */ }
+      return;
+    }
+    saveName(clean);
+    this.updateSettingsName();
+
+    const wasLocked = this.nameLocked;
+    this.nameLocked = false;
+    d.modalName.hidden = true;
+    if (wasLocked) this.submitResult();
+    else this.toast(`ランキングの名前を「${clean}」にしました`);
+  }
+
+  /** 設定シートに出す、いまの名前 */
+  updateSettingsName() {
+    const el = this.dom.settingsName;
+    if (!el) return;
+    const name = savedName();
+    el.textContent = name || 'まだ決めていません';
+  }
+
+  /**
+   * クリアの記録をランキングへ出す。
+   * 通信が失敗しても端末には残るので、ここで失敗しても記録は消えない。
+   */
+  async submitResult() {
+    const d = this.dom;
+    const level = this.level;
+    const token = ++this.rankToken;
+
+    if (d.overlayRank) {
+      d.overlayRank.classList.add('pending');
+      d.overlayRank.textContent = isGlobalRanking() ? 'ランキングに記録しています…' : '記録しています…';
+    }
+
+    const res = await submitScore({
+      level,
+      name: savedName(),
+      moves: this.clearMoves,
+      time: this.clearTime,
+      stars: this.lastStars,
+    });
+    // 待っているあいだに次のレベルへ行かれていたら、もう出す場所が無い
+    if (token !== this.rankToken || this.level !== level) return;
+    if (!d.overlayRank) return;
+
+    d.overlayRank.classList.remove('pending');
+    d.overlayRank.innerHTML = '';
+    const scope = res.global && !res.offline ? '世界' : 'この端末';
+    const line = document.createElement('span');
+    if (res.rank) {
+      line.innerHTML = `${scope}ランキング <b>${res.rank}位</b>`
+        + `<span class="muted"> ／ ${res.entries.length}人中</span>`;
+    } else {
+      line.textContent = `${scope}ランキングに記録しました`;
+    }
+    d.overlayRank.appendChild(line);
+
+    if (res.offline) {
+      const note = document.createElement('div');
+      note.className = 'muted';
+      note.textContent = 'サーバーにつながらなかったので、この端末に残しました。';
+      d.overlayRank.appendChild(note);
+    }
+  }
+
+  /** レベル別のランキングを開く */
+  async showRanking(level = this.level) {
+    const d = this.dom;
+    if (!d.modalRank) return;
+    const lv = normalizeLevel(level);
+    const token = ++this.rankViewToken;
+
+    d.rankTitle.textContent = `レベル ${lv} のランキング`;
+    d.rankScope.textContent = isGlobalRanking() ? '世界共通 ― 手数の少ない順' : 'この端末 ― 手数の少ない順';
+    d.rankList.innerHTML = '<div class="rank-empty">読み込んでいます…</div>';
+    d.rankNote.textContent = ' ';
+    this.openModal(d.modalRank);
+
+    const res = await fetchRanking(lv);
+    if (token !== this.rankViewToken) return; // 別のレベルを開き直された
+    this.renderRanking(res);
+  }
+
+  /**
+   * ランキングの一覧を組み立てる。
+   * 名前はサーバーから来る他人の文字列なので、必ず textContent で入れる
+   * （innerHTML に流すと、名前に書いた HTML がこちらの画面で動いてしまう）。
+   */
+  renderRanking(res) {
+    const d = this.dom;
+    const me = savedName();
+    d.rankList.innerHTML = '';
+
+    if (!res.entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'rank-empty';
+      empty.textContent = 'まだ誰も記録していません。最初のひとりになりましょう。';
+      d.rankList.appendChild(empty);
+    } else {
+      res.entries.slice(0, RANK_LIMIT).forEach((e, i) => {
+        const row = document.createElement('div');
+        row.className = 'rank-row' + (me && e.name === me ? ' me' : '');
+        const pos = document.createElement('span');
+        pos.className = 'rank-pos';
+        pos.textContent = String(i + 1);
+        const name = document.createElement('span');
+        name.className = 'rank-name';
+        name.textContent = e.name;
+        const moves = document.createElement('span');
+        moves.className = 'rank-moves';
+        moves.textContent = `${e.moves}手`;
+        const time = document.createElement('span');
+        time.className = 'rank-time';
+        time.textContent = formatTime(e.time);
+        row.append(pos, name, moves, time);
+        d.rankList.appendChild(row);
+      });
+    }
+
+    d.rankNote.textContent = res.offline
+      ? 'サーバーにつながらないので、この端末の記録を出しています。'
+      : (res.global
+        ? `世界中の記録から、手数の少ない順に${RANK_LIMIT}位まで。`
+        : 'いまはこの端末の記録だけです。');
   }
 
   // ------------------------------------------------------------ ループ
@@ -3482,6 +4365,15 @@ class Game {
       ghost: this.ghost,
       invalid: this.invalid,
     }, dt);
+
+    // 背景の光は盤面の色と同じ速さで動かす。別々に動くと2つの色がすれ違って濁る。
+    // 進行度は毎フレーム少しずつしか動かないので、動いたときだけ CSS を触る
+    if (Math.abs(this.renderer.progress - this.paintedProgress) > 0.004) {
+      this.paintedProgress = this.renderer.progress;
+      try {
+        document.documentElement.style.setProperty('--game-tint', auraFor(this.paintedProgress));
+      } catch { /* 触れない環境では光が無いだけ */ }
+    }
 
     requestAnimationFrame((t) => this.loop(t));
   }
@@ -3524,9 +4416,7 @@ const dom = {
   hudMoves: $('hud-moves'),
   statTime: $('stat-time'),
   hudTime: $('hud-time'),
-  statLeft: $('stat-left'),
   levelInfo: $('level-info'),
-  legend: $('legend'),
 
   overlay: $('overlay'),
   overlayBadge: $('overlay-badge'),
@@ -3535,6 +4425,7 @@ const dom = {
   overlayText: $('overlay-text'),
   overlayExtra: $('overlay-extra'),
   overlayStats: $('overlay-stats'),
+  overlayRank: $('overlay-rank'),
   overlayActions: $('overlay-actions'),
 
   btnUndo: $('btn-undo'),
@@ -3558,6 +4449,25 @@ const dom = {
   btnShare: $('btn-share'),
   btnReset: $('btn-reset'),
   resetNote: $('reset-note'),
+
+  // ランキング（レベル別・世界共通）
+  btnRank: $('btn-rank'),
+  modalRank: $('modal-rank'),
+  rankTitle: $('rank-title'),
+  rankScope: $('rank-scope'),
+  rankList: $('rank-list'),
+  rankNote: $('rank-note'),
+
+  // 名前（初回だけ訊いて、以後は自動で使う）
+  modalName: $('modal-name'),
+  nameTitle: $('name-title'),
+  nameLead: $('name-lead'),
+  nameInput: $('name-input'),
+  nameError: $('name-error'),
+  nameClose: $('name-close'),
+  btnNameSave: $('btn-name-save'),
+  btnChangeName: $('btn-change-name'),
+  settingsName: $('settings-name'),
 };
 
 const game = new Game(dom);
