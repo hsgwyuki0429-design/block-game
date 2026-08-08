@@ -27,7 +27,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SLIDE POP!">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="stylesheet" href="styles.css?v=b4654fa15e">
+<link rel="stylesheet" href="styles.css?v=4feedcb159">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
@@ -125,8 +125,6 @@
   </div>
 
   <main class="board-wrap">
-    <!-- 解に近づくほど温度が上がる、ごく淡い光。色は JS が進行度から決める -->
-    <div class="game-aura" aria-hidden="true"></div>
     <canvas id="board" aria-label="ゲーム盤面"></canvas>
 
     <div class="overlay" id="overlay" hidden>
@@ -166,6 +164,12 @@
   </nav>
 
 </section>
+
+<!--
+  解に近づくほど、色つきブロックと同じ色が下から画面を満たしていく。
+  盤面より後ろの層なので、画面の外に置いて全面に敷く（色は JS が進行度から決める）。
+-->
+<div class="game-aura" id="game-aura" aria-hidden="true" hidden></div>
 
 <!-- どの画面からでも出せるよう、トーストは画面の外に置く -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -332,6 +336,10 @@
     </button>
     <h2>設定</h2>
 
+    <!-- ブロックの素材。見た目だけが変わり、盤面もルールも変わらない -->
+    <h3 class="settings-head">ブロックの素材</h3>
+    <div class="material-grid" id="material-grid" role="radiogroup" aria-label="ブロックの素材"></div>
+
     <div class="list">
       <label class="row">
         <span class="row-label"><b>サウンド</b><span class="muted">効果音を鳴らす</span></span>
@@ -372,6 +380,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=b4654fa15e"></script>
+<script defer src="app.js?v=4feedcb159"></script>
 </body>
 </html>

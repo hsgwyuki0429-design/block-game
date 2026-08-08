@@ -104,6 +104,9 @@ body {
 
 /* 画面は3つ。同時に見えるのは常に1つだけ */
 .screen {
+  /* 背景に敷く色（.game-aura）より前に置く */
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-width: 540px;
   min-height: 100%;
@@ -499,17 +502,31 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 
 /*
- * 盤面の後ろに広がる光。色は進行度から JS が決めて --game-tint に入れる。
- * 盤面そのものの色も同じ色相で動くので、画面全体が同じ温度になる ――
+ * 画面の後ろに広がる色。色つきブロックとまったく同じ色で、うんと薄い。
+ *
+ * **下から満ちてくる。** 解に近づくほど色が高いところまで上がり、遠ざかれば下がる。
+ * 色相と高さの両方が動くので、盤面を見ているだけで進み具合が視野の端に入る ――
  * 「あと何手」と数字で出すより、目を上げずに済む。
+ *
+ * 値は JS が毎フレーム入れ直す（--game-tint = 色、--game-rise = どこまで満ちたか）。
+ * CSS の transition は使わない ―― 表示用の進行度そのものが滑らかに動くので、
+ * 二重に補間するとかえって遅れて見える。
  */
 .game-aura {
-  position: absolute;
-  inset: -18%;
+  position: fixed;
+  inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: radial-gradient(58% 42% at 50% 50%, var(--game-tint, transparent), transparent 72%);
-  filter: blur(30px);
+  background:
+    /* 盤面のまわりのほのかな滲み */
+    radial-gradient(70% 34% at 50% 46%, var(--game-tint, transparent), transparent 76%),
+    /* 下から満ちる本体。止まり位置が進行度で上がっていく */
+    linear-gradient(
+      to top,
+      var(--game-deep, transparent) 0%,
+      var(--game-tint, transparent) calc(var(--game-rise, 0%) * 0.34),
+      transparent var(--game-rise, 0%)
+    );
 }
 
 .toast {
@@ -823,6 +840,76 @@ svg .fill { fill: currentColor; stroke: none; }
   text-align: center;
   font-size: 13.5px;
   color: var(--label-2);
+}
+
+/* ============================================================ 素材ピッカー */
+
+.settings-head {
+  margin: 0 2px 10px !important;
+  font-size: 13px !important;
+  font-weight: 700;
+  color: var(--label-2);
+  letter-spacing: -0.01em;
+}
+
+.material-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.material-cell {
+  appearance: none;
+  border: 0;
+  padding: 12px 6px 10px;
+  border-radius: 18px;
+  background: var(--fill);
+  color: var(--label);
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  /* 選んだときに枠を足すのではなく、最初から透明な枠を敷いておく。
+     枠の有無で高さが動くと、選ぶたびに一覧がわずかに跳ねる */
+  box-shadow: inset 0 0 0 2px transparent;
+  transition: transform 0.26s var(--spring), background 0.2s, box-shadow 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.material-cell:active { transform: scale(0.94); }
+.material-cell.on {
+  background: var(--accent-fill);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.material-chip {
+  width: 30px;
+  height: 22px;
+  border-radius: 7px;
+  /* 見本にも同じ向きの光を当てる。盤面と光源がずれると別物に見える */
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.22),
+    0 1.5px 3px rgba(0, 0, 0, 0.22);
+}
+
+.material-name {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.material-cell.on .material-name { color: var(--accent); }
+
+.material-note {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--label-3);
+  line-height: 1.2;
+  text-align: center;
+  letter-spacing: -0.01em;
 }
 
 /* ============================================================ 名前を決める */

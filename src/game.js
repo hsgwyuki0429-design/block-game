@@ -10,13 +10,15 @@
 // ★★★ は「最短で解いた」という、あいまいさのない達成になる。
 
 import { Board, BLOCKER } from './board.js';
+import { compile, positionsOf, Explorer } from './exact.js';
 import { DIRS } from './shapes.js';
 import { generateLevelAsync } from './generator.js';
 import {
   levelConfig, normalizeLevel, levelSummary, puzzleSummary,
   targetMoves, starsForMoves, formatTime,
 } from './levels.js';
-import { Renderer, colorFor, auraFor } from './render.js';
+import { Renderer, colorFor } from './render.js';
+import { materialList, materialFor, DEFAULT_MATERIAL } from './materials.js';
 import { attachInput } from './input.js';
 import { Sound } from './audio.js';
 import {
@@ -37,7 +39,11 @@ const LEGACY_KEYS = ['slidepop.v4', 'slidepop.v3'];
 export const RULES_KEY = 'slidepop.seenRules';
 
 /** 設定の初期値。「データを消す」でここへ戻る */
-const DEFAULT_SETTINGS = { sound: true, haptics: true, symbols: false, ghost: true, calm: false };
+const DEFAULT_SETTINGS = {
+  sound: true, haptics: true, symbols: false, ghost: true, calm: false,
+  /** ブロックの素材。見た目だけが変わり、盤面もルールも変わらない */
+  material: DEFAULT_MATERIAL,
+};
 
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
@@ -120,7 +126,25 @@ export class Game {
     this.combo = 0;
 
     /* --- 解へどれだけ近いか（色のグラデーションと「いいね」の判定に使う） --- */
-    /** 手順どおりに指した各局面の指紋 -> 何手目か */
+    /**
+     * 全探索の作業場。
+     *
+     * レベルを読み込むたびに「到達できる盤面すべての、ゴールまでの最短距離」を
+     * 配り直す。以後はどの局面でも表を 1 回引くだけで**残り手数が厳密に分かる**。
+     * 実測で状態数は 6千〜7万、配り終えるのに 15〜600ms ―― 読み込みの一度きりなら
+     * 払える。表もキューも作り置きして使い回す（毎回確保すると 10MB が何度も動く）。
+     */
+    this.solver = null;
+    /** いま距離を配ってある盤面の定義。null なら全探索はまだ／使えていない */
+    this.solverCtx = null;
+    /** 配っている最中の盤面の定義。遊びながら少しずつ進める */
+    this.solvePending = null;
+    /** 色つきブロックの id（探索へ渡すのに要る） */
+    this.colorIds = null;
+    /** いまの局面からゴールまでの残り手数（厳密）。分からなければ null */
+    this.remaining = null;
+
+    /** 手順どおりに指した各局面の指紋 -> 何手目か（全探索が使えないときの控え） */
     this.pathIndex = null;
     /** 初期盤面での色つき2個の隙間。ここからどれだけ詰まったかを測る */
     this.startGap = 0;
@@ -190,11 +214,72 @@ export class Game {
   // 温度だけが変わっていくなら、視線を盤面から外さずに近さが伝わる。
 
   /**
+   * この盤面の「全部の局面からゴールまでの最短距離」を配る。
+   *
+   * ここが効くのは、**遊んでいる最中に残り手数を厳密に言える**ようになること。
+   * 焼いてある解答は最短手順の 1 本でしかないので、そこから外れた瞬間に
+   * 「あと何手か」が分からなくなる。距離を全部の局面に配っておけば、
+   * プレイヤーがどこへ迷い込んでも、そこからの残り手数がそのまま引ける ――
+   * 別の最短手順に乗り換えただけの手を「間違い」と誤解することも無くなる。
+   *
+   * 状態数が多すぎて配りきれないときは false を返す（そのときは焼いてある
+   * 手順との突き合わせに落ちる）。
+   */
+  beginDistances(puzzle) {
+    this.solverCtx = null;
+    this.solvePending = null;
+    this.remaining = null;
+    try {
+      const board = new Board(puzzle.size);
+      board.restore(puzzle.snapshot);
+      this.colorIds = [...board.pieces.values()]
+        .filter((p) => p.color !== BLOCKER).map((p) => p.id);
+      const ctx = compile(board, this.colorIds);
+      if (!this.solver) this.solver = new Explorer(140000);
+      this.solver.begin(ctx);
+      this.solvePending = ctx;
+    } catch {
+      // 盤面が大きすぎる・ブロックが多すぎるなど。控えの物差しに任せる
+      this.solvePending = null;
+    }
+  }
+
+  /**
+   * 距離を配る続きを、フレームの余りだけ進める。
+   *
+   * 予算はアニメーション中だけ絞る。滑っている最中に大きく食うと、
+   * いちばん見られている 0.3 秒がガタつく ―― 待っているのは色だけなので、
+   * そこは譲ってよい。
+   */
+  advanceDistances() {
+    if (!this.solvePending || !this.solver) return;
+    const phase = this.solver.step(this.busy ? 2 : 7);
+    if (phase === 'done') {
+      this.solverCtx = this.solvePending;
+      this.solvePending = null;
+      // 配り終わった時点の局面で測り直す。ここまでは控えの物差しで動いていたので、
+      // 色が少しだけ跳ぶことがある（表示側がなめらかに追いつく）
+      this.updateProgress(null);
+    } else if (phase === 'failed') {
+      this.solvePending = null;
+    }
+  }
+
+  /** いまの局面からゴールまでの残り手数（厳密）。分からなければ null */
+  distanceToGoal() {
+    if (!this.solverCtx || !this.solver) return null;
+    if (this.board.isCleared) return 0;
+    const pos = positionsOf(this.solverCtx, this.board, this.colorIds);
+    if (!pos) return null;
+    const d = this.solver.distanceOf(pos);
+    return d === undefined ? null : d;
+  }
+
+  /**
    * 手順どおりに指した各局面の指紋 -> 何手目か、の索引。
    *
-   * 焼いてある解答は**厳密な最短手順**なので、その線上にいるかどうかを
-   * 指紋の一致だけで判定できる。遠回りして戻ってきた場合も拾えるし、
-   * 「戻す」で巻き戻した場合も正しく手前の位置に落ちる。
+   * 全探索が使えなかったときの控え。焼いてある解答は**厳密な最短手順**なので、
+   * その線上にいるかどうかは指紋の一致だけで判定できる。
    */
   buildPath(puzzle) {
     const board = new Board(puzzle.size);
@@ -237,34 +322,54 @@ export class Game {
   updateProgress(movedPieceId = null, reset = false) {
     if (!this.puzzle) return;
     const par = Math.max(1, this.puzzle.par);
-    const step = this.pathIndex ? this.pathIndex.get(this.board.fingerprint()) : undefined;
+    const before = this.remaining;
+    const now = this.distanceToGoal();
+    this.remaining = now;
     const gap = this.colorGap(this.board);
 
-    const byPath = step == null ? 0 : step / par;
-    const byGap = this.startGap > 0 ? (this.startGap - gap) / this.startGap : 1;
-    this.progress = Math.max(0, Math.min(1, Math.max(byPath, byGap)));
+    if (now != null) {
+      // 残り手数がそのまま進み具合になる。最短 par 手の盤面なら色は par 等分され、
+      // 残りが 1 減るごとに 1 段進み、遠ざかればその場で 1 段戻る
+      this.progress = Math.max(0, Math.min(1, (par - now) / par));
+    } else {
+      // 全探索が使えなかったとき。焼いてある手順の線上か、色つき同士の隙間で測る
+      const step = this.pathIndex ? this.pathIndex.get(this.board.fingerprint()) : undefined;
+      const byPath = step == null ? 0 : step / par;
+      const byGap = this.startGap > 0 ? (this.startGap - gap) / this.startGap : 1;
+      this.progress = Math.max(0, Math.min(1, Math.max(byPath, byGap)));
+    }
     this.renderer.setProgress(this.progress, reset);
 
     if (reset) {
-      this.bestStep = step == null ? 0 : step;
       this.bestGap = gap;
+      this.bestStep = 0;
       return;
     }
     if (movedPieceId == null) return; // 戻す・クリアなど。色だけ合わせる
 
-    // 「更新したときだけ」褒める。毎手だと相づちが安くなって効かなくなる
-    const advanced = (step != null && step > this.bestStep) || gap < this.bestGap;
-    if (step != null && step > this.bestStep) this.bestStep = step;
+    /*
+     * 褒め方は 2 段。
+     *
+     *   残り手数が減った  = その 1 手は**最短手順のひとつ**だった。いちばん濃く褒める
+     *   隙間だけ縮まった  = 解そのものには近づいていないが、形としては寄っている
+     *
+     * 残り手数で見るのが肝。焼いてある手順と一致するかで見ると、**別の最短手順に
+     * 乗り換えただけの手**を間違い扱いしてしまう。最短の道は 1 本ではない。
+     */
+    if (before != null && now != null && now < before) {
+      this.cheer(movedPieceId, 0.75);
+    } else if (gap < this.bestGap) {
+      this.cheer(movedPieceId, 0.33);
+    }
     if (gap < this.bestGap) this.bestGap = gap;
-    if (advanced) this.cheer(movedPieceId);
   }
 
   /**
    * 「いいね」のスタンプと、低いほめ音。
-   * 半々でしか出さない ―― 毎回出ると壁紙になり、出なくなると気づかない。
+   * 確率で間引く ―― 毎回出ると壁紙になり、出なさすぎると気づかれない。
    */
-  cheer(pieceId) {
-    if (Math.random() < 0.5) return;
+  cheer(pieceId, chance) {
+    if (Math.random() >= chance) return;
     const piece = this.board.pieces.get(pieceId);
     if (!piece) return;
     this.renderer.stamp(piece.cells, '👍', 3);
@@ -320,7 +425,6 @@ export class Game {
     this.elapsed = 0;
     this.combo = 0;
     this.targets = targetMoves(puzzle.par);
-    this.status = 'playing';
 
     this.store.lastLevel = lv;
     saveStore(this.store);
@@ -329,6 +433,16 @@ export class Game {
     this.pathIndex = this.buildPath(puzzle);
     this.startGap = this.colorGap(this.board);
     this.lastMovedId = null;
+    this.remaining = null;
+
+    // 残り手数の表は**遊びながら**配る。ここで配り終わるまで待たせると、
+    // 深い盤面では 0.5 秒以上のあいだ画面が固まってしまう。
+    // 配り終わるまでのあいだは、焼いてある手順と隙間で色をおおまかに動かす
+    this.beginDistances(puzzle);
+
+    this.status = 'playing';
+    // 色は残り手数を par 等分した段で動く。焼き上げ直しの刻みもそこに合わせる
+    this.renderer.setSteps(puzzle.par);
     this.updateProgress(null, true);
 
     this.renderer.resize(this.board.size);
@@ -688,6 +802,8 @@ export class Game {
       });
     }
 
+    this.buildMaterialPicker();
+
     d.btnShare.addEventListener('click', () => this.share());
     if (d.btnReset) d.btnReset.addEventListener('click', () => this.askReset());
   }
@@ -740,6 +856,7 @@ export class Game {
     this.store = {};
     this.settings = { ...DEFAULT_SETTINGS };
     this.applySettings();
+    this.markMaterial();
     for (const [key, el] of Object.entries(this.toggles || {})) {
       if (el) el.checked = !!this.settings[key];
     }
@@ -829,6 +946,8 @@ export class Game {
     d.screenHome.hidden = name !== 'home';
     d.screenLevels.hidden = name !== 'levels';
     d.screenGame.hidden = name !== 'game';
+    // 背景の色はゲーム画面だけ。ホームや一覧に持ち込むと、そこの配色が濁る
+    if (d.gameAura) d.gameAura.hidden = name !== 'game';
     // 隠れている間はキャンバスの実寸が 0 なので、見えてから測り直す
     if (name === 'game') requestAnimationFrame(() => this.renderer.resize(this.board.size));
   }
@@ -907,8 +1026,60 @@ export class Game {
 
   applySettings() {
     this.renderer.options = { ...this.settings };
+    this.renderer.setMaterial(this.settings.material);
     this.sound.enabled = this.settings.sound;
     this.sound.haptics = this.settings.haptics;
+  }
+
+  /**
+   * ブロックの素材を選ぶボタンを並べる。
+   * 見本は「その素材で焼いた実物」ではなく代表色の四角 ―― 一覧を実物で描くと
+   * 選ぶだけで6素材ぶんのテクスチャを焼くことになり、シートを開くたびに固まる。
+   */
+  buildMaterialPicker() {
+    const grid = this.dom.materialGrid;
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (const m of materialList()) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'material-cell';
+      btn.dataset.material = m.key;
+      btn.setAttribute('role', 'radio');
+      btn.innerHTML = `<span class="material-chip" style="background:${m.swatch}"></span>`
+        + `<span class="material-name"></span><span class="material-note"></span>`;
+      btn.querySelector('.material-name').textContent = m.name;
+      btn.querySelector('.material-note').textContent = m.note;
+      grid.appendChild(btn);
+    }
+    grid.addEventListener('click', (e) => {
+      const cell = e.target.closest && e.target.closest('[data-material]');
+      if (!cell) return;
+      this.setMaterial(cell.dataset.material);
+    });
+    this.markMaterial();
+  }
+
+  setMaterial(key) {
+    const mat = materialFor(key);
+    if (this.settings.material === mat.key) return;
+    this.settings.material = mat.key;
+    this.applySettings();
+    this.store.settings = this.settings;
+    saveStore(this.store);
+    this.markMaterial();
+    this.toast(`ブロックを「${mat.name}」にしました`);
+  }
+
+  /** いま選ばれている素材に印を付ける */
+  markMaterial() {
+    const grid = this.dom.materialGrid;
+    if (!grid) return;
+    for (const cell of grid.children) {
+      const on = cell.dataset.material === this.settings.material;
+      cell.classList.toggle('on', on);
+      cell.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
   }
 
   openModal(el) {
@@ -1283,6 +1454,9 @@ export class Game {
     const dt = Math.min(0.05, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
 
+    // 残り手数の表を、フレームの余りで少しずつ配る（遊びは止めない）
+    this.advanceDistances();
+
     // 盤面を読んでいる間だけ時計を進める（星はこの時間で決まる）
     if (this.timing) {
       this.elapsed += dt;
@@ -1314,13 +1488,17 @@ export class Game {
       invalid: this.invalid,
     }, dt);
 
-    // 背景の光は盤面の色と同じ速さで動かす。別々に動くと2つの色がすれ違って濁る。
+    // 背景は盤面の色と同じ速さで動かす。別々に動くと2つの色がすれ違って濁る。
     // 進行度は毎フレーム少しずつしか動かないので、動いたときだけ CSS を触る
-    if (Math.abs(this.renderer.progress - this.paintedProgress) > 0.004) {
+    if (Math.abs(this.renderer.progress - this.paintedProgress) > 0.0015) {
       this.paintedProgress = this.renderer.progress;
       try {
-        document.documentElement.style.setProperty('--game-tint', auraFor(this.paintedProgress));
-      } catch { /* 触れない環境では光が無いだけ */ }
+        const style = document.documentElement.style;
+        // 下に溜まるぶんだけ濃く。上は透けたまま伸びていく
+        style.setProperty('--game-tint', this.renderer.auraColor(0.24));
+        style.setProperty('--game-deep', this.renderer.auraColor(0.44));
+        style.setProperty('--game-rise', `${this.renderer.auraRise().toFixed(1)}%`);
+      } catch { /* 触れない環境では背景が白いだけ */ }
     }
 
     requestAnimationFrame((t) => this.loop(t));
