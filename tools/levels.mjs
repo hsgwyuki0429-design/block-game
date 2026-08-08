@@ -24,6 +24,8 @@
 //      110手級は 6×6 以上でしか出ないので、上のレベルだけが自然に広くなる。
 //
 //   ③ 灰色の2マスブロック（1×2・2×1）が少ない盤面から使う。
+//      ただし大きい色つき（2×2 以上）の盤面は 2マス1個ぶん優遇する ――
+//      2マスを減らすことだけを追うと、大きい色つきが全部押し出されてしまう。
 //      小さい灰色が並ぶと盤面が細切れに見えて、どこが通路なのか読みにくい。
 //      ただし2マスを無くすと盤面が動かなくなって手数が伸びない（実測: 禁止すると
 //      最深90手まで落ちる）ので、**禁止ではなく「少ないものを選ぶ」**で効かせる。
@@ -45,6 +47,8 @@ const arg = (name, fallback) => {
 };
 
 const want = Number(arg('levels', 1000));
+/** 大きい色つきを「2マスの灰色◯個ぶん」として優遇するか */
+const BIG_COLOR_BONUS = Number(arg('bigcolor', 3));
 const poolDir = resolve(ROOT, arg('pool', 'data'));
 
 // ── 在庫を読む ──
@@ -84,10 +88,15 @@ for (const file of files) {
     if (seen.has(row.code)) continue; // 同じ盤面は1回だけ
     seen.add(row.code);
     if (!playable(row.code)) { broken++; continue; }
-    // 灰色のうち2マスのものが何個あるか（少ないほど好ましい）
     const pieces = decodeLevel(row.code).pieces;
+    // 灰色のうち2マスのものが何個あるか（少ないほど好ましい）
     row.dominoes = pieces.slice(2).filter((p) => p.w * p.h === 2).length;
     row.greys = pieces.length - 2;
+    // 色つきが 2×2 以上かどうか。2マスの灰色1個ぶんの価値として扱う ――
+    // 2マスを減らすことだけを追うと、大きい色つきの盤面が全部押し出されてしまう
+    // （在庫の 12% はあるのに、焼き上がりでは 1000 本中 1 本まで減った）
+    row.bigColor = pieces.slice(0, 2).some((p) => p.w * p.h >= 4) ? 1 : 0;
+    row.rank = row.dominoes - row.bigColor * BIG_COLOR_BONUS;
     if (!stock.has(row.par)) stock.set(row.par, []);
     stock.get(row.par).push(row);
   }
@@ -100,10 +109,11 @@ if (broken) {
   }
 }
 
-// 同じ手数の在庫は「盤面が小さい順 → 2マスの灰色が少ない順」に並べる。
-// 同点は符号順（何度回しても同じ結果になるように）
+// 同じ手数の在庫は「盤面が小さい順 → 見た目の評点が良い順」に並べる。
+// 評点は「2マスの灰色の数 − 大きい色つきなら1」。同点は符号順（何度回しても同じ結果に）
 for (const rows of stock.values()) {
   rows.sort((a, b) => a.size - b.size
+    || a.rank - b.rank
     || a.dominoes - b.dominoes
     || (a.code < b.code ? -1 : 1));
 }
