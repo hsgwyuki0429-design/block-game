@@ -23,7 +23,7 @@ import { progressColor } from '../src/render.js';
 const HEX = /^#[0-9a-f]{6}$/;
 
 test('素材は一覧と引き当てが噛み合っている', () => {
-  assert.ok(MATERIAL_KEYS.length >= 6);
+  assert.ok(MATERIAL_KEYS.length >= 7);
   assert.ok(MATERIAL_KEYS.includes(DEFAULT_MATERIAL));
   assert.equal(materialList().length, MATERIAL_KEYS.length);
   for (const m of materialList()) {
@@ -47,7 +47,10 @@ test('どの素材も、立体を組み立てるのに要る寸法をすべて�
       assert.ok(m[field] >= 0 && m[field] <= 2, `${key}.${field} が範囲外`);
     }
     assert.ok(['soft', 'facet'].includes(m.bevelStyle), `${key}.bevelStyle が不正`);
-    assert.equal(typeof m.texture, 'function', `${key} にテクスチャが無い`);
+    // 平らな素材（プレーン）だけは模様を持たない。持たないことが仕様なので、
+    // 「関数か null か」だけを見る ―― undefined（書き忘れ）はここで落ちる
+    if (m.flat) assert.equal(m.texture, null, `${key} は平らなのに模様を持っている`);
+    else assert.equal(typeof m.texture, 'function', `${key} にテクスチャが無い`);
     for (const kind of ['grey', 'lit']) {
       for (const slot of ['top', 'mid', 'deep', 'side']) {
         assert.match(m.colors[kind][slot], HEX, `${key}.${kind}.${slot} が色でない`);
@@ -81,6 +84,49 @@ test('色つきブロックは、どの進行度でも灰色ブロックと見�
       // 明るさか色みか、どちらかで十分に離れていればよい
       assert.ok(dl > 24 || dc > 70,
         `${key} の t=${i / 20}: 色つきと灰色が近すぎる（明るさ差 ${dl.toFixed(0)} / 色差 ${dc}）`);
+    }
+  }
+});
+
+test('既定の素材は、いちばん読みやすい平らなもの', () => {
+  const m = materialFor(DEFAULT_MATERIAL);
+  assert.ok(m.flat, '既定の素材が平らでない');
+  assert.equal(m.depth, 0);
+  assert.equal(m.shadow, 0);
+});
+
+test('平らな素材は進行度の色をそのまま着る（素材の明るさに引き戻さない）', () => {
+  const m = materialFor('plain');
+  for (const t of [0, 0.5, 1]) {
+    const c = progressColor(t).base;
+    assert.equal(paletteFor(m, true, c).mid, c, `t=${t} で色が素材に引かれている`);
+  }
+});
+
+test('平らな素材だけ、盤面も進行度の色を追いかける', () => {
+  const plain = materialFor('plain');
+  const stone = materialFor('stone');
+  const a = trayPaletteFor(plain, progressColor(0).base);
+  const b = trayPaletteFor(plain, progressColor(1).base);
+  assert.notEqual(a.floor, b.floor, 'プレーンの盤面が進行度で動いていない');
+  // 盤面は「ほとんど白」でなければならない。濃いと色つきブロックと紛れる
+  for (const p of [a, b]) assert.ok(luma(p.floor) > 200, `盤面が濃すぎる（${p.floor}）`);
+  // それ以外の素材は据え置き（動かすと 1 手ごとにトレイを焼き直すことになる）
+  assert.equal(
+    trayPaletteFor(stone, progressColor(0).base).floor,
+    trayPaletteFor(stone, progressColor(1).base).floor,
+  );
+});
+
+test('立体の素材は、盤面がブロックよりはっきり暗い（輪郭が読める）', () => {
+  for (const key of MATERIAL_KEYS) {
+    const m = materialFor(key);
+    if (m.flat) continue;
+    const tray = luma(m.tray.floor);
+    for (const kind of ['grey', 'lit']) {
+      const block = luma(m.colors[kind].mid);
+      assert.ok(block - tray > 40,
+        `${key}: ${kind} ブロック（${block.toFixed(0)}）と盤面（${tray.toFixed(0)}）の差が小さい`);
     }
   }
 });
@@ -178,6 +224,7 @@ function seamError(canvas) {
 test('テクスチャのタイルは継ぎ目なく繰り返せる', { skip: typeof document === 'undefined' && typeof OffscreenCanvas === 'undefined' }, () => {
   for (const key of MATERIAL_KEYS) {
     const m = materialFor(key);
+    if (!m.texture) continue;
     const tile = m.texture(texturePaletteFor(m, false), 12345);
     assert.ok(seamError(tile) < 26, `${key}: タイルの端が繋がっていない`);
   }

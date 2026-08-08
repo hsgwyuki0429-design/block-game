@@ -2345,9 +2345,15 @@ function makeCanvas(w, h) {
 // ---------------------------------------------------------------- 素材ごとの表面
 
 /**
- * 石 ―― 割って出した面。
- * ridge を効かせた fBm で稜線を立て、粗い粒を上から散らす。色は高いところほど
- * 白茶けさせる（風化した角がいちばん明るい）。
+ * 石 ―― 磨いた御影石。
+ *
+ * 最初は「割り肌」（ridge を効かせた fBm で稜線を立てたもの）にしていたが、
+ * 1 マスが 40px そこそこまで小さくなると、稜線がブロックの輪郭と同じ細かさになり、
+ * 形が模様に埋もれて読めなくなった ―― 皺くちゃの箔にしか見えなかった。
+ *
+ * 磨いた石は**ほとんど平ら**で、石らしさは凹凸ではなく**粒**が持っている。
+ * 明るい長石と暗い黒雲母を閾値で切って散らし、面そのものは撫でるだけにする。
+ * 情報量が減ったぶん、形と色が先に目に入るようになる。
  */
 function stoneTexture(pal, seed) {
   const g = makeNoise(makeRng(seed));
@@ -2356,26 +2362,20 @@ function stoneTexture(pal, seed) {
   const high = hexRgb(pal.top);
   const low = hexRgb(pal.deep);
 
-  const height = (u, v) => {
-    // 大きなうねり（石を割ったときの傾き）に、稜線の立った欠けを重ねる。
-    // ridge を効かせた側が「割れ肌」の正体で、うねりは面全体の向きを決める
-    const slab = fbm2(g, u, v, 3, 3, 2, 0.5);
-    const chip = fbm2(g, u, v, 8, 8, 4, 0.55, true);
-    const sand = noiseAt(grit, u, v, 34, 34) * 0.1;
-    return clip(slab * 0.4 + chip * 0.5 + sand, 0, 1);
+  // 面は撫でるだけ。ここに細かい起伏を足すと、光の向きに沿って明暗が伸び、
+  // 粒ではなく**虫の這った跡**のような筋になる（実際そう見えた）
+  const height = (u, v) => fbm2(g, u, v, 2, 2, 2, 0.5);
+  const color = (u, v) => {
+    // 大きな斑（同じ石でも場所によって色が振れる）
+    const mottle = fbm2(grit, u, v, 3, 3, 2, 0.5) - 0.5;
+    // 粒は閾値で切る。滑らかに混ぜると靄になり、切ると**粒**として残る
+    const pale = clip((noiseAt(grit, u, v, 48, 48, 3, 5) - 0.6) * 2.6, 0, 1);
+    const dark = clip((noiseAt(g, u, v, 40, 40, 9, 13) - 0.64) * 2.8, 0, 1);
+    let c = [0, 1, 2].map((i) => mix(base[i], mottle > 0 ? high[i] : low[i], Math.abs(mottle) * 0.3));
+    c = [0, 1, 2].map((i) => mix(c[i], high[i], pale * 0.72));
+    return [0, 1, 2].map((i) => mix(c[i], low[i], dark * 0.55));
   };
-  const color = (u, v, h) => {
-    // 高い面は風化して明るく、窪みは影が溜まって暗い
-    const t = clip((h - 0.44) * 2.1, -1, 1);
-    const c = t >= 0
-      ? [0, 1, 2].map((i) => mix(base[i], high[i], t * 0.85))
-      : [0, 1, 2].map((i) => mix(base[i], low[i], -t * 0.8));
-    // 石英の粒。ごく小さな明るい点を散らす
-    const fleck = noiseAt(grit, u, v, 52, 52, 7, 11);
-    const k = fleck > 0.86 ? (fleck - 0.86) * 2.4 : 0;
-    return [0, 1, 2].map((i) => mix(c[i], 255, clip(k, 0, 1) * 0.32));
-  };
-  return bumpTile(height, color, { relief: 0.42, ambient: 0.94 });
+  return bumpTile(height, color, { relief: 0.12, ambient: 1 });
 }
 
 /**
@@ -2399,23 +2399,28 @@ function woodTexture(pal, seed) {
     // 段差ができ、木目ではなく等高線のような硬い輪郭になる（実際そう見えた）。
     // 年輪の本数を**偶数**にしてあるのも継ぎ目のため。三角波の周期は 2 なので、
     // 奇数だとタイルの上端と下端で山と谷が入れ替わってしまう
-    const warp = fbm2(g, u, v, 2, 3, 3, 0.5);
-    const t = v * 22 + warp * 1.4;
+    // 本数は少ないほど板に見える。22 本だと 1 マスに何本も入り、木目ではなく
+    // バーコードになった ―― 3 マスぶんのタイルに 4 周（＝山 4 本）で足りる
+    // 歪みは**木目を横切る向きにはほとんど掛けない**（fy=1）。両方向に掛けると
+    // 年輪が渦を巻き、木ではなく大理石か流れる液体に見える（実際そう見えた）
+    const warp = fbm2(g, u, v, 3, 1, 3, 0.5);
+    const t = v * 12 + warp * 1.5;
     const tri = Math.abs((t % 2) - 1);
-    const ring = Math.pow(tri, 0.9);
+    // 指数を上げると谷が広く山が細くなる。年輪は「広い春材に細い濃い線」
+    const ring = Math.pow(tri, 1.7);
     // 導管。木目に沿って走る細い筋（u にはほぼ変化せず、v に細かく振る）
-    const pore = noiseAt(fib, u, v, 2, 70);
-    return clip(ring * 0.7 + pore * 0.3, 0, 1);
+    const pore = noiseAt(fib, u, v, 2, 48) * 0.24;
+    return clip(ring * 0.78 + pore, 0, 1);
   };
   const color = (u, v, h) => {
     const t = clip(h * 1.15 - 0.05, 0, 1);
     const c = [0, 1, 2].map((i) => mix(dark[i], light[i], t));
     // 濃い筋（晩材）をところどころ強く出す
-    const streak = noiseAt(fib, u, v, 2, 26, 5, 9);
-    const k = streak > 0.68 ? (streak - 0.68) * 1.5 : 0;
-    return [0, 1, 2].map((i) => mix(c[i], mid[i] * 0.78, clip(k, 0, 0.45)));
+    const streak = noiseAt(fib, u, v, 2, 18, 5, 9);
+    const k = streak > 0.72 ? (streak - 0.72) * 1.4 : 0;
+    return [0, 1, 2].map((i) => mix(c[i], mid[i] * 0.8, clip(k, 0, 0.36)));
   };
-  return bumpTile(height, color, { relief: 0.32, ambient: 0.97 });
+  return bumpTile(height, color, { relief: 0.22, ambient: 0.98 });
 }
 
 /**
@@ -2459,17 +2464,18 @@ function paperTexture(pal, seed) {
 
   const height = (u, v) => {
     // 紙は「ほとんど平ら」が正解。粗さを上げると石膏や漆喰になってしまう
-    const fiber = noiseAt(f, u, v, 88, 88);
-    const laid = noiseAt(f, u, v, 3, 60, 9, 3) * 0.5;  // 簀の目。ごく淡い横筋
-    const felt = fbm2(g, u, v, 5, 5, 3, 0.6);
+    // 88 本まで細かくすると 1 画素より細かい砂嵐になり、紙ではなく漆喰に見えた
+    const fiber = noiseAt(f, u, v, 44, 44);
+    const laid = noiseAt(f, u, v, 3, 40, 9, 3) * 0.5;  // 簀の目。ごく淡い横筋
+    const felt = fbm2(g, u, v, 4, 4, 3, 0.6);
     const wave = fbm2(g, u, v, 2, 2, 2, 0.5) * 0.5;    // 紙のうねり
-    return clip(fiber * 0.2 + laid * 0.14 + felt * 0.3 + wave, 0, 1);
+    return clip(fiber * 0.13 + laid * 0.12 + felt * 0.32 + wave, 0, 1);
   };
   const color = (u, v, h) => {
     const t = clip((h - 0.5) * 0.6 + 0.5, 0, 1);
     return [0, 1, 2].map((i) => mix(dark[i], base[i], 0.62 + t * 0.38));
   };
-  return bumpTile(height, color, { relief: 0.13, ambient: 0.99 });
+  return bumpTile(height, color, { relief: 0.1, ambient: 0.99 });
 }
 
 /**
@@ -2482,7 +2488,7 @@ function fabricTexture(pal, seed) {
   const base = hexRgb(pal.mid);
   const dark = hexRgb(pal.deep);
   const light = hexRgb(pal.top);
-  const threads = 27; // タイルあたりの糸の本数
+  const threads = 24; // タイルあたりの糸の本数
 
   const height = (u, v) => {
     const fx = u * threads;
@@ -2504,7 +2510,7 @@ function fabricTexture(pal, seed) {
     const c = [0, 1, 2].map((i) => mix(dark[i], base[i], 0.4 + t * 0.6));
     return [0, 1, 2].map((i) => mix(c[i], light[i], clip((h - 0.7) * 1.6, 0, 0.5)));
   };
-  return bumpTile(height, color, { relief: 0.4, ambient: 0.92 });
+  return bumpTile(height, color, { relief: 0.3, ambient: 0.95 });
 }
 
 /**
@@ -2532,30 +2538,71 @@ function crystalTexture(pal, seed) {
  */
 const DEFS = [
   {
+    key: 'plain',
+    name: 'プレーン',
+    note: '色だけの平らな面',
+    /*
+     * 何も乗せない、元からの見た目。
+     *
+     * **いちばん読みやすいのはこれ**なので、既定にしてある。厚みも面取りも影も
+     * テクスチャも持たず、一色のベタ塗りに髪の毛ほどのすき間だけ。
+     * 目が拾うものが「色と形」しか無いので、どのブロックがどこまでかが一瞬で分かる。
+     *
+     * flat が立っている素材は、立体の経路（接地影・側面・面取り・縁・テクスチャ）を
+     * まるごと飛ばす ―― 薄くするのではなく、通らない。
+     */
+    flat: true,
+    depth: 0,
+    bevel: 0,
+    radius: 0.14,
+    gap: 0.032,
+    gloss: 0,
+    sheen: 0,
+    tint: 1,
+    shadow: 0,
+    grain: 0,
+    bevelStyle: 'soft',
+    /** 進行度の色を素材へ混ぜず、そのまま使う（元の見た目がそうだった） */
+    rawTint: true,
+    /** 盤面も進行度の色を、ほとんど白まで薄めて追いかける */
+    trayTint: true,
+    colors: {
+      grey: { top: '#c4c4cb', mid: '#9a9aa2', deep: '#5f5f68', side: '#6e6e78' },
+      lit: { top: '#7f97e6', mid: '#3e47cc', deep: '#2a2f8c', side: '#333a9f' },
+    },
+    tray: { frame: '#dde2f0', floor: '#dde2f0', well: '#eef1f8' },
+    texture: null,
+  },
+  {
     key: 'stone',
     name: '石',
-    note: '割り出した御影石',
+    note: '磨いた御影石',
     depth: 0.115,      // 側面の厚み
-    bevel: 0.13,       // 面取りの幅
-    radius: 0.13,      // 角の丸み
-    gap: 0.055,        // ブロック同士のすき間
-    gloss: 0.1,        // 鏡面の強さ（石はほとんど光らない）
-    sheen: 0.16,       // 天面の明暗の付き方
-    // 明暗の差が見分けを担っているので、色相は控えめでいい。
-    // 石を鮮やかな青にすると、御影石ではなくプラスチックに見える
-    tint: 0.28,        // 進行度の色に引かれる強さ
-    shadow: 0.42,      // 接地影の濃さ
-    facets: 8,         // 面取りの分割数
+    bevel: 0.12,       // 面取りの幅
+    radius: 0.14,      // 角の丸み
+    gap: 0.062,        // ブロック同士のすき間（＝黒い目地の太さ）
+    gloss: 0.12,       // 鏡面の強さ（石はほとんど光らない）
+    sheen: 0.2,        // 天面の明暗の付き方
+    /*
+     * 色つきブロックは進行度の色を**はっきり**まとう。
+     * ここを弱くすると「灰色がかった石が2種類ある」だけの盤面になり、
+     * どれが動かせる色つきなのかが一瞬で読めない（実際そうなっていた）。
+     */
+    tint: 0.54,
+    shadow: 0.5,       // 接地影の濃さ
+    grain: 0.5,        // 表面の模様の出し方。粗すぎると形が読めなくなる
+    facets: 8,
     bevelStyle: 'soft',   // 縁は丸い。面では割らない
-    bevelAlpha: 0.6,      // 天面の粗さが縁まで続くよう、薄く重ねる
+    bevelAlpha: 0.85,
     colors: {
-      grey: { top: '#cdc9c2', mid: '#a29e97', deep: '#6d6a65', side: '#7c7973' },
-      // 色つきは灰色より**はっきり暗い**石にしてある。tintTowards は明るさを
-      // 素材の側に残すので、色相がどこへ動いてもこの明暗差は保たれる ――
-      // 色相だけで差を付けると、緑あたりで灰色と見分けが付かなくなる（実際なった）
-      lit: { top: '#a9b7c4', mid: '#6f7f8d', deep: '#3d4852', side: '#4b5761' },
+      // 灰色は暗い玄武岩、色つきは明るい花崗岩。**明るさが先に目に入り**、
+      // そのあとで色が付いてくる ―― この順でないと小さいマスで見分けが付かない
+      grey: { top: '#a6a29b', mid: '#807c76', deep: '#4f4c47', side: '#5d5a55' },
+      lit: { top: '#eae5dc', mid: '#c9c3b8', deep: '#8a8479', side: '#999287' },
     },
-    tray: { frame: '#8f8b84', floor: '#a8a49c', well: '#b6b2aa' },
+    // 盤面はブロックより**はっきり暗い**。明るい石が暗い受け皿に載っている、
+    // という関係が、ブロックの輪郭をいちばん強く立たせる
+    tray: { frame: '#4c4842', floor: '#38352f', well: '#292722' },
     texture: stoneTexture,
   },
   {
@@ -2563,95 +2610,102 @@ const DEFS = [
     name: '木',
     note: 'ウォールナットと楓',
     depth: 0.1,
-    bevel: 0.07,
+    bevel: 0.075,
     radius: 0.2,
-    gap: 0.05,
-    gloss: 0.24,
-    sheen: 0.22,
-    // 木を真っ青にすると木に見えなくなる。灰色ブロックとの差は
-    // 「ウォールナットと楓」という樹種の差が持ち、色相はほんの少し押すだけ
-    tint: 0.18,
-    shadow: 0.36,
+    gap: 0.058,
+    gloss: 0.26,
+    sheen: 0.24,
+    // 木を真っ青にすると木に見えなくなる。灰色との差は「樹種の差」＝明暗が持ち、
+    // 色相はそこへ乗せるだけ。それでも 0.18 では色が見えなかったので上げる
+    tint: 0.3,
+    shadow: 0.44,
+    grain: 0.62,
     facets: 8,
     bevelStyle: 'soft',
     bevelAlpha: 0.9,
     colors: {
-      grey: { top: '#8c5e3a', mid: '#6e4629', deep: '#402716', side: '#4c3020' },
-      lit: { top: '#f6dfb2', mid: '#e3c088', deep: '#9d7942', side: '#ab8b54' },
+      grey: { top: '#9c6b42', mid: '#7d5330', deep: '#4a2d19', side: '#583620' },
+      lit: { top: '#f8e3bb', mid: '#e4c895', deep: '#a2814d', side: '#b0905e' },
     },
-    tray: { frame: '#a8703f', floor: '#8a5936', well: '#96613a' },
+    tray: { frame: '#3a2819', floor: '#281b10', well: '#1d140b' },
     texture: woodTexture,
   },
   {
     key: 'metal',
     name: '金属',
-    note: 'ヘアラインのステンレス',
+    note: 'ヘアラインの金属',
     depth: 0.095,
     bevel: 0.1,
     radius: 0.16,
-    gap: 0.05,
+    gap: 0.058,
     gloss: 1,
-    sheen: 0.5,
-    tint: 0.55,
-    shadow: 0.5,
+    sheen: 0.42,
+    tint: 0.6,
+    shadow: 0.56,
+    grain: 0.55,
     facets: 8,
     bevelStyle: 'facet',  // 留め継ぎの面取り。金属はここが命
     bevelAlpha: 1,
     banded: true,      // 帯状の映り込みを重ねる（金属だけ）
     colors: {
-      grey: { top: '#e4e6e8', mid: '#a8adb2', deep: '#4a4f55', side: '#5c6167' },
-      lit: { top: '#cfe2f2', mid: '#6f96bb', deep: '#2b4761', side: '#38566f' },
+      grey: { top: '#b9bec3', mid: '#878d93', deep: '#3b4046', side: '#4a4f55' },
+      lit: { top: '#eef4fa', mid: '#c2ccd6', deep: '#697682', side: '#7a8794' },
     },
-    tray: { frame: '#8d9298', floor: '#2a2c2f', well: '#141517' },
+    tray: { frame: '#33363a', floor: '#1d1f22', well: '#121315' },
     texture: metalTexture,
   },
   {
     key: 'crystal',
     name: 'クリスタル',
-    note: 'エメラルドカットのガラス',
+    note: 'エメラルドカット',
     depth: 0.085,
     bevel: 0.17,
     radius: 0,
     chamfer: 0.2,      // 角を 45° で落とす（丸めない）
-    gap: 0.05,
+    gap: 0.058,
     gloss: 1,
     sheen: 0.3,
     tint: 0.95,
-    shadow: 0.3,
+    shadow: 0.42,
+    grain: 0.6,
     facets: 8,
     bevelStyle: 'facet',  // エメラルドカット
     bevelAlpha: 1,
-    translucent: 0.72, // 卓面の不透明度。下のトレイが薄く透ける
+    translucent: 0.76, // 卓面の不透明度。下のトレイが薄く透ける
     prism: true,       // 面の継ぎ目に虹の線を入れる
     colors: {
-      grey: { top: '#eef4fa', mid: '#b4c0cb', deep: '#69747f', side: '#94a0ab' },
-      lit: { top: '#c8ecff', mid: '#4fbdec', deep: '#0f5c82', side: '#2b8cbe' },
+      // 灰色は無色のガラス、色つきは染めたガラス。透けるぶん明暗が薄くなるので、
+      // ここだけは色みの差をいちばん強く取る
+      grey: { top: '#c4cad1', mid: '#8d939a', deep: '#474c52', side: '#6b7178' },
+      lit: { top: '#d8f2ff', mid: '#6ec8ee', deep: '#175f85', side: '#3d95c4' },
     },
-    tray: { frame: '#dfe6ee', floor: '#eef3f8', well: '#f6f9fc' },
+    // 透けるものは、暗い受け皿の上でしか透けて見えない
+    tray: { frame: '#3e4650', floor: '#2b323b', well: '#1d232a' },
     texture: crystalTexture,
   },
   {
     key: 'paper',
     name: '紙',
-    note: '圧した厚紙',
-    depth: 0.075,
+    note: '板紙と白いカード',
+    depth: 0.078,
     bevel: 0.07,
     radius: 0.14,
-    gap: 0.055,
+    gap: 0.06,
     gloss: 0.06,
-    sheen: 0.12,
-    tint: 0.5,
-    shadow: 0.3,
+    sheen: 0.14,
+    tint: 0.56,
+    shadow: 0.38,
+    grain: 0.45,
     facets: 8,
     bevelStyle: 'soft',
-    bevelAlpha: 0.75,
+    bevelAlpha: 0.8,
     colors: {
       // 灰色は板紙（クラフト）、色つきは白いカード。紙どうしなので、
       // 色相ではなく**紙の種類**で差を付けないと見分けが付かない
-      grey: { top: '#cfc6b4', mid: '#b3a894', deep: '#7d735f', side: '#8d8370' },
-      lit: { top: '#fffaf0', mid: '#f4ead6', deep: '#c0b394', side: '#d0c3a4' },
+      grey: { top: '#bdb19b', mid: '#9c9179', deep: '#675e4a', side: '#756c56' },
+      lit: { top: '#fffdf6', mid: '#f7f0e1', deep: '#c6bba1', side: '#d6cbb1' },
     },
-    tray: { frame: '#b6ab95', floor: '#cdc3ae', well: '#dad1bd' },
+    tray: { frame: '#4a4336', floor: '#373127', well: '#2b261e' },
     texture: paperTexture,
   },
   {
@@ -2661,20 +2715,21 @@ const DEFS = [
     depth: 0.085,
     bevel: 0.1,
     radius: 0.24,
-    gap: 0.06,
+    gap: 0.064,
     gloss: 0.05,
-    sheen: 0.14,
-    tint: 0.62,
-    shadow: 0.34,
+    sheen: 0.16,
+    tint: 0.64,
+    shadow: 0.4,
+    grain: 0.6,
     facets: 8,
     bevelStyle: 'soft',
-    bevelAlpha: 0.7,
+    bevelAlpha: 0.75,
     colors: {
       // 灰色は染めた麻、色つきは晒した麻。織り目は同じで、糸の色だけが違う
-      grey: { top: '#b0a89a', mid: '#8e8677', deep: '#5d564a', side: '#6b6456' },
-      lit: { top: '#eae5d6', mid: '#d5cfbc', deep: '#948d7a', side: '#a29b88' },
+      grey: { top: '#968d7e', mid: '#756d5f', deep: '#48423a', side: '#554f44' },
+      lit: { top: '#f2ecdd', mid: '#ded7c4', deep: '#9c947f', side: '#aba38d' },
     },
-    tray: { frame: '#8e8778', floor: '#a49c8c', well: '#b3ab9a' },
+    tray: { frame: '#464036', floor: '#332f28', well: '#272420' },
     texture: fabricTexture,
   },
 ];
@@ -2682,8 +2737,12 @@ const DEFS = [
 /** 素材の並び（設定画面もこの順で出す） */
 const MATERIAL_KEYS = DEFS.map((d) => d.key);
 
-/** 何も選んでいないときの素材 */
-const DEFAULT_MATERIAL = 'stone';
+/**
+ * 何も選んでいないときの素材。
+ * 迷ったら**いちばん読みやすいもの**を出す ―― 素材は好みで選ぶ飾りで、
+ * 遊べることのほうが先にある。
+ */
+const DEFAULT_MATERIAL = 'plain';
 
 const BY_KEY = new Map(DEFS.map((d) => [d.key, d]));
 
@@ -2709,6 +2768,20 @@ function materialList() {
 function paletteFor(mat, isColored, tintHex) {
   const src = isColored ? mat.colors.lit : mat.colors.grey;
   if (!isColored || !tintHex) return { ...src, key: `${mat.key}|grey` };
+  /*
+   * プレーンだけは素材へ混ぜない。混ぜると明るさが素材の側に引き戻されて、
+   * 琥珀まで進んでも青のままの明るさになってしまう ―― 何も乗っていない面では、
+   * 進行度の色そのものが見えるのが正しい。
+   */
+  if (mat.rawTint) {
+    return {
+      top: shade(tintHex, 0.24),
+      mid: tintHex,
+      deep: shade(tintHex, -0.3),
+      side: shade(tintHex, -0.24),
+      key: `${mat.key}|${tintHex}`,
+    };
+  }
   const k = mat.tint;
   return {
     top: tintTowards(src.top, tintHex, k * 0.9),
@@ -2741,7 +2814,17 @@ function texturePaletteFor(mat, isColored) {
  * 温度の変化は色つきブロックと背景の光が担っているので、
  * 受け皿は素材そのものの色で据えておくほうが、画面としても落ち着く。
  */
-function trayPaletteFor(mat) {
+function trayPaletteFor(mat, tintHex) {
+  /*
+   * 例外はプレーンだけ。焼くものが「角丸の塗り 2 枚」しか無いので、
+   * 色が 1 段動くたびに焼き直しても目に見えるほどの間は空かない ――
+   * そのぶん、盤面まで含めて温度が変わる元の見え方が戻ってくる。
+   */
+  if (mat.trayTint && tintHex) {
+    const [h] = rgbHsl(hexRgb(tintHex));
+    const plate = rgbHex(hslRgb(h, 30, 89));
+    return { frame: plate, floor: plate, well: rgbHex(hslRgb(h, 34, 95)), key: `${mat.key}|tray|${tintHex}` };
+  }
   return { ...mat.tray, key: `${mat.key}|tray` };
 }
 
@@ -2754,6 +2837,7 @@ const tileCache = new Map();
  * 1 枚 256×256 の生成に数ミリ秒かかるので、毎フレーム作るわけにはいかない。
  */
 function tileFor(mat, pal) {
+  if (!mat.texture) return null; // プレーンは模様を持たない
   const key = `${mat.key}|${pal.top}|${pal.mid}|${pal.deep}`;
   const hit = tileCache.get(key);
   if (hit) return hit;
@@ -2783,6 +2867,7 @@ const scaleCache = new Map();
  *   回しても継ぎ目は崩れないし、画素の補間も起きない
  */
 function scaledTile(mat, pal, size, turn = false) {
+  if (!mat.texture) return null;
   // 8 の倍数に丸める。下で余白を 1/8 だけ取るので、そこが割り切れないと
   // 縮尺がわずかにずれ、せっかく消した継ぎ目が戻ってくる
   const px = Math.max(16, Math.round(size / 8) * 8);
@@ -3243,12 +3328,13 @@ class Renderer {
     this.tint = progressColor(q);
     this.stonePal = paletteFor(this.material, false, null);
     this.litPal = paletteFor(this.material, true, this.tint.base);
-    this.trayPal = trayPaletteFor(this.material);
+    this.trayPal = trayPaletteFor(this.material, this.tint.base);
   }
 
   /** 背景に敷く色。色つきブロックと同じ色を、うんと薄めて返す */
   auraColor(alpha = 0.22) {
     const m = this.material;
+    if (m.rawTint) return auraFor(this.progress, null, 1, alpha);
     return auraFor(this.progress, m.colors.lit.mid, m.tint, alpha);
   }
 
@@ -3489,6 +3575,17 @@ class Renderer {
    * このゲームでいちばん読みたい情報なので、影の濃さで他と差を付ける。
    */
   drawTray(board) {
+    /*
+     * 平らな盤面は焼かずに、その場で描く。
+     *
+     * プレーンは盤面の色も進行度を追いかけるので、焼いてしまうと色が 1 段動くたびに
+     * 盤面ぶんのキャンバスを作り直すことになる ―― 大きな盤面で 1 手ごとに 55ms
+     * 止まった。中身は角丸の塗り 2 枚しか無いので、毎フレーム直に描くほうがずっと軽い。
+     */
+    if (this.material.flat) {
+      this.bakeFlatTray(this.ctx, board, this.trayPal, this.ox, this.oy, this.cell * this.size);
+      return;
+    }
     const key = `${this.material.key}|${this.cell}|${this.size}|${this.ox},${this.oy}`
       + `|${this.trayPal ? this.trayPal.key : ''}|${this.emptyKey(board)}`;
     if (this.trayKey !== key || !this.trayCache) {
@@ -3530,6 +3627,8 @@ class Renderer {
     const y0 = outPad;
     const radius = Math.max(6, cell * 0.3);
 
+    const grain = mat.grain == null ? 1 : mat.grain;
+
     // --- 落ち影（盤面そのものが台の上に置かれている） ---
     ctx.save();
     ctx.shadowColor = 'rgba(24,22,20,0.3)';
@@ -3551,7 +3650,7 @@ class Renderer {
     const framePal = {
       top: shade(pal.frame, 0.18), mid: pal.frame, deep: shade(pal.frame, -0.24), side: pal.frame,
     };
-    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 3.4 * this.dpr), 0.85);
+    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 3.4 * this.dpr), 0.85 * grain);
     // 枠は 1 段高い ―― 上端が明るく、下端が暗い
     const fg = ctx.createLinearGradient(0, y0 - frame, 0, y0 + w + frame);
     fg.addColorStop(0, 'rgba(255,255,255,0.32)');
@@ -3579,7 +3678,7 @@ class Renderer {
     ctx.fillStyle = pal.floor;
     ctx.fillRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2);
     // 枠と同じ模様が続かないようにずらす
-    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2.4 * this.dpr), 0.5, 37, 61);
+    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2.4 * this.dpr), 0.5 * grain, 37, 61);
     ctx.fillStyle = 'rgba(0,0,0,0.16)';
     ctx.fillRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2);
     ctx.restore();
@@ -3603,7 +3702,7 @@ class Renderer {
       ctx.clip(holes);
       ctx.fillStyle = pal.well;
       ctx.fillRect(0, 0, side, side);
-      this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2 * this.dpr), 0.38, 13, 29);
+      this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2 * this.dpr), 0.38 * grain, 13, 29);
       ctx.fillStyle = 'rgba(0,0,0,0.2)';
       ctx.fillRect(0, 0, side, side);
       ctx.restore();
@@ -3611,6 +3710,56 @@ class Renderer {
     }
 
     return { canvas: cv, x: this.ox - outPad, y: this.oy - outPad, w: side, h: side };
+  }
+
+  /**
+   * 平らな盤面（プレーン）。
+   *
+   * ブロックと同じ寸法・同じすき間の淡いマスを敷き詰めただけの面で、影も枠も無い。
+   * 上半分だけを 1px の白い線でなぞる ―― ガラス板の縁が光を拾ったときの 1 本で、
+   * これだけで面が「浮いている」ように見える。
+   */
+  bakeFlatTray(ctx, board, pal, x0, y0, w) {
+    const n = this.size;
+    const cell = this.cell;
+    const pad = Math.max(2, cell * 0.06);
+    const radius = Math.max(6, cell * 0.24);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
+    ctx.fillStyle = pal.floor;
+    ctx.fill();
+    ctx.clip();
+    /*
+     * 縁の光は上半分だけ。**短い矩形をなぞるのではなく、消えていく線でなぞる** ――
+     * 短い矩形だと下辺がそのまま残り、盤面の真ん中に横線が 1 本走る（走っていた）。
+     */
+    const rim = ctx.createLinearGradient(0, y0 - pad, 0, y0 - pad + (w + pad * 2) * 0.55);
+    rim.addColorStop(0, 'rgba(255,255,255,.85)');
+    rim.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x0 - pad + 0.5, y0 - pad + 0.5, w + pad * 2 - 1, w + pad * 2 - 1, radius);
+    ctx.stroke();
+    ctx.restore();
+
+    // 空きマスだけ、ほんの少し明るく抜く（通路がそのまま読めればいい）
+    const gap = this.tileGap;
+    const size = this.tileSize;
+    const tr = this.tileRadius;
+    ctx.save();
+    ctx.fillStyle = pal.well;
+    ctx.beginPath();
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        if (board && board.at(x, y) !== -1) continue;
+        ctx.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
+      }
+    }
+    ctx.fill();
+    ctx.restore();
   }
 
   /**
@@ -3750,8 +3899,8 @@ class Renderer {
     const cell = this.cell;
     const { minX, minY, cols, rows } = this.cellBounds(cells);
     const depth = this.depth;
-    // 影と厚みがはみ出すぶんの余白
-    const pad = Math.ceil(depth + cell * 0.34);
+    // 影と厚みがはみ出すぶんの余白。平らな素材は何もはみ出さないので 1px でいい
+    const pad = mat.flat ? 1 : Math.ceil(depth + cell * 0.34);
     const w = cols * cell + pad * 2;
     const h = rows * cell + pad * 2;
     // 画素密度ぶん大きく焼いて、貼るときに CSS 画素へ戻す。
@@ -3772,6 +3921,19 @@ class Renderer {
     const rects = this.rectsFor(cells, ox, oy, gap, radius);
     const outer = this.pathOf(rects, chamfer);
     const box = this.bboxOf(rects);
+
+    /*
+     * 平らな素材（プレーン）はここで終わり。
+     *
+     * 立体の経路を薄くするのではなく、**通らない**。接地影も側面も面取りも縁の線も
+     * 無いので、目が拾うものが「色と形」だけになる ―― どのブロックがどこまでかを
+     * いちばん速く読めるのがこの見た目で、だから既定にしてある。
+     */
+    if (mat.flat) {
+      ctx.fillStyle = pal.mid;
+      ctx.fill(outer);
+      return { canvas: cv, pad, minX, minY, w, h };
+    }
 
     // 卓面（面取りの内側）。角の落としも面取りのぶんだけ小さくなる
     const innerCut = chamfer ? Math.max(1, chamfer - bevel * 0.7) : Math.max(0.5, radius - bevel * 0.6);
@@ -3865,9 +4027,18 @@ class Renderer {
     ctx.globalAlpha = alpha;
     ctx.fillStyle = pal.mid;
     ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+    /*
+     * 模様は**地の上に薄く重ねる**。
+     *
+     * 昔はここを不透明で敷いていたが、マスが 40px 前後まで小さくなると
+     * 粒や織り目が形と同じ細かさになり、ブロックの輪郭が模様に埋もれて読めなくなる。
+     * grain のぶんだけ透かして、下のベタ塗りを残す ―― 素材は「触れそうな表面」に
+     * 見えればよく、拡大鏡で見るためのものではない。
+     */
     // 同じ形のブロックでも模様の位置をずらす（並ぶと繰り返しが目に付く）
     if (tile) {
-      this.fillTexture(ctx, tile, alpha, tile.width * variant * 0.37, tile.height * variant * 0.61);
+      this.fillTexture(ctx, tile, alpha * (mat.grain == null ? 1 : mat.grain),
+        tile.width * variant * 0.37, tile.height * variant * 0.61);
     }
     ctx.globalAlpha = 1;
 
@@ -3902,13 +4073,12 @@ class Renderer {
     // 帯状の映り込み（金属だけ）。研磨の筋と直交する向きに置く
     if (mat.banded) {
       const g = ctx.createLinearGradient(0, box.y0, 0, box.y1);
-      g.addColorStop(0, 'rgba(255,255,255,0.36)');
-      g.addColorStop(0.14, 'rgba(255,255,255,0.04)');
-      g.addColorStop(0.33, 'rgba(0,0,0,0.22)');
-      g.addColorStop(0.5, 'rgba(255,255,255,0.26)');
-      g.addColorStop(0.68, 'rgba(0,0,0,0.18)');
-      g.addColorStop(0.86, 'rgba(255,255,255,0.2)');
-      g.addColorStop(1, 'rgba(0,0,0,0.12)');
+      // 帯は 3 本まで。以前は 5 本入れていたが、板ではなく波板に見えた
+      g.addColorStop(0, 'rgba(255,255,255,0.3)');
+      g.addColorStop(0.18, 'rgba(255,255,255,0.02)');
+      g.addColorStop(0.44, 'rgba(0,0,0,0.16)');
+      g.addColorStop(0.62, 'rgba(255,255,255,0.18)');
+      g.addColorStop(1, 'rgba(0,0,0,0.14)');
       ctx.fillStyle = g;
       ctx.fillRect(box.x0, box.y0, box.w, box.h);
     }

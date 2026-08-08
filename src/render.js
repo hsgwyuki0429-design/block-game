@@ -367,12 +367,13 @@ export class Renderer {
     this.tint = progressColor(q);
     this.stonePal = paletteFor(this.material, false, null);
     this.litPal = paletteFor(this.material, true, this.tint.base);
-    this.trayPal = trayPaletteFor(this.material);
+    this.trayPal = trayPaletteFor(this.material, this.tint.base);
   }
 
   /** 背景に敷く色。色つきブロックと同じ色を、うんと薄めて返す */
   auraColor(alpha = 0.22) {
     const m = this.material;
+    if (m.rawTint) return auraFor(this.progress, null, 1, alpha);
     return auraFor(this.progress, m.colors.lit.mid, m.tint, alpha);
   }
 
@@ -613,6 +614,17 @@ export class Renderer {
    * このゲームでいちばん読みたい情報なので、影の濃さで他と差を付ける。
    */
   drawTray(board) {
+    /*
+     * 平らな盤面は焼かずに、その場で描く。
+     *
+     * プレーンは盤面の色も進行度を追いかけるので、焼いてしまうと色が 1 段動くたびに
+     * 盤面ぶんのキャンバスを作り直すことになる ―― 大きな盤面で 1 手ごとに 55ms
+     * 止まった。中身は角丸の塗り 2 枚しか無いので、毎フレーム直に描くほうがずっと軽い。
+     */
+    if (this.material.flat) {
+      this.bakeFlatTray(this.ctx, board, this.trayPal, this.ox, this.oy, this.cell * this.size);
+      return;
+    }
     const key = `${this.material.key}|${this.cell}|${this.size}|${this.ox},${this.oy}`
       + `|${this.trayPal ? this.trayPal.key : ''}|${this.emptyKey(board)}`;
     if (this.trayKey !== key || !this.trayCache) {
@@ -654,6 +666,8 @@ export class Renderer {
     const y0 = outPad;
     const radius = Math.max(6, cell * 0.3);
 
+    const grain = mat.grain == null ? 1 : mat.grain;
+
     // --- 落ち影（盤面そのものが台の上に置かれている） ---
     ctx.save();
     ctx.shadowColor = 'rgba(24,22,20,0.3)';
@@ -675,7 +689,7 @@ export class Renderer {
     const framePal = {
       top: shade(pal.frame, 0.18), mid: pal.frame, deep: shade(pal.frame, -0.24), side: pal.frame,
     };
-    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 3.4 * this.dpr), 0.85);
+    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 3.4 * this.dpr), 0.85 * grain);
     // 枠は 1 段高い ―― 上端が明るく、下端が暗い
     const fg = ctx.createLinearGradient(0, y0 - frame, 0, y0 + w + frame);
     fg.addColorStop(0, 'rgba(255,255,255,0.32)');
@@ -703,7 +717,7 @@ export class Renderer {
     ctx.fillStyle = pal.floor;
     ctx.fillRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2);
     // 枠と同じ模様が続かないようにずらす
-    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2.4 * this.dpr), 0.5, 37, 61);
+    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2.4 * this.dpr), 0.5 * grain, 37, 61);
     ctx.fillStyle = 'rgba(0,0,0,0.16)';
     ctx.fillRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2);
     ctx.restore();
@@ -727,7 +741,7 @@ export class Renderer {
       ctx.clip(holes);
       ctx.fillStyle = pal.well;
       ctx.fillRect(0, 0, side, side);
-      this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2 * this.dpr), 0.38, 13, 29);
+      this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2 * this.dpr), 0.38 * grain, 13, 29);
       ctx.fillStyle = 'rgba(0,0,0,0.2)';
       ctx.fillRect(0, 0, side, side);
       ctx.restore();
@@ -735,6 +749,56 @@ export class Renderer {
     }
 
     return { canvas: cv, x: this.ox - outPad, y: this.oy - outPad, w: side, h: side };
+  }
+
+  /**
+   * 平らな盤面（プレーン）。
+   *
+   * ブロックと同じ寸法・同じすき間の淡いマスを敷き詰めただけの面で、影も枠も無い。
+   * 上半分だけを 1px の白い線でなぞる ―― ガラス板の縁が光を拾ったときの 1 本で、
+   * これだけで面が「浮いている」ように見える。
+   */
+  bakeFlatTray(ctx, board, pal, x0, y0, w) {
+    const n = this.size;
+    const cell = this.cell;
+    const pad = Math.max(2, cell * 0.06);
+    const radius = Math.max(6, cell * 0.24);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
+    ctx.fillStyle = pal.floor;
+    ctx.fill();
+    ctx.clip();
+    /*
+     * 縁の光は上半分だけ。**短い矩形をなぞるのではなく、消えていく線でなぞる** ――
+     * 短い矩形だと下辺がそのまま残り、盤面の真ん中に横線が 1 本走る（走っていた）。
+     */
+    const rim = ctx.createLinearGradient(0, y0 - pad, 0, y0 - pad + (w + pad * 2) * 0.55);
+    rim.addColorStop(0, 'rgba(255,255,255,.85)');
+    rim.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x0 - pad + 0.5, y0 - pad + 0.5, w + pad * 2 - 1, w + pad * 2 - 1, radius);
+    ctx.stroke();
+    ctx.restore();
+
+    // 空きマスだけ、ほんの少し明るく抜く（通路がそのまま読めればいい）
+    const gap = this.tileGap;
+    const size = this.tileSize;
+    const tr = this.tileRadius;
+    ctx.save();
+    ctx.fillStyle = pal.well;
+    ctx.beginPath();
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        if (board && board.at(x, y) !== -1) continue;
+        ctx.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
+      }
+    }
+    ctx.fill();
+    ctx.restore();
   }
 
   /**
@@ -874,8 +938,8 @@ export class Renderer {
     const cell = this.cell;
     const { minX, minY, cols, rows } = this.cellBounds(cells);
     const depth = this.depth;
-    // 影と厚みがはみ出すぶんの余白
-    const pad = Math.ceil(depth + cell * 0.34);
+    // 影と厚みがはみ出すぶんの余白。平らな素材は何もはみ出さないので 1px でいい
+    const pad = mat.flat ? 1 : Math.ceil(depth + cell * 0.34);
     const w = cols * cell + pad * 2;
     const h = rows * cell + pad * 2;
     // 画素密度ぶん大きく焼いて、貼るときに CSS 画素へ戻す。
@@ -896,6 +960,19 @@ export class Renderer {
     const rects = this.rectsFor(cells, ox, oy, gap, radius);
     const outer = this.pathOf(rects, chamfer);
     const box = this.bboxOf(rects);
+
+    /*
+     * 平らな素材（プレーン）はここで終わり。
+     *
+     * 立体の経路を薄くするのではなく、**通らない**。接地影も側面も面取りも縁の線も
+     * 無いので、目が拾うものが「色と形」だけになる ―― どのブロックがどこまでかを
+     * いちばん速く読めるのがこの見た目で、だから既定にしてある。
+     */
+    if (mat.flat) {
+      ctx.fillStyle = pal.mid;
+      ctx.fill(outer);
+      return { canvas: cv, pad, minX, minY, w, h };
+    }
 
     // 卓面（面取りの内側）。角の落としも面取りのぶんだけ小さくなる
     const innerCut = chamfer ? Math.max(1, chamfer - bevel * 0.7) : Math.max(0.5, radius - bevel * 0.6);
@@ -989,9 +1066,18 @@ export class Renderer {
     ctx.globalAlpha = alpha;
     ctx.fillStyle = pal.mid;
     ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+    /*
+     * 模様は**地の上に薄く重ねる**。
+     *
+     * 昔はここを不透明で敷いていたが、マスが 40px 前後まで小さくなると
+     * 粒や織り目が形と同じ細かさになり、ブロックの輪郭が模様に埋もれて読めなくなる。
+     * grain のぶんだけ透かして、下のベタ塗りを残す ―― 素材は「触れそうな表面」に
+     * 見えればよく、拡大鏡で見るためのものではない。
+     */
     // 同じ形のブロックでも模様の位置をずらす（並ぶと繰り返しが目に付く）
     if (tile) {
-      this.fillTexture(ctx, tile, alpha, tile.width * variant * 0.37, tile.height * variant * 0.61);
+      this.fillTexture(ctx, tile, alpha * (mat.grain == null ? 1 : mat.grain),
+        tile.width * variant * 0.37, tile.height * variant * 0.61);
     }
     ctx.globalAlpha = 1;
 
@@ -1026,13 +1112,12 @@ export class Renderer {
     // 帯状の映り込み（金属だけ）。研磨の筋と直交する向きに置く
     if (mat.banded) {
       const g = ctx.createLinearGradient(0, box.y0, 0, box.y1);
-      g.addColorStop(0, 'rgba(255,255,255,0.36)');
-      g.addColorStop(0.14, 'rgba(255,255,255,0.04)');
-      g.addColorStop(0.33, 'rgba(0,0,0,0.22)');
-      g.addColorStop(0.5, 'rgba(255,255,255,0.26)');
-      g.addColorStop(0.68, 'rgba(0,0,0,0.18)');
-      g.addColorStop(0.86, 'rgba(255,255,255,0.2)');
-      g.addColorStop(1, 'rgba(0,0,0,0.12)');
+      // 帯は 3 本まで。以前は 5 本入れていたが、板ではなく波板に見えた
+      g.addColorStop(0, 'rgba(255,255,255,0.3)');
+      g.addColorStop(0.18, 'rgba(255,255,255,0.02)');
+      g.addColorStop(0.44, 'rgba(0,0,0,0.16)');
+      g.addColorStop(0.62, 'rgba(255,255,255,0.18)');
+      g.addColorStop(1, 'rgba(0,0,0,0.14)');
       ctx.fillStyle = g;
       ctx.fillRect(box.x0, box.y0, box.w, box.h);
     }
