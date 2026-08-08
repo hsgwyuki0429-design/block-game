@@ -135,8 +135,10 @@ export class Game {
      * 払える。表もキューも作り置きして使い回す（毎回確保すると 10MB が何度も動く）。
      */
     this.solver = null;
-    /** いま距離を配ってある盤面の定義。null なら全探索は使えていない */
+    /** いま距離を配ってある盤面の定義。null なら全探索はまだ／使えていない */
     this.solverCtx = null;
+    /** 配っている最中の盤面の定義。遊びながら少しずつ進める */
+    this.solvePending = null;
     /** 色つきブロックの id（探索へ渡すのに要る） */
     this.colorIds = null;
     /** いまの局面からゴールまでの残り手数（厳密）。分からなければ null */
@@ -223,8 +225,9 @@ export class Game {
    * 状態数が多すぎて配りきれないときは false を返す（そのときは焼いてある
    * 手順との突き合わせに落ちる）。
    */
-  buildDistances(puzzle) {
+  beginDistances(puzzle) {
     this.solverCtx = null;
+    this.solvePending = null;
     this.remaining = null;
     try {
       const board = new Board(puzzle.size);
@@ -233,12 +236,32 @@ export class Game {
         .filter((p) => p.color !== BLOCKER).map((p) => p.id);
       const ctx = compile(board, this.colorIds);
       if (!this.solver) this.solver = new Explorer(140000);
-      if (!this.solver.run(ctx)) return false;
-      this.solverCtx = ctx;
-      return true;
+      this.solver.begin(ctx);
+      this.solvePending = ctx;
     } catch {
       // 盤面が大きすぎる・ブロックが多すぎるなど。控えの物差しに任せる
-      return false;
+      this.solvePending = null;
+    }
+  }
+
+  /**
+   * 距離を配る続きを、フレームの余りだけ進める。
+   *
+   * 予算はアニメーション中だけ絞る。滑っている最中に大きく食うと、
+   * いちばん見られている 0.3 秒がガタつく ―― 待っているのは色だけなので、
+   * そこは譲ってよい。
+   */
+  advanceDistances() {
+    if (!this.solvePending || !this.solver) return;
+    const phase = this.solver.step(this.busy ? 2 : 7);
+    if (phase === 'done') {
+      this.solverCtx = this.solvePending;
+      this.solvePending = null;
+      // 配り終わった時点の局面で測り直す。ここまでは控えの物差しで動いていたので、
+      // 色が少しだけ跳ぶことがある（表示側がなめらかに追いつく）
+      this.updateProgress(null);
+    } else if (phase === 'failed') {
+      this.solvePending = null;
     }
   }
 
@@ -412,14 +435,10 @@ export class Game {
     this.lastMovedId = null;
     this.remaining = null;
 
-    // 距離を配るあいだは画面が止まるので、先に「数えています」を出して 1 フレーム譲る。
-    // 時計はまだ動かさない（status は 'loading' のまま）―― 数えている時間は
-    // プレイヤーの時間ではない
-    this.showLoading(lv, 1, '残り手数を数えています…');
-    await new Promise((r) => requestAnimationFrame(r));
-    if (token !== this.loadToken) return;
-    this.buildDistances(puzzle);
-    if (token !== this.loadToken) return;
+    // 残り手数の表は**遊びながら**配る。ここで配り終わるまで待たせると、
+    // 深い盤面では 0.5 秒以上のあいだ画面が固まってしまう。
+    // 配り終わるまでのあいだは、焼いてある手順と隙間で色をおおまかに動かす
+    this.beginDistances(puzzle);
 
     this.status = 'playing';
     // 色は残り手数を par 等分した段で動く。焼き上げ直しの刻みもそこに合わせる
@@ -432,14 +451,14 @@ export class Game {
     location.hash = `#L${lv}`;
   }
 
-  showLoading(level, ratio = 0, note = '') {
+  showLoading(level, ratio = 0) {
     const cfg = levelConfig(level);
     const tried = Math.round(ratio * cfg.attempts);
     this.showOverlay({
       badge: '🧩',
       title: `レベル ${level}`,
-      text: note || (`${cfg.size}×${cfg.size}・最短${cfg.par}手 の盤面を組み立てています…`
-        + (tried > 0 ? `（${tried} 通り目）` : '')),
+      text: `${cfg.size}×${cfg.size}・最短${cfg.par}手 の盤面を組み立てています…`
+        + (tried > 0 ? `（${tried} 通り目）` : ''),
       stats: [],
       actions: [],
     });
@@ -1434,6 +1453,9 @@ export class Game {
   loop(now) {
     const dt = Math.min(0.05, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
+
+    // 残り手数の表を、フレームの余りで少しずつ配る（遊びは止めない）
+    this.advanceDistances();
 
     // 盤面を読んでいる間だけ時計を進める（星はこの時間で決まる）
     if (this.timing) {

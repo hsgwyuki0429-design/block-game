@@ -274,3 +274,57 @@ test('ブロックを入れ替えただけの盤面は、同じ局面として�
   assert.equal(ex.distanceOf(positionsOf(ctx, board, colorIds)), base,
     '同形を入れ替えただけで別の局面になっている');
 });
+
+test('少しずつ配っても、一気に配ったのと同じ距離になる', () => {
+  const pz = levelPuzzle(120);
+  const board = new Board(pz.size);
+  board.restore(pz.snapshot);
+  const colorIds = [...board.pieces.values()]
+    .filter((p) => p.color !== BLOCKER).map((p) => p.id);
+  const ctx = compile(board, colorIds);
+
+  const whole = new Explorer(120000);
+  assert.ok(whole.run(ctx));
+
+  // 予算 0 で刻む＝1 回の step でごく少ししか進まない。何度でも呼べること自体も試す
+  const sliced = new Explorer(120000);
+  sliced.begin(ctx);
+  let phase = 'forward';
+  let rounds = 0;
+  while (phase !== 'done' && phase !== 'failed') {
+    phase = sliced.step(0);
+    assert.ok(++rounds < 200000, '刻んで進めると終わらない');
+  }
+  assert.equal(phase, 'done');
+  assert.ok(rounds > 1, '1 回で終わってしまい、刻めていない');
+
+  assert.equal(sliced.size, whole.size, '集めた盤面の数が違う');
+  assert.equal(sliced.depth, whole.depth, 'いちばん深い距離が違う');
+  assert.deepEqual(sliced.counts, whole.counts, '距離ごとの件数が違う');
+
+  // 初期盤面と、手順を進めた先の距離が一致すること
+  const at = (ex) => ex.distanceOf(positionsOf(ctx, board, colorIds));
+  assert.equal(at(sliced), at(whole));
+  assert.equal(at(sliced), pz.par);
+  for (let i = 0; i < 20; i++) {
+    board.applyMove(pz.solution[i].pieceId, pz.solution[i].dir);
+    assert.equal(at(sliced), at(whole), `${i + 1}手目で食い違った`);
+  }
+});
+
+test('配り終わるまでは距離を引けない（引けたつもりで嘘を返さない）', () => {
+  const pz = levelPuzzle(120);
+  const board = new Board(pz.size);
+  board.restore(pz.snapshot);
+  const colorIds = [...board.pieces.values()]
+    .filter((p) => p.color !== BLOCKER).map((p) => p.id);
+  const ctx = compile(board, colorIds);
+
+  const ex = new Explorer(120000);
+  ex.begin(ctx);
+  assert.equal(ex.ready, false);
+  ex.step(1);
+  assert.equal(ex.ready, false, '1 回刻んだだけで終わったことになっている');
+  while (ex.step(Infinity) === 'running');
+  assert.equal(ex.ready, true);
+});

@@ -421,10 +421,24 @@ export class Explorer {
   }
 
   /**
-   * ctx の到達集合を全部展開し、ゴールまでの距離を配る。
+   * ctx の到達集合を全部展開し、ゴールまでの距離を配る（最後まで一気に）。
    * @returns {boolean} 状態数が cap に収まって探索できたか
    */
   run(ctx) {
+    this.begin(ctx);
+    while (this.step(Infinity) === 'running');
+    return this.phase === 'done';
+  }
+
+  /**
+   * 少しずつ進める探索の下ごしらえ。
+   *
+   * 一気に回すと、深い盤面では 0.5 秒以上のあいだ画面が固まる。遊び始める前に
+   * それだけ待たせるのは筋が悪いので、**遊べる状態のまま少しずつ**配れるように
+   * してある（begin -> step を何度も -> done）。
+   * 配り終わるまでのあいだ、呼び出し側は控えの物差しで色を動かせばいい。
+   */
+  begin(ctx) {
     this.ctx = ctx;
     this.vals.fill(SLOT_EMPTY);
     // 接触判定の世代印。持ち越すと前回の印を「今回の印」と読み違えて、
@@ -434,97 +448,155 @@ export class Explorer {
     this.depth = 0;
     this.counts = [];
 
-    const { n, delta } = ctx;
-    const { occ, stamp, pos, keys, vals, cap } = this;
-    let queue = this.queueA;
-    let nextQueue = this.queueB;
-
-    // ── 前向き BFS: S0 から到達できる盤面を全部集める ──
+    this.queue = this.queueA;
+    this.nextQueue = this.queueB;
     this.canon(ctx.start);
-    queue[0] = this.slotOf(true);
-    let count = 1;
-    while (count > 0) {
-      let nextCount = 0;
-      for (let f = 0; f < count; f++) {
-        const at = queue[f] * STRIDE;
-        for (let i = 0; i < n; i++) pos[i] = keys[at + i];
-        occ.fill(0);
-        for (let k = 0; k < n; k++) mark(ctx, pos, k, occ, 1);
+    this.queue[0] = this.slotOf(true);
+    this.count = 1;
+    this.cursor = 0;
+    this.nextCount = 0;
+    this.gen = 1;
+    this.scanAt = 0;
+    this.phase = 'forward';
+  }
 
-        for (let k = 0; k < n; k++) {
-          mark(ctx, pos, k, occ, 0);
-          const a = pos[k];
-          for (let d = 0; d < 4; d++) {
-            const steps = slide(ctx, pos, k, d, occ);
-            if (steps <= 0) continue;
-            pos[k] = a + delta[d] * steps;
+  /**
+   * 予算（ミリ秒）ぶんだけ探索を進める。
+   * @returns {'forward'|'seed'|'backward'|'done'|'failed'} いまの段階
+   */
+  step(budgetMs = 6) {
+    if (this.phase === 'done' || this.phase === 'failed') return this.phase;
+    const until = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + budgetMs;
+    while (this.phase !== 'done' && this.phase !== 'failed') {
+      if (this.phase === 'forward') this.stepForward(until);
+      else if (this.phase === 'seed') this.stepSeed(until);
+      else this.stepBackward(until);
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (now >= until) break;
+    }
+    return this.phase;
+  }
+
+  /** 探索が終わって距離が引ける状態か */
+  get ready() {
+    return this.phase === 'done';
+  }
+
+  /** ── 前向き BFS: S0 から到達できる盤面を全部集める ── */
+  stepForward(until) {
+    const ctx = this.ctx;
+    const { n, delta } = ctx;
+    const { occ, pos, keys, cap } = this;
+    let ticks = 0;
+    for (;;) {
+      if (this.cursor >= this.count) {
+        const t = this.queue;
+        this.queue = this.nextQueue;
+        this.nextQueue = t;
+        this.count = this.nextCount;
+        this.nextCount = 0;
+        this.cursor = 0;
+        if (this.count === 0) { this.phase = 'seed'; this.count = 0; return; }
+      }
+      const at = this.queue[this.cursor++] * STRIDE;
+      for (let i = 0; i < n; i++) pos[i] = keys[at + i];
+      occ.fill(0);
+      for (let k = 0; k < n; k++) mark(ctx, pos, k, occ, 1);
+
+      for (let k = 0; k < n; k++) {
+        mark(ctx, pos, k, occ, 0);
+        const a = pos[k];
+        for (let d = 0; d < 4; d++) {
+          const steps = slide(ctx, pos, k, d, occ);
+          if (steps <= 0) continue;
+          pos[k] = a + delta[d] * steps;
+          this.canon(pos);
+          pos[k] = a;
+          const slot = this.slotOf(true);
+          if (!this.inserted) continue;
+          this.nextQueue[this.nextCount++] = slot;
+        }
+        mark(ctx, pos, k, occ, 1);
+      }
+      if (this.size > cap) { this.phase = 'failed'; return; } // 広すぎる。諦める
+      if ((++ticks & 31) === 0
+        && (typeof performance !== 'undefined' ? performance.now() : Date.now()) >= until) return;
+    }
+  }
+
+  /** ── 接触している盤面（＝ゴール）を距離 0 として拾い集める ── */
+  stepSeed(until) {
+    const ctx = this.ctx;
+    const { vals, pos, stamp } = this;
+    let ticks = 0;
+    while (this.scanAt <= this.mask) {
+      const s = this.scanAt++;
+      if (vals[s] === -1) {
+        this.read(s, pos);
+        if (touching(ctx, pos, stamp, this.gen++)) {
+          vals[s] = 0;
+          this.queue[this.count++] = s;
+        }
+      }
+      if ((++ticks & 255) === 0
+        && (typeof performance !== 'undefined' ? performance.now() : Date.now()) >= until) return;
+    }
+    if (this.count === 0) { this.phase = 'failed'; return; }
+    this.counts.push(this.count);
+    this.cursor = 0;
+    this.nextCount = 0;
+    this.depth = 0;
+    this.phase = 'backward';
+  }
+
+  /** ── 後ろ向き BFS: ゴールから距離を配る ── */
+  stepBackward(until) {
+    const ctx = this.ctx;
+    const { n, delta } = ctx;
+    const { occ, pos, keys, vals } = this;
+    let ticks = 0;
+    for (;;) {
+      if (this.cursor >= this.count) {
+        if (this.nextCount === 0) { this.phase = 'done'; return; }
+        this.depth++;
+        this.counts.push(this.nextCount);
+        const t = this.queue;
+        this.queue = this.nextQueue;
+        this.nextQueue = t;
+        this.count = this.nextCount;
+        this.nextCount = 0;
+        this.cursor = 0;
+      }
+      const at = this.queue[this.cursor++] * STRIDE;
+      for (let i = 0; i < n; i++) pos[i] = keys[at + i];
+      occ.fill(0);
+      for (let k = 0; k < n; k++) mark(ctx, pos, k, occ, 1);
+
+      for (let k = 0; k < n; k++) {
+        mark(ctx, pos, k, occ, 0);
+        const a = pos[k];
+        for (let d = 0; d < 4; d++) {
+          // pos[k] で「ちょうど止まる」＝進行方向が塞がっていること。
+          // 1マスでも進めるなら、この向きから滑ってきてここで止まることはない
+          if (slide(ctx, pos, k, d, occ) > 0) continue;
+          // 逆向きへ 1,2,3… マス戻したところが「1手前」の盤面
+          const rev = (d + 2) & 3;
+          const room = slide(ctx, pos, k, rev, occ);
+          for (let t = 1; t <= room; t++) {
+            pos[k] = a + delta[rev] * t;
             this.canon(pos);
-            pos[k] = a;
-            const slot = this.slotOf(true);
-            if (!this.inserted) continue;
-            nextQueue[nextCount++] = slot;
+            const slot = this.slotOf(false);
+            if (vals[slot] !== -1) continue; // 未到達 or 既に確定
+            vals[slot] = this.depth + 1;
+            this.nextQueue[this.nextCount++] = slot;
           }
-          mark(ctx, pos, k, occ, 1);
+          pos[k] = a;
         }
-        if (this.size > cap) return false; // 広すぎる。全探索は諦める
+        mark(ctx, pos, k, occ, 1);
       }
-      const t = queue; queue = nextQueue; nextQueue = t;
-      count = nextCount;
+      if ((++ticks & 31) === 0
+        && (typeof performance !== 'undefined' ? performance.now() : Date.now()) >= until) return;
     }
-
-    // ── 後ろ向き BFS: 接触している盤面すべてを距離 0 として距離を配る ──
-    let gen = 1;
-    count = 0;
-    for (let s = 0; s <= this.mask; s++) {
-      if (vals[s] !== -1) continue;
-      this.read(s, pos);
-      if (!touching(ctx, pos, stamp, gen++)) continue;
-      vals[s] = 0;
-      queue[count++] = s;
-    }
-    if (count === 0) return false;
-
-    this.counts.push(count);
-    let depth = 0;
-    while (count > 0) {
-      let nextCount = 0;
-      for (let f = 0; f < count; f++) {
-        const at = queue[f] * STRIDE;
-        for (let i = 0; i < n; i++) pos[i] = keys[at + i];
-        occ.fill(0);
-        for (let k = 0; k < n; k++) mark(ctx, pos, k, occ, 1);
-
-        for (let k = 0; k < n; k++) {
-          mark(ctx, pos, k, occ, 0);
-          const a = pos[k];
-          for (let d = 0; d < 4; d++) {
-            // pos[k] で「ちょうど止まる」＝進行方向が塞がっていること。
-            // 1マスでも進めるなら、この向きから滑ってきてここで止まることはない
-            if (slide(ctx, pos, k, d, occ) > 0) continue;
-            // 逆向きへ 1,2,3… マス戻したところが「1手前」の盤面
-            const rev = (d + 2) & 3;
-            const room = slide(ctx, pos, k, rev, occ);
-            for (let t = 1; t <= room; t++) {
-              pos[k] = a + delta[rev] * t;
-              this.canon(pos);
-              const slot = this.slotOf(false);
-              if (vals[slot] !== -1) continue; // 未到達 or 既に確定
-              vals[slot] = depth + 1;
-              nextQueue[nextCount++] = slot;
-            }
-            pos[k] = a;
-          }
-          mark(ctx, pos, k, occ, 1);
-        }
-      }
-      if (nextCount === 0) break;
-      depth++;
-      this.counts.push(nextCount);
-      const t = queue; queue = nextQueue; nextQueue = t;
-      count = nextCount;
-    }
-    this.depth = depth;
-    return true;
   }
 
   /**
