@@ -5,13 +5,13 @@
 // ここでその在庫を手数カーブ（src/levels.js の PAR_ANCHORS）に流し込む。
 //
 //   Lv1 → 2手 ／ Lv20 → 20手 ／ Lv50 → 40手 ／ Lv100 → 80手
-//   Lv500 → 100手 ／ Lv1000 → 110手
+//   Lv500 → 100手 ／ Lv800 → 122手 ／ Lv950 → 162手 ／ Lv1000 → 300手
 //
 // 在庫がぴったり無い手数は、いちばん近い手数で埋める（無い手数を待って止まるより、
 // 1手ずれても並べたほうがカーブは滑らかになる）。最後に手数の昇順へ並べ直すので、
 // レベルが上がって手数が減ることは絶対に起きない。
 //
-// 選び方の決まりは2つ:
+// 選び方の決まりは3つ:
 //
 //   ① 1枚の盤面からは1レベルまで。
 //      全探索の距離マップは1枚から何十問でも切り出せるが、切り出したものは
@@ -22,6 +22,14 @@
 //      同じ手数なら小さい盤面のほうが読みやすく、詰まった手触りも出る。
 //      4×4 で足りるなら 4×4、そこに無ければ 5×5、6×6 …と広げていく。
 //      110手級は 6×6 以上でしか出ないので、上のレベルだけが自然に広くなる。
+//
+//   ③ 灰色の2マスブロック（1×2・2×1）が少ない盤面から使う。
+//      ただし大きい色つき（2×2 以上）の盤面は 2マス1個ぶん優遇する ――
+//      2マスを減らすことだけを追うと、大きい色つきが全部押し出されてしまう。
+//      小さい灰色が並ぶと盤面が細切れに見えて、どこが通路なのか読みにくい。
+//      ただし2マスを無くすと盤面が動かなくなって手数が伸びない（実測: 禁止すると
+//      最深90手まで落ちる）ので、**禁止ではなく「少ないものを選ぶ」**で効かせる。
+//      在庫を多めに集めておくほど、ここで選べる幅が広がる。
 
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
@@ -39,6 +47,8 @@ const arg = (name, fallback) => {
 };
 
 const want = Number(arg('levels', 1000));
+/** 大きい色つきを「2マスの灰色◯個ぶん」として優遇するか */
+const BIG_COLOR_BONUS = Number(arg('bigcolor', 3));
 const poolDir = resolve(ROOT, arg('pool', 'data'));
 
 // ── 在庫を読む ──
@@ -78,6 +88,15 @@ for (const file of files) {
     if (seen.has(row.code)) continue; // 同じ盤面は1回だけ
     seen.add(row.code);
     if (!playable(row.code)) { broken++; continue; }
+    const pieces = decodeLevel(row.code).pieces;
+    // 灰色のうち2マスのものが何個あるか（少ないほど好ましい）
+    row.dominoes = pieces.slice(2).filter((p) => p.w * p.h === 2).length;
+    row.greys = pieces.length - 2;
+    // 色つきが 2×2 以上かどうか。2マスの灰色1個ぶんの価値として扱う ――
+    // 2マスを減らすことだけを追うと、大きい色つきの盤面が全部押し出されてしまう
+    // （在庫の 12% はあるのに、焼き上がりでは 1000 本中 1 本まで減った）
+    row.bigColor = pieces.slice(0, 2).some((p) => p.w * p.h >= 4) ? 1 : 0;
+    row.rank = row.dominoes - row.bigColor * BIG_COLOR_BONUS;
     if (!stock.has(row.par)) stock.set(row.par, []);
     stock.get(row.par).push(row);
   }
@@ -90,9 +109,13 @@ if (broken) {
   }
 }
 
-// 同じ手数の在庫は「盤面が小さい順」に並べる。同点は符号順（毎回同じ結果になるように）
+// 同じ手数の在庫は「盤面が小さい順 → 見た目の評点が良い順」に並べる。
+// 評点は「2マスの灰色の数 − 大きい色つきなら1」。同点は符号順（何度回しても同じ結果に）
 for (const rows of stock.values()) {
-  rows.sort((a, b) => a.size - b.size || (a.code < b.code ? -1 : 1));
+  rows.sort((a, b) => a.size - b.size
+    || a.rank - b.rank
+    || a.dominoes - b.dominoes
+    || (a.code < b.code ? -1 : 1));
 }
 
 const usedLayouts = new Map();
@@ -182,9 +205,13 @@ await writeFile(OUT, code);
 const sizes = new Map();
 const colorShapes = new Map();
 const layouts = new Set();
+let dominoes = 0;
+let greys = 0;
 for (const row of chosen) {
   sizes.set(row.size, (sizes.get(row.size) || 0) + 1);
   layouts.add(row.lay);
+  dominoes += row.dominoes;
+  greys += row.greys;
   const d = decodeLevel(row.code);
   for (const p of d.pieces.slice(0, 2)) {
     const k = `${p.w}x${p.h}`;
@@ -202,6 +229,7 @@ console.error(`盤面を使い回したレベル: ${chosen.length - layouts.size
 console.error(`目標カーブとのずれ: 平均 ${avg(err).toFixed(2)}手 / 最大 ${Math.max(...err)}手 / 代用 ${substituted.length} 件`);
 console.error(`盤面の広さ: ${[...sizes.entries()].sort((a, b) => a[0] - b[0]).map(([s, n]) => `${s}×${s}:${n}`).join(' ')}`);
 console.error(`色つきの形: ${[...colorShapes.entries()].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${s}:${n}`).join(' ')}`);
+console.error(`灰色の2マス: ${dominoes}/${greys} (${((dominoes / greys) * 100).toFixed(1)}%) / 1盤面あたり ${(dominoes / chosen.length).toFixed(1)}個`);
 console.error(`データの大きさ: ${(code.length / 1024).toFixed(0)}KB`);
 console.error(`${OUT} に書き出しました`);
 for (const [lv, tgt, got] of substituted.slice(0, 10)) {
