@@ -36,7 +36,7 @@
 // 既定（mixed）は小さめに寄せてある。大きい色つきのレベルも並べたいときは、
 // big / huge で回した shard を混ぜる。
 
-import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { layout, compile, Explorer, GREY_RECTS } from '../src/exact.js';
@@ -175,7 +175,6 @@ if (process.argv.includes('--resume')) {
   const dir = dirname(out);
   const have = new Map();
   for (const file of (await readdir(dir).catch(() => [])).filter((f) => f.endsWith('.jsonl'))) {
-    if (resolve(dir, file) === out) continue; // 自分の出力はこれから空にする
     for (const line of (await readFile(resolve(dir, file), 'utf8')).split('\n')) {
       if (!line.trim()) continue;
       const par = JSON.parse(line).par;
@@ -226,8 +225,10 @@ const pickRecipe = (rng) => {
   return stats[0];
 };
 
+// 出力は**追記**する。空にすると、同じ shard 番号で回し直したときに前回の
+// 採取ぶんが消える（実際に480枚失った）。焼く側は符号で重複を落とすので、
+// 同じ行が二度入っても害はない。
 await mkdir(dirname(out), { recursive: true });
-await writeFile(out, '');
 
 const ex = new Explorer(CAP);
 const rng = makeRng(hashSeed(`slidepop/harvest/${shard}`));
