@@ -13,10 +13,15 @@
 //
 // 選び方の決まりは3つ:
 //
-//   ① 1枚の盤面からは1レベルまで。
+//   ① 同じ盤面は1レベルまで。**回転・鏡像で重なるものも「同じ」と数える。**
 //      全探索の距離マップは1枚から何十問でも切り出せるが、切り出したものは
 //      灰色の位置こそ違え、ブロックの顔ぶれ（配役）が同じままになる。
 //      並べると「さっきと同じ盤面」に見えるので、使い回さない。
+//
+//      見るのは2つ ―― 初期盤面と、**最後にくっついたときの盤面**。
+//      後者が同じなら、途中がどう違っても「同じパズルの別の入口」でしかない
+//      （別々の shard が同じ配置を引き当てると、これが起きる）。
+//      どちらも正方形の対称性8通りで揃えた指紋で見比べる。
 //
 //   ② 盤面はできるだけ小さいものから使う。
 //      同じ手数なら小さい盤面のほうが読みやすく、詰まった手触りも出る。
@@ -37,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { targetPar } from '../src/levels.js';
 import { decodeLevel } from '../src/levelCodec.js';
 import { Board } from '../src/board.js';
+import { canonicalKey, rectsOf } from '../src/exact.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = resolve(ROOT, 'src/levelData.js');
@@ -61,17 +67,34 @@ if (!files.length) {
 /**
  * 符号を実際に盤面へ組み直し、手順どおりに指して本当に消えるかを確かめる。
  * 採集側のバグを焼き込まないための関門なので、ここは必ず全件通す。
+ *
+ * ついでに指紋を2つ取る:
+ *   start … 初期盤面
+ *   goal  … 最後の1手を「消さずに動かした」形＝色つきがくっついた瞬間の盤面
+ * どちらも回転・鏡像で揃えてあるので、裏返しただけの盤面は同じ指紋になる。
+ *
+ * @returns {{start:string, goal:string}|null} 手順が通らなければ null
  */
-function playable(code) {
+function inspect(code) {
   const data = decodeLevel(code);
   const board = new Board(data.size);
   for (const p of data.pieces) board.addPiece(p.c, p.s, `${p.w}x${p.h}`);
-  if (board.hasSameColorContact()) return false;
-  for (const [id, dir, distance] of data.solution) {
+  if (board.hasSameColorContact()) return null;
+  const start = canonicalKey(data.size, rectsOf(board));
+
+  for (let i = 0; i < data.solution.length - 1; i++) {
+    const [id, dir, distance] = data.solution[i];
     const res = board.applyMove(id, dir);
-    if (!res || res.steps !== distance) return false;
+    if (!res || res.steps !== distance) return null;
   }
-  return board.isCleared;
+  const [id, dir, distance] = data.solution[data.solution.length - 1];
+  if (board.slideDistance(id, dir) !== distance) return null;
+  board.movePiece(id, dir, distance); // 消さずに動かす ―― これがゴールの形
+  const goal = canonicalKey(data.size, rectsOf(board));
+
+  // 本当にそこで消えるか（動かした結果、色つき2個が触れているか）
+  if (board.colorGroup(id).length !== 2) return null;
+  return { start, goal };
 }
 
 /** @type {Map<number, {par:number,size:number,cells:number,lay:string,code:string}[]>} */
@@ -85,9 +108,12 @@ for (const file of files) {
     if (!line.trim()) continue;
     const row = JSON.parse(line);
     read++;
-    if (seen.has(row.code)) continue; // 同じ盤面は1回だけ
+    if (seen.has(row.code)) continue; // 同じ符号は1回だけ
     seen.add(row.code);
-    if (!playable(row.code)) { broken++; continue; }
+    const marks = inspect(row.code);
+    if (!marks) { broken++; continue; }
+    row.startSig = marks.start;
+    row.goalSig = marks.goal;
     const pieces = decodeLevel(row.code).pieces;
     // 灰色のうち2マスのものが何個あるか（少ないほど好ましい）
     row.dominoes = pieces.slice(2).filter((p) => p.w * p.h === 2).length;
@@ -120,18 +146,27 @@ for (const rows of stock.values()) {
 
 const usedLayouts = new Map();
 const usedCodes = new Set();
+const usedStarts = new Set();
+const usedGoals = new Set();
+let dupes = 0;
 
 /**
- * 手数 par の在庫から1本取る。すでに maxUse 回使った盤面のものは飛ばす。
- * 在庫は小さい盤面から並んでいるので、先頭から見るだけで②が満たされる。
+ * 手数 par の在庫から1本取る。
+ * ・初期盤面が（回転・鏡像込みで）すでに出ているものは飛ばす
+ * ・くっついたときの形が同じものも飛ばす（同じパズルの別の入口でしかない）
+ * ・すでに maxUse 回使った盤面のものも飛ばす
+ * 在庫は小さい盤面から並んでいるので、先頭から見るだけで②③が満たされる。
  */
 const takeFrom = (par, maxUse) => {
   const rows = stock.get(par);
   if (!rows) return null;
   for (const row of rows) {
     if (usedCodes.has(row.code)) continue;
+    if (usedStarts.has(row.startSig) || usedGoals.has(row.goalSig)) { dupes++; continue; }
     if ((usedLayouts.get(row.lay) || 0) >= maxUse) continue;
     usedCodes.add(row.code);
+    usedStarts.add(row.startSig);
+    usedGoals.add(row.goalSig);
     usedLayouts.set(row.lay, (usedLayouts.get(row.lay) || 0) + 1);
     return row;
   }
@@ -226,6 +261,9 @@ console.error('');
 console.error(`在庫 ${read} 行 / 重複を除いて ${seen.size} 件 / 使った盤面 ${layouts.size} 枚`);
 console.error(`レベル ${chosen.length} 本 / 最短手数 ${chosen[0].par} 〜 ${chosen[chosen.length - 1].par}`);
 console.error(`盤面を使い回したレベル: ${chosen.length - layouts.size} 本（0 なら全レベルが別の盤面）`);
+console.error(`回転・鏡像込みで重複していて飛ばした在庫: ${dupes} 回`);
+console.error(`初期盤面の指紋: ${new Set(chosen.map((r) => r.startSig)).size}/${chosen.length} 通り`
+  + ` / くっついた形の指紋: ${new Set(chosen.map((r) => r.goalSig)).size}/${chosen.length} 通り`);
 console.error(`目標カーブとのずれ: 平均 ${avg(err).toFixed(2)}手 / 最大 ${Math.max(...err)}手 / 代用 ${substituted.length} 件`);
 console.error(`盤面の広さ: ${[...sizes.entries()].sort((a, b) => a[0] - b[0]).map(([s, n]) => `${s}×${s}:${n}`).join(' ')}`);
 console.error(`色つきの形: ${[...colorShapes.entries()].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${s}:${n}`).join(' ')}`);
