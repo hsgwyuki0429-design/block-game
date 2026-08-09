@@ -118,14 +118,23 @@ test('平らな素材だけ、盤面も進行度の色を追いかける', () =>
   );
 });
 
-test('立体の素材は、盤面がブロックよりはっきり暗い（輪郭が読める）', () => {
+/*
+ * 昔はここで「盤面はブロックより**暗い**」ことを要求していた。明るいブロックを
+ * 暗い受け皿に載せる、という一方向の関係でしか輪郭を立てられなかったから。
+ *
+ * 写真のクリスタルは逆で、透けたガラスが**明るい台**に載っている ―― 透けた先が
+ * 明るいと、ガラスは濁らずに「向こうが明るい」ことだけを伝える。向きの決めつけは
+ * 外すが、**離れていること**は変わらず要る。盤とブロックが同じ明るさだと、
+ * どこまでがブロックなのかが読めなくなる。
+ */
+test('立体の素材は、盤面とブロックの明るさが十分に離れている（輪郭が読める）', () => {
   for (const key of MATERIAL_KEYS) {
     const m = materialFor(key);
     if (m.flat) continue;
     const tray = luma(m.tray.floor);
     for (const kind of ['grey', 'lit']) {
       const block = luma(m.colors[kind].mid);
-      assert.ok(block - tray > 40,
+      assert.ok(Math.abs(block - tray) > 34,
         `${key}: ${kind} ブロック（${block.toFixed(0)}）と盤面（${tray.toFixed(0)}）の差が小さい`);
     }
   }

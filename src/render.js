@@ -17,6 +17,7 @@ import {
   LIGHT, materialFor, DEFAULT_MATERIAL, paletteFor, trayPaletteFor,
   scaledTile, facetColor, edgeColor, makeCanvas, texturePaletteFor,
 } from './materials.js';
+import { loadSprites, spriteFor, spritesReady, SPRITE_INSET } from './sprites.js';
 
 /** roundRect は Safari 16.4 未満に無い。無ければ自前で足す */
 function installRoundRect() {
@@ -309,6 +310,7 @@ export class Renderer {
     this.trayKey = '';
 
     this.refreshTint();
+    this.wantSprites();
 
     this.options = { symbols: false, ghost: true, calm: false };
   }
@@ -319,6 +321,25 @@ export class Renderer {
     if (next === this.material) return;
     this.material = next;
     this.invalidateBakes();
+    this.wantSprites();
+  }
+
+  /**
+   * 写真を使う素材なら、絵を読みに行く。
+   * 読み終わるまでは手続き的な描き方のままで、揃った時点で焼き直す ――
+   * 待たせないためで、通信が無ければそのまま手続き的な見た目で遊べる。
+   */
+  wantSprites() {
+    if (!this.material.sprites || spritesReady()) return;
+    loadSprites(() => this.invalidateBakes());
+  }
+
+  /** この素材とこの形に、貼れる写真があるか */
+  spriteFor(cols, rows, cells) {
+    if (!this.material.sprites) return null;
+    // 写真は長方形ぶんしか無い。将来 L 字などが増えたら手続き的な描き方へ落ちる
+    if (cells && cells.length !== cols * rows) return null;
+    return spriteFor(`${cols}x${rows}`);
   }
 
   invalidateBakes() {
@@ -626,9 +647,10 @@ export class Renderer {
       return;
     }
     const key = `${this.material.key}|${this.cell}|${this.size}|${this.ox},${this.oy}`
-      + `|${this.trayPal ? this.trayPal.key : ''}|${this.emptyKey(board)}`;
+      + `|${this.trayPal ? this.trayPal.key : ''}|${this.emptyKey(board)}`
+      + `|${spritesReady() ? 'photo' : 'drawn'}`;
     if (this.trayKey !== key || !this.trayCache) {
-      this.trayCache = this.bakeTray(board);
+      this.trayCache = spritesReady() ? this.bakeSpriteTray(board) : this.bakeTray(board);
       this.trayKey = key;
     }
     if (this.trayCache) {
@@ -746,6 +768,80 @@ export class Renderer {
       ctx.fillRect(0, 0, side, side);
       ctx.restore();
       this.insetShadow(ctx, holes, cell * 0.22, 0.62);
+    }
+
+    return { canvas: cv, x: this.ox - outPad, y: this.oy - outPad, w: side, h: side };
+  }
+
+  /**
+   * 写真の盤面。
+   *
+   * 手続き的なほう（bakeTray）は、枠にも床にも素材のテクスチャを敷き、
+   * 段差を影で作っている。写真の盤にはそれが要らない ―― 撮ったものは
+   * **淡い藤色の一枚板**で、段差は空きマスの窪みにしか無い。
+   * 同じ経路で描こうとすると、無い凹凸を足すことになって写真から離れる。
+   *
+   * 空きマスも写真から貼る。窪みの面取りは、盤の色を暗くするだけでは出ない。
+   */
+  bakeSpriteTray(board) {
+    const mat = this.material;
+    const pal = this.trayPal;
+    const n = this.size;
+    const cell = this.cell;
+    const w = cell * n;
+    const frame = Math.max(4, cell * (mat.trayFrame || 0.18));
+    const outPad = Math.ceil(frame + cell * 0.28);
+    const side = w + outPad * 2;
+    const s = this.dpr;
+    const cv = makeCanvas(side * s, side * s);
+    if (!cv) return null;
+    const ctx = cv.getContext('2d');
+    ctx.scale(s, s);
+    const x0 = outPad;
+    const y0 = outPad;
+    const radius = Math.max(6, cell * 0.22);
+
+    // 盤そのものが台の上に置かれている、ぶんの落ち影。写真のものはごく淡い
+    ctx.save();
+    ctx.shadowColor = 'rgba(120,124,150,0.28)';
+    ctx.shadowBlur = cell * 0.3;
+    ctx.shadowOffsetY = cell * 0.1;
+    ctx.fillStyle = pal.frame;
+    ctx.beginPath();
+    ctx.roundRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2, radius);
+    ctx.fill();
+    ctx.restore();
+
+    /*
+     * 枠と床は**同じ色の一枚板**。
+     *
+     * 手続き的なほうは床を一段落として影で縁取るが、写真の盤にその段差は無い ――
+     * 落とすと、ブロックの外周にもう 1 本の輪郭が増えて、盤が二重の額縁に見える。
+     * 段差は空きマスの窪み（写真）だけが持っていればいい。
+     */
+
+    // 上辺だけ 1px 明るく。板の縁が光を拾う 1 本で、これだけで面が浮く
+    ctx.save();
+    const rim = ctx.createLinearGradient(0, y0 - frame, 0, y0 + w * 0.5);
+    rim.addColorStop(0, 'rgba(255,255,255,0.9)');
+    rim.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x0 - frame + 0.5, y0 - frame + 0.5, w + frame * 2 - 1, w + frame * 2 - 1, radius);
+    ctx.stroke();
+    ctx.restore();
+
+    // 空きマスの窪み。ブロックと同じ寄せ方で貼る（目地の幅が揃う）
+    const well = spriteFor('empty');
+    if (well && board) {
+      const m = cell * SPRITE_INSET;
+      for (let y = 0; y < n; y++) {
+        for (let x = 0; x < n; x++) {
+          if (board.at(x, y) !== -1) continue;
+          ctx.drawImage(well, x0 + x * cell + m, y0 + y * cell + m, cell - m * 2, cell - m * 2);
+        }
+      }
     }
 
     return { canvas: cv, x: this.ox - outPad, y: this.oy - outPad, w: side, h: side };
@@ -938,8 +1034,8 @@ export class Renderer {
     const cell = this.cell;
     const { minX, minY, cols, rows } = this.cellBounds(cells);
     const depth = this.depth;
-    // 影と厚みがはみ出すぶんの余白。平らな素材は何もはみ出さないので 1px でいい
-    const pad = mat.flat ? 1 : Math.ceil(depth + cell * 0.34);
+    // 影と厚みがはみ出すぶんの余白。平らな素材と写真は何もはみ出さないので 1px でいい
+    const pad = (mat.flat || this.spriteFor(cols, rows, cells)) ? 1 : Math.ceil(depth + cell * 0.34);
     const w = cols * cell + pad * 2;
     const h = rows * cell + pad * 2;
     // 画素密度ぶん大きく焼いて、貼るときに CSS 画素へ戻す。
@@ -960,6 +1056,53 @@ export class Renderer {
     const rects = this.rectsFor(cells, ox, oy, gap, radius);
     const outer = this.pathOf(rects, chamfer);
     const box = this.bboxOf(rects);
+
+    /*
+     * 写真があるならそれを貼って終わり。
+     *
+     * 立体の経路（接地影・側面・面取り・縁）は 1 つも通らない ―― 写真には
+     * それが全部**焼き込まれている**ので、上から重ねると影が二重になる。
+     * 貼る位置はマスの矩形から SPRITE_INSET だけ内へ寄せたところ。
+     * 写真もそう切り出してあるので、外に残る細い縁がそのまま目地になる。
+     */
+    const sprite = this.spriteFor(cols, rows, cells);
+    if (sprite) {
+      const m = cell * SPRITE_INSET;
+      const dx = ox + minX * cell + m;
+      const dy = oy + minY * cell + m;
+      const dw = cols * cell - m * 2;
+      const dh = rows * cell - m * 2;
+      ctx.drawImage(sprite, dx, dy, dw, dh);
+      /*
+       * 色つきは進行度の色相を被せる。
+       * 'color' は「色相と彩度は塗った色、明るさは下のまま」という混ぜ方なので、
+       * 写真の面取りと映り込みはそのまま残り、ガラスの色だけが変わる。
+       * ふつうの半透明で塗ると、陰影まで一緒に薄まって板になる。
+       */
+      if (colored && mat.tint > 0 && this.tint.base) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(dx, dy, dw, dh);
+        ctx.clip();
+        ctx.globalCompositeOperation = 'color';
+        ctx.globalAlpha = mat.tint * 0.82;
+        ctx.fillStyle = this.tint.base;
+        ctx.fillRect(dx, dy, dw, dh);
+        /*
+         * 面取りの白い光だけは色に染めずに戻す。
+         *
+         * 'color' は明るさを保つので白飛びは白飛びのまま残る ―― はずだが、
+         * 彩度まで一様に載るので、いちばん明るい稜線までべったり色が付き、
+         * ガラスではなく**色つきの樹脂**に見える。元の絵を 'lighten' で重ねると、
+         * 白かったところだけが白へ戻り、染まった卓面はそのまま残る。
+         */
+        ctx.globalCompositeOperation = 'lighten';
+        ctx.globalAlpha = 0.3;
+        ctx.drawImage(sprite, dx, dy, dw, dh);
+        ctx.restore();
+      }
+      return { canvas: cv, pad, minX, minY, w, h };
+    }
 
     /*
      * 平らな素材（プレーン）はここで終わり。

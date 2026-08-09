@@ -14,9 +14,16 @@
 // インストール時は index.html を読んで、そこに書かれているハッシュ付きの
 // アセットも一緒に先読みしておく。ビルド側に一覧を持たせずに済む。
 
-const CACHE = 'slidepop-v1';
+const CACHE = 'slidepop-v2';
 
-/** 版に関係なく必要なもの */
+/**
+ * 版に関係なく必要なもの。
+ *
+ * クリスタルの 9 枚は、素材を切り替えたときに初めて要る絵だが、ここで先読みする ――
+ * 通信の無いところで素材を切り替えると、そのときだけ手続き的な見た目に落ちて
+ * 「壊れた」ように見えるため。合わせて 35KB しかないので、先に取っておいて損はない。
+ * ファイル名にハッシュが付かないので、絵を差し替えるときは CACHE の版を上げること。
+ */
 const SHELL = [
   './',
   './index.html',
@@ -25,6 +32,15 @@ const SHELL = [
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
   './icons/apple-touch-icon.png',
+  './assets/crystal/1x2.webp',
+  './assets/crystal/2x1.webp',
+  './assets/crystal/1x3.webp',
+  './assets/crystal/3x1.webp',
+  './assets/crystal/2x2.webp',
+  './assets/crystal/2x3.webp',
+  './assets/crystal/3x2.webp',
+  './assets/crystal/3x3.webp',
+  './assets/crystal/empty.webp',
 ];
 
 /** index.html が読み込んでいる、ハッシュ付きのアセットを拾う */

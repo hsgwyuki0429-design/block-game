@@ -15,6 +15,8 @@ const read = (p) => readFileSync(resolve(ROOT, p), 'utf8');
 const manifest = JSON.parse(read('manifest.webmanifest'));
 const html = read('index.html');
 
+const { SPRITE_FILES, SPRITE_KEYS } = await import('../src/sprites.js');
+
 test('index.html がマニフェストと iOS 用の設定を持っている', () => {
   assert.match(html, /<link rel="manifest" href="manifest\.webmanifest">/);
   assert.match(html, /<link rel="apple-touch-icon" href="icons\/apple-touch-icon\.png">/);
@@ -68,6 +70,11 @@ test('Service Worker は相対パスで、ページ本体をネットワーク�
   for (const p of paths) assert.ok(p.startsWith('./'), `${p} は相対パスであるべき`);
   for (const icon of manifest.icons) assert.ok(paths.includes(icon.src), `${icon.src} を先読みしていない`);
 
+  // 写真の絵も先読みしておく（通信の無いところで素材を切り替えても崩れない）
+  for (const f of SPRITE_FILES) {
+    assert.ok(paths.includes(`./${f}`), `${f} を先読みしていない`);
+  }
+
   assert.match(sw, /caches\.open\(/);
   assert.match(sw, /skipWaiting/);
   assert.match(sw, /clients\.claim/);
@@ -91,4 +98,31 @@ test('ホーム画面に「追加」ボタンと iOS 向けの手順がある', 
   assert.match(app, /appinstalled/);
   // 追加済みの端末にボタンを出さないための判定
   assert.match(app, /display-mode: standalone/);
+});
+
+/*
+ * 写真の絵は、コードが名前で引く（`${cols}x${rows}`）。だから 1 枚でも欠けると、
+ * その形のブロックだけ手続き的な見た目に戻り、盤の上で 2 種類の素材が混ざる。
+ * 名前の付け方も含めて、機械で押さえておく。
+ */
+test('写真の絵は、出てくる形をすべて覆っている', async () => {
+  const { PIECES } = await import('../src/shapes.js');
+  const shapes = new Set(PIECES.map((p) => `${p.w}x${p.h}`));
+  for (const key of shapes) {
+    assert.ok(SPRITE_KEYS.includes(key), `${key} の絵が無い`);
+  }
+  // 空きマスの窪みも写真から貼る
+  assert.ok(SPRITE_KEYS.includes('empty'));
+  assert.equal(SPRITE_KEYS.length, shapes.size + 1);
+});
+
+test('写真の絵の実体がある（WebP として読める）', () => {
+  for (const f of SPRITE_FILES) {
+    const file = resolve(ROOT, f);
+    const buf = readFileSync(file);
+    assert.ok(buf.length > 0, `${f} が空`);
+    // RIFF....WEBP
+    assert.equal(buf.subarray(0, 4).toString('latin1'), 'RIFF', `${f} が RIFF でない`);
+    assert.equal(buf.subarray(8, 12).toString('latin1'), 'WEBP', `${f} が WebP でない`);
+  }
 });
