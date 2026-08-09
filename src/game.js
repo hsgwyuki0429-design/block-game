@@ -42,7 +42,7 @@ export const RULES_KEY = 'slidepop.seenRules';
 /** 設定の初期値。「データを消す」でここへ戻る */
 const DEFAULT_SETTINGS = {
   sound: true, haptics: true, symbols: false, ghost: true, calm: false,
-  /** ブロックの素材。見た目だけが変わり、盤面もルールも変わらない */
+  /** ブロックのデザイン。見た目だけが変わり、盤面もルールも変わらない */
   material: DEFAULT_MATERIAL,
 };
 
@@ -1066,9 +1066,9 @@ export class Game {
   }
 
   /**
-   * ブロックの素材を選ぶボタンを並べる。
-   * 見本は「その素材で焼いた実物」ではなく代表色の四角 ―― 一覧を実物で描くと
-   * 選ぶだけで6素材ぶんのテクスチャを焼くことになり、シートを開くたびに固まる。
+   * ブロックのデザインを選ぶボタンを並べる。
+   * 見本は「そのデザインで焼いた実物」ではなく代表色の四角 ―― 一覧を実物で描くと
+   * シートを開くだけで写真の復号と焼き上げが走り、そこで引っかかる。
    */
   buildMaterialPicker() {
     const grid = this.dom.materialGrid;
@@ -1105,7 +1105,7 @@ export class Game {
     this.toast(`ブロックを「${mat.name}」にしました`);
   }
 
-  /** いま選ばれている素材に印を付ける */
+  /** いま選ばれているデザインに印を付ける */
   markMaterial() {
     const grid = this.dom.materialGrid;
     if (!grid) return;

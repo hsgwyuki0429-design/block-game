@@ -933,7 +933,8 @@ svg .fill { fill: currentColor; stroke: none; }
 
 .material-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* デザインは 2 つ。3 列のままだと右が 1 枠空いて、選び忘れのように見える */
+  grid-template-columns: repeat(2, 1fr);
   gap: 8px;
   margin-bottom: 20px;
 }
