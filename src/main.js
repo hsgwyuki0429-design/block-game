@@ -1,6 +1,7 @@
 // 起動。DOM を集めて Game に渡し、URL のハッシュから最初の画面を決める。
 
 import { Game, RULES_KEY } from './game.js';
+import { attachEdgeGuard } from './edgeGuard.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -93,6 +94,9 @@ const dom = {
 };
 
 const game = new Game(dom);
+
+// 端から払うスワイプでブラウザが前の画面に戻ってしまうのを止める
+attachEdgeGuard();
 
 /** URL のハッシュ（#L12 / #12）からレベルを読む */
 function levelFromHash() {
