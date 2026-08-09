@@ -2112,7 +2112,7 @@ function mix(a, b, t) {
   return a + (b - a) * t;
 }
 
-/** 下限と上限で挟む */
+/** 下限と上限で挟む。ここの中だけで使う */
 function clip(v, lo, hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -2156,13 +2156,6 @@ function rgbHsl(rgb) {
   else if (max === g) h = ((b - r) / d + 2) / 6;
   else h = ((r - g) / d + 4) / 6;
   return [h * 360, s * 100, l * 100];
-}
-
-/** 2 色を混ぜる（t=0 で a、t=1 で b） */
-function mixHex(a, b, t) {
-  const x = hexRgb(a);
-  const y = hexRgb(b);
-  return rgbHex([0, 1, 2].map((i) => mix(x[i], y[i], clip(t, 0, 1))));
 }
 
 /**
@@ -2231,364 +2224,31 @@ function luma(hex) {
 }
 
 // ===== src/materials.js =====
-// ブロックの素材。
+// ブロックの見た目（デザイン）。
 //
-// 盤面のブロックは「色のついた板」ではなく、**その素材で削り出した塊**に見せる。
-// 石は欠けた粗い面、木は繊維の走った木目、金属はヘアラインと帯状の反射、
-// クリスタルはエメラルドカットの面取り、紙は繊維の浮いたマット、布は織り目。
+// 2 つだけある。
 //
-// 画像は 1 枚も使っていない。すべて実行時に手続き的に描いている ――
-// 素材ごとに「高さの場」を作り、その**傾きから陰影を計算する**（バンプマッピング）。
-// 色を塗り分けただけのテクスチャは、動かすと平らに見える。傾きから光を当てると、
-// 同じデータでも凹凸として読める。
+//   プレーン ―― 色だけの平らな面。既定。
+//   クリスタル ―― 実機で撮ったガラスの写真を、そのまま貼ったもの。
 //
-// ここが持つのは「表面」だけ。立体の組み立て（接地影 → 側面の厚み → 天面 →
-// 面取り → 鏡面）は render.js の 1 本の経路が受け持ち、素材はその経路に
-// 寸法と色と塗り方を渡す。そうしないと素材を足すたびに立体の作りが分岐する。
+// 昔はここに手続きで描いた素材（石・木・金属・紙・布・描いたガラス）が並んでいた。
+// ノイズから「高さの場」を作り、その傾きから陰影を計算する（バンプマッピング）
+// やり方で、拡大すれば見事に見える。だが**1 マスが 40px そこそこになると、
+// 模様がブロックの輪郭と同じ細かさになり、形が模様に埋もれて読めなくなる**。
+// 盤面を読むゲームでそれは致命的で、結局どれも「薄く敷く」ところへ落ち着いた ――
+// 薄く敷いた石と薄く敷いた紙は、遊んでいるあいだ見分けが付かない。
+//
+// 残したのは、**役割がはっきり違う 2 つ**だけ。いちばん読みやすい平らな面と、
+// 描いて真似るのをやめて本物を貼ったガラス。
+//
+// ここが持つのは「表面」だけ。立体の組み立ては render.js の経路が受け持ち、
+// デザインはその経路に寸法と色を**マスの一辺に対する比**で渡す。
+
+// ---------------------------------------------------------------- デザインの定義
 
 /**
- * 光の向き（画面座標）。左上やや上から。
- * 全素材で共通にしてある ―― 素材ごとに光源が動くと、盤面が 1 つの場所に見えない。
- */
-const LIGHT = { x: -0.52, y: -0.85 };
-
-/** テクスチャのタイルの一辺（px）。継ぎ目なく繰り返せるように作る */
-const TILE = 256;
-/** ノイズ格子の一辺。TILE と割り切れる 2 の冪にしておくと端が繋がる */
-const GRID = 64;
-
-// ---------------------------------------------------------------- ノイズ
-
-/** 格子の乱数。端で折り返すので、タイルの継ぎ目が出ない */
-function makeNoise(rng) {
-  const g = new Float32Array(GRID * GRID);
-  for (let i = 0; i < g.length; i++) g[i] = rng();
-  return g;
-}
-
-/**
- * 値ノイズをタイル座標（u,v ∈ 0..1）で読む。
- *
- * **fx / fy は「タイルを横切るあいだに何周するか」で、整数でなければならない。**
- * ここが継ぎ目の有無を決める。整数でないと u=0 と u=1 が別の格子点を指し、
- * 繰り返して敷いたときに縦横の線が走る（最初これで盤面に格子が出た）。
- * 整数なら剰余がぴったり回るので、端は必ず反対の端と繋がる。
- *
- * ox / oy は表を読む位置のずらし。オクターブごとに変えて、
- * 重ねた層が同じ模様の拡大縮小に見えないようにする。
- */
-function noiseAt(g, u, v, fx, fy, ox = 0, oy = 0) {
-  const px = Math.max(1, Math.round(fx));
-  const py = Math.max(1, Math.round(fy));
-  const x = u * px;
-  const y = v * py;
-  const xi = Math.floor(x);
-  const yi = Math.floor(y);
-  const tx = x - xi;
-  const ty = y - yi;
-  // smoothstep。線形補間のままだと格子の筋が見えてしまう
-  const sx = tx * tx * (3 - 2 * tx);
-  const sy = ty * ty * (3 - 2 * ty);
-  const i0 = ((xi % px) + px) % px;
-  const j0 = ((yi % py) + py) % py;
-  const i1 = (i0 + 1) % px;
-  const j1 = (j0 + 1) % py;
-  const at = (j, i) => g[(((j + oy) % GRID) * GRID) + ((i + ox) % GRID)];
-  return mix(mix(at(j0, i0), at(j0, i1), sx), mix(at(j1, i0), at(j1, i1), sx), sy);
-}
-
-/**
- * 重ね合わせたノイズ（fBm）。周波数は倍々になるので、fx / fy が整数なら
- * どのオクターブも整数のまま ―― 全部の層が同時に継ぎ目なく繋がる。
- *
- * @param {boolean} ridge 山にする（|2n-1| を裏返す）。石の「欠け」はこれで出る ――
- *   ふつうの fBm は丘のように丸いが、ridge は稜線が立って割れ目に見える。
- */
-function fbm2(g, u, v, fx, fy, octaves, gain = 0.5, ridge = false) {
-  let sum = 0;
-  let amp = 1;
-  let norm = 0;
-  let mul = 1;
-  for (let o = 0; o < octaves; o++) {
-    let n = noiseAt(g, u, v, fx * mul, fy * mul, o * 17, o * 29);
-    if (ridge) n = 1 - Math.abs(n * 2 - 1);
-    sum += n * amp;
-    norm += amp;
-    amp *= gain;
-    mul *= 2;
-  }
-  return sum / norm;
-}
-
-// ---------------------------------------------------------------- タイル生成
-
-/**
- * 高さの場から 1 枚のタイルを焼く。
- *
- * @param {(u:number,v:number)=>number} height 0..1 の高さ（u,v は 0..1 のタイル座標）
- * @param {(u:number,v:number,h:number)=>number[]} color その点の地の色 [r,g,b]
- * @param {{relief?:number, ambient?:number}} opts relief = 凹凸の強さ
- * @returns {HTMLCanvasElement}
- */
-function bumpTile(height, color, opts = {}) {
-  const { relief = 0.35, ambient = 0.92 } = opts;
-  const cv = makeCanvas(TILE, TILE);
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(TILE, TILE);
-  const px = img.data;
-
-  // ① 高さを全部求める。傾きを取るのに隣の値が要るので、色より先に片づける
-  const h = new Float32Array(TILE * TILE);
-  for (let y = 0; y < TILE; y++) {
-    for (let x = 0; x < TILE; x++) h[y * TILE + x] = height(x / TILE, y / TILE);
-  }
-  const at = (x, y) => h[(((y % TILE) + TILE) % TILE) * TILE + (((x % TILE) + TILE) % TILE)];
-
-  // ② 傾きの大きさを測る。
-  //
-  //    ここが要点。同じ relief を与えても、高さの場が細かいほど傾きは大きくなる ――
-  //    素材ごとに周波数が違うので、生の傾きをそのまま明るさにすると、細かい素材
-  //    （金属のヘアライン）だけが真っ白と真っ黒に振り切れる。実際そうなった。
-  //    傾きの二乗平均で割って正規化すれば、relief は「どれくらい凸凹に見せたいか」
-  //    という 1 つの意味だけを持つようになり、周波数を変えても破綻しない。
-  const gx = new Float32Array(TILE * TILE);
-  const gy = new Float32Array(TILE * TILE);
-  let acc = 0;
-  for (let y = 0; y < TILE; y++) {
-    for (let x = 0; x < TILE; x++) {
-      const i = y * TILE + x;
-      const dx = at(x + 1, y) - at(x - 1, y);
-      const dy = at(x, y + 1) - at(x, y - 1);
-      gx[i] = dx;
-      gy[i] = dy;
-      acc += dx * dx + dy * dy;
-    }
-  }
-  const norm = Math.sqrt(acc / (TILE * TILE)) || 1e-6;
-
-  // ③ 色を置く
-  for (let y = 0; y < TILE; y++) {
-    for (let x = 0; x < TILE; x++) {
-      const i = y * TILE + x;
-      const slope = (gx[i] * LIGHT.x + gy[i] * LIGHT.y) / norm;
-      const lit = clip(ambient + slope * relief, 0.45, 1.55);
-      const c = color(x / TILE, y / TILE, h[i]);
-      const o = i * 4;
-      px[o] = clip(c[0] * lit, 0, 255);
-      px[o + 1] = clip(c[1] * lit, 0, 255);
-      px[o + 2] = clip(c[2] * lit, 0, 255);
-      px[o + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
-/** オフスクリーンのキャンバス。OffscreenCanvas が無い環境でも動くようにする */
-function makeCanvas(w, h) {
-  if (typeof document !== 'undefined' && document.createElement) {
-    const cv = document.createElement('canvas');
-    cv.width = Math.max(1, Math.ceil(w));
-    cv.height = Math.max(1, Math.ceil(h));
-    return cv;
-  }
-  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(Math.ceil(w), Math.ceil(h));
-  return null;
-}
-
-// ---------------------------------------------------------------- 素材ごとの表面
-
-/**
- * 石 ―― 磨いた御影石。
- *
- * 最初は「割り肌」（ridge を効かせた fBm で稜線を立てたもの）にしていたが、
- * 1 マスが 40px そこそこまで小さくなると、稜線がブロックの輪郭と同じ細かさになり、
- * 形が模様に埋もれて読めなくなった ―― 皺くちゃの箔にしか見えなかった。
- *
- * 磨いた石は**ほとんど平ら**で、石らしさは凹凸ではなく**粒**が持っている。
- * 明るい長石と暗い黒雲母を閾値で切って散らし、面そのものは撫でるだけにする。
- * 情報量が減ったぶん、形と色が先に目に入るようになる。
- */
-function stoneTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const grit = makeNoise(makeRng(seed ^ 0x9e3779b9));
-  const base = hexRgb(pal.mid);
-  const high = hexRgb(pal.top);
-  const low = hexRgb(pal.deep);
-
-  // 面は撫でるだけ。ここに細かい起伏を足すと、光の向きに沿って明暗が伸び、
-  // 粒ではなく**虫の這った跡**のような筋になる（実際そう見えた）
-  const height = (u, v) => fbm2(g, u, v, 2, 2, 2, 0.5);
-  const color = (u, v) => {
-    // 大きな斑（同じ石でも場所によって色が振れる）
-    const mottle = fbm2(grit, u, v, 3, 3, 2, 0.5) - 0.5;
-    // 粒は閾値で切る。滑らかに混ぜると靄になり、切ると**粒**として残る
-    const pale = clip((noiseAt(grit, u, v, 48, 48, 3, 5) - 0.6) * 2.6, 0, 1);
-    const dark = clip((noiseAt(g, u, v, 40, 40, 9, 13) - 0.64) * 2.8, 0, 1);
-    let c = [0, 1, 2].map((i) => mix(base[i], mottle > 0 ? high[i] : low[i], Math.abs(mottle) * 0.3));
-    c = [0, 1, 2].map((i) => mix(c[i], high[i], pale * 0.72));
-    return [0, 1, 2].map((i) => mix(c[i], low[i], dark * 0.55));
-  };
-  return bumpTile(height, color, { relief: 0.12, ambient: 1 });
-}
-
-/**
- * 木 ―― 削り出した板。
- * 年輪は「中心からの距離をノイズで歪めて、その小数部を取る」だけで出る。
- * 歪めないと同心円の模様になってしまうので、歪みの量が木らしさそのものになる。
- * 導管（細い縦筋）を別に重ねて、繊維の向きを出す。
- */
-function woodTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const fib = makeNoise(makeRng(seed ^ 0x85ebca6b));
-  const light = hexRgb(pal.top);
-  const mid = hexRgb(pal.mid);
-  const dark = hexRgb(pal.deep);
-
-  // 板は横長に取る。木目は u 方向（横）へ流し、縦向きのブロックには
-  // タイルごと 90° 回して貼る（render.js 側）。板の取り方が変われば別の木に見える
-  const height = (u, v) => {
-    // 年輪を v 方向にだけ数え、u に沿ってノイズで歪める。
-    // 折り返しは三角波で作る ―― 小数部（のこぎり波）のままだと 1 周ごとに
-    // 段差ができ、木目ではなく等高線のような硬い輪郭になる（実際そう見えた）。
-    // 年輪の本数を**偶数**にしてあるのも継ぎ目のため。三角波の周期は 2 なので、
-    // 奇数だとタイルの上端と下端で山と谷が入れ替わってしまう
-    // 本数は少ないほど板に見える。22 本だと 1 マスに何本も入り、木目ではなく
-    // バーコードになった ―― 3 マスぶんのタイルに 4 周（＝山 4 本）で足りる
-    // 歪みは**木目を横切る向きにはほとんど掛けない**（fy=1）。両方向に掛けると
-    // 年輪が渦を巻き、木ではなく大理石か流れる液体に見える（実際そう見えた）
-    const warp = fbm2(g, u, v, 3, 1, 3, 0.5);
-    const t = v * 12 + warp * 1.5;
-    const tri = Math.abs((t % 2) - 1);
-    // 指数を上げると谷が広く山が細くなる。年輪は「広い春材に細い濃い線」
-    const ring = Math.pow(tri, 1.7);
-    // 導管。木目に沿って走る細い筋（u にはほぼ変化せず、v に細かく振る）
-    const pore = noiseAt(fib, u, v, 2, 48) * 0.24;
-    return clip(ring * 0.78 + pore, 0, 1);
-  };
-  const color = (u, v, h) => {
-    const t = clip(h * 1.15 - 0.05, 0, 1);
-    const c = [0, 1, 2].map((i) => mix(dark[i], light[i], t));
-    // 濃い筋（晩材）をところどころ強く出す
-    const streak = noiseAt(fib, u, v, 2, 18, 5, 9);
-    const k = streak > 0.72 ? (streak - 0.72) * 1.4 : 0;
-    return [0, 1, 2].map((i) => mix(c[i], mid[i] * 0.8, clip(k, 0, 0.36)));
-  };
-  return bumpTile(height, color, { relief: 0.22, ambient: 0.98 });
-}
-
-/**
- * 金属 ―― ヘアライン仕上げのステンレス。
- * 研磨の筋は「片方向にだけ引き伸ばしたノイズ」。縦にはほとんど変化させず、
- * 横に細かく散らすと、あの一方向の擦り傷になる。
- * 帯状の映り込みはテクスチャではなく、render.js 側の鏡面グラデーションで出す
- * （ブロックの大きさに合わせて帯の位置が動かないと、板に見えない）。
- */
-function metalTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const base = hexRgb(pal.mid);
-
-  const height = (u, v) => {
-    // u 方向はほとんど変えず、v 方向にだけ細かく振る = 横へ伸びた筋。
-    // v の本数を上げすぎると 1 画素より細かくなり、筋ではなく砂嵐になる ――
-    // タイル 256px なら 110 本で周期およそ 2px。ヘアラインはこのあたりが限度
-    const fine = noiseAt(g, u, v, 3, 110);
-    const mid = noiseAt(g, u, v, 4, 32, 11, 5);
-    const broad = fbm2(g, u, v, 2, 9, 2, 0.5);
-    return clip(fine * 0.5 + mid * 0.3 + broad * 0.2, 0, 1);
-  };
-  const color = (u, v, h) => {
-    // 金属は色数を持たない。明暗だけで見せる
-    const k = (h - 0.5) * 0.16;
-    return [0, 1, 2].map((i) => clip(base[i] * (1 + k), 0, 255));
-  };
-  return bumpTile(height, color, { relief: 0.26, ambient: 1 });
-}
-
-/**
- * 紙 ―― 圧した厚紙。
- * 繊維は「短い線分がランダムな向きに絡んだ場」。細かいノイズを 2 枚、
- * 別の縮尺で重ねると、目で追えない細かさの繊維に見える。
- */
-function paperTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const f = makeNoise(makeRng(seed ^ 0xc2b2ae35));
-  const base = hexRgb(pal.mid);
-  const dark = hexRgb(pal.deep);
-
-  const height = (u, v) => {
-    // 紙は「ほとんど平ら」が正解。粗さを上げると石膏や漆喰になってしまう
-    // 88 本まで細かくすると 1 画素より細かい砂嵐になり、紙ではなく漆喰に見えた
-    const fiber = noiseAt(f, u, v, 44, 44);
-    const laid = noiseAt(f, u, v, 3, 40, 9, 3) * 0.5;  // 簀の目。ごく淡い横筋
-    const felt = fbm2(g, u, v, 4, 4, 3, 0.6);
-    const wave = fbm2(g, u, v, 2, 2, 2, 0.5) * 0.5;    // 紙のうねり
-    return clip(fiber * 0.13 + laid * 0.12 + felt * 0.32 + wave, 0, 1);
-  };
-  const color = (u, v, h) => {
-    const t = clip((h - 0.5) * 0.6 + 0.5, 0, 1);
-    return [0, 1, 2].map((i) => mix(dark[i], base[i], 0.62 + t * 0.38));
-  };
-  return bumpTile(height, color, { relief: 0.1, ambient: 0.99 });
-}
-
-/**
- * 布 ―― 平織り。
- * 縦糸と横糸が交互に上へ出る。市松に位相をずらした 2 本の正弦波を、
- * 市松の位置で選び分けると、糸が交差して見える。
- */
-function fabricTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const base = hexRgb(pal.mid);
-  const dark = hexRgb(pal.deep);
-  const light = hexRgb(pal.top);
-  const threads = 24; // タイルあたりの糸の本数
-
-  const height = (u, v) => {
-    const fx = u * threads;
-    const fy = v * threads;
-    const cx = Math.floor(fx);
-    const cy = Math.floor(fy);
-    // 市松で「いま上に出ている糸」を切り替える
-    const warpUp = (cx + cy) % 2 === 0;
-    const along = warpUp ? fy - cy : fx - cx;   // 糸に沿う向き
-    const across = warpUp ? fx - cx : fy - cy;  // 糸を横切る向き
-    // 横切る向きに丸みを付けると、糸が円柱に見える
-    const round = Math.sin(across * Math.PI);
-    const twist = 0.85 + 0.15 * Math.sin(along * Math.PI * 2);
-    const fuzz = noiseAt(g, u, v, 54, 54) * 0.16;
-    return clip(round * twist * 0.84 + fuzz, 0, 1);
-  };
-  const color = (u, v, h) => {
-    const t = clip(h * 1.1, 0, 1);
-    const c = [0, 1, 2].map((i) => mix(dark[i], base[i], 0.4 + t * 0.6));
-    return [0, 1, 2].map((i) => mix(c[i], light[i], clip((h - 0.7) * 1.6, 0, 0.5)));
-  };
-  return bumpTile(height, color, { relief: 0.3, ambient: 0.95 });
-}
-
-/**
- * クリスタル ―― 磨いたガラスの卓面。
- * 面取りは幾何（render.js の 8 面）で作るので、ここは卓面のごく淡い曇りだけ。
- * texture を濃くすると、透明感が濁って「すりガラス」になってしまう。
- */
-function crystalTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const base = hexRgb(pal.mid);
-  const light = hexRgb(pal.top);
-
-  const height = (u, v) => fbm2(g, u, v, 2, 2, 3, 0.55);
-  // 卓面は「ほとんど何も無い」のが正しい。濁らせると、すりガラスになってしまう。
-  // かといって白く飛ばすと、透けているようには見えない ―― 地の色を中心に振る
-  const color = (u, v, h) => [0, 1, 2].map((i) => mix(base[i], light[i], clip(h * 0.5 + 0.05, 0, 1)));
-  return bumpTile(height, color, { relief: 0.1, ambient: 1.04 });
-}
-
-// ---------------------------------------------------------------- 素材の定義
-
-/**
- * 素材ひとつ。寸法はすべて**セルの一辺に対する比**で持つ ――
- * 盤面が 4×4 でも 8×8 でも、ブロックの厚みと面取りが同じ割合で見えるように。
+ * デザインひとつ。寸法はすべて**セルの一辺に対する比**で持つ ――
+ * 盤面が 4×4 でも 8×8 でも、ブロックの厚みと角の落としが同じ割合で見えるように。
  */
 const DEFS = [
   {
@@ -2599,24 +2259,19 @@ const DEFS = [
      * 何も乗せない、元からの見た目。
      *
      * **いちばん読みやすいのはこれ**なので、既定にしてある。厚みも面取りも影も
-     * テクスチャも持たず、一色のベタ塗りに髪の毛ほどのすき間だけ。
+     * 持たず、一色のベタ塗りに髪の毛ほどのすき間だけ。
      * 目が拾うものが「色と形」しか無いので、どのブロックがどこまでかが一瞬で分かる。
      *
-     * flat が立っている素材は、立体の経路（接地影・側面・面取り・縁・テクスチャ）を
-     * まるごと飛ばす ―― 薄くするのではなく、通らない。
+     * flat が立っているデザインは、影も写真も通らない ―― 薄くするのではなく、
+     * そもそも通らない。
      */
     flat: true,
     depth: 0,
-    bevel: 0,
     radius: 0.14,
     gap: 0.032,
-    gloss: 0,
-    sheen: 0,
     tint: 1,
     shadow: 0,
-    grain: 0,
-    bevelStyle: 'soft',
-    /** 進行度の色を素材へ混ぜず、そのまま使う（元の見た目がそうだった） */
+    /** 進行度の色を混ぜず、そのまま使う（元の見た目がそうだった） */
     rawTint: true,
     /** 盤面も進行度の色を、ほとんど白まで薄めて追いかける */
     trayTint: true,
@@ -2625,182 +2280,68 @@ const DEFS = [
       lit: { top: '#7f97e6', mid: '#3e47cc', deep: '#2a2f8c', side: '#333a9f' },
     },
     tray: { frame: '#dde2f0', floor: '#dde2f0', well: '#eef1f8' },
-    texture: null,
-  },
-  {
-    key: 'stone',
-    name: '石',
-    note: '磨いた御影石',
-    depth: 0.115,      // 側面の厚み
-    bevel: 0.12,       // 面取りの幅
-    radius: 0.14,      // 角の丸み
-    gap: 0.062,        // ブロック同士のすき間（＝黒い目地の太さ）
-    gloss: 0.12,       // 鏡面の強さ（石はほとんど光らない）
-    sheen: 0.2,        // 天面の明暗の付き方
-    /*
-     * 色つきブロックは進行度の色を**はっきり**まとう。
-     * ここを弱くすると「灰色がかった石が2種類ある」だけの盤面になり、
-     * どれが動かせる色つきなのかが一瞬で読めない（実際そうなっていた）。
-     */
-    tint: 0.54,
-    shadow: 0.5,       // 接地影の濃さ
-    grain: 0.5,        // 表面の模様の出し方。粗すぎると形が読めなくなる
-    facets: 8,
-    bevelStyle: 'soft',   // 縁は丸い。面では割らない
-    bevelAlpha: 0.85,
-    colors: {
-      // 灰色は暗い玄武岩、色つきは明るい花崗岩。**明るさが先に目に入り**、
-      // そのあとで色が付いてくる ―― この順でないと小さいマスで見分けが付かない
-      grey: { top: '#a6a29b', mid: '#807c76', deep: '#4f4c47', side: '#5d5a55' },
-      lit: { top: '#eae5dc', mid: '#c9c3b8', deep: '#8a8479', side: '#999287' },
-    },
-    // 盤面はブロックより**はっきり暗い**。明るい石が暗い受け皿に載っている、
-    // という関係が、ブロックの輪郭をいちばん強く立たせる
-    tray: { frame: '#4c4842', floor: '#38352f', well: '#292722' },
-    texture: stoneTexture,
-  },
-  {
-    key: 'wood',
-    name: '木',
-    note: 'ウォールナットと楓',
-    depth: 0.1,
-    bevel: 0.075,
-    radius: 0.2,
-    gap: 0.058,
-    gloss: 0.26,
-    sheen: 0.24,
-    // 木を真っ青にすると木に見えなくなる。灰色との差は「樹種の差」＝明暗が持ち、
-    // 色相はそこへ乗せるだけ。それでも 0.18 では色が見えなかったので上げる
-    tint: 0.3,
-    shadow: 0.44,
-    grain: 0.62,
-    facets: 8,
-    bevelStyle: 'soft',
-    bevelAlpha: 0.9,
-    colors: {
-      grey: { top: '#9c6b42', mid: '#7d5330', deep: '#4a2d19', side: '#583620' },
-      lit: { top: '#f8e3bb', mid: '#e4c895', deep: '#a2814d', side: '#b0905e' },
-    },
-    tray: { frame: '#3a2819', floor: '#281b10', well: '#1d140b' },
-    texture: woodTexture,
-  },
-  {
-    key: 'metal',
-    name: '金属',
-    note: 'ヘアラインの金属',
-    depth: 0.095,
-    bevel: 0.1,
-    radius: 0.16,
-    gap: 0.058,
-    gloss: 1,
-    sheen: 0.42,
-    tint: 0.6,
-    shadow: 0.56,
-    grain: 0.55,
-    facets: 8,
-    bevelStyle: 'facet',  // 留め継ぎの面取り。金属はここが命
-    bevelAlpha: 1,
-    banded: true,      // 帯状の映り込みを重ねる（金属だけ）
-    colors: {
-      grey: { top: '#b9bec3', mid: '#878d93', deep: '#3b4046', side: '#4a4f55' },
-      lit: { top: '#eef4fa', mid: '#c2ccd6', deep: '#697682', side: '#7a8794' },
-    },
-    tray: { frame: '#33363a', floor: '#1d1f22', well: '#121315' },
-    texture: metalTexture,
   },
   {
     key: 'crystal',
     name: 'クリスタル',
-    note: 'エメラルドカット',
-    depth: 0.085,
-    bevel: 0.17,
+    note: '写真から切り出した本物のガラス',
+    /*
+     * **ここだけは、模様を描いていない。**
+     *
+     * ガラスは「表面の凹凸」ではなく、**中を通ってきた光**でできている ――
+     * 面取りの向こう側が透けて重なり、角では全反射して白く跳ね返る。
+     * 高さの場から陰影を計算するやり方は表面しか作れないので、どれだけ手を
+     * 入れても「ガラスに似せた石」より先へ行けなかった。
+     *
+     * そこで、実機で撮ったブロックの写真をそのまま貼っている
+     * （art/crystal/*.png、切り出しは tools/photoArt.mjs）。
+     * 写真は 1 マス 160px の無色（グレースケール）で、貼るときに
+     * 9 分割で任意の大きさへ伸ばす ―― 角と縁は伸ばさず中央だけを伸ばすので、
+     * 何マスのブロックでも面取りの太さが変わらない。だから全部のレベルに効く。
+     *
+     * 色は貼ってから被せる（進行度の色相を 'color' で重ねる）。
+     * こうすると陰影は写真のまま、色だけが手数に合わせて動く。
+     */
+    photo: true,
+    /** 灰色ブロックに被せる色。写真のガラスがわずかに帯びている青みそのもの */
+    photoTint: '#797986',
+    depth: 0.025,      // 側面はほとんど見えない。落ち影のぶんだけ持たせる
     radius: 0,
-    chamfer: 0.2,      // 角を 45° で落とす（丸めない）
-    gap: 0.058,
-    gloss: 1,
-    sheen: 0.3,
-    tint: 0.95,
-    shadow: 0.42,
-    grain: 0.6,
-    facets: 8,
-    bevelStyle: 'facet',  // エメラルドカット
-    bevelAlpha: 1,
-    translucent: 0.76, // 卓面の不透明度。下のトレイが薄く透ける
-    prism: true,       // 面の継ぎ目に虹の線を入れる
+    chamfer: 0.156,    // 写真の角の落としと同じ角度・同じ深さで切り抜く
+    gap: 0.09,
+    tint: 0.86,        // 色の濃さ。1 まで上げるとガラスではなく塗った板に見える
+    shadow: 0.3,
     colors: {
-      // 灰色は無色のガラス、色つきは染めたガラス。透けるぶん明暗が薄くなるので、
-      // ここだけは色みの差をいちばん強く取る
-      grey: { top: '#c4cad1', mid: '#8d939a', deep: '#474c52', side: '#6b7178' },
+      // 写真から拾った代表色。演出（破片・光の輪）と落ち影に使う
+      grey: { top: '#e2e4ea', mid: '#b3b6be', deep: '#70747c', side: '#8c9099' },
       lit: { top: '#d8f2ff', mid: '#6ec8ee', deep: '#175f85', side: '#3d95c4' },
     },
-    // 透けるものは、暗い受け皿の上でしか透けて見えない
-    tray: { frame: '#3e4650', floor: '#2b323b', well: '#1d232a' },
-    texture: crystalTexture,
-  },
-  {
-    key: 'paper',
-    name: '紙',
-    note: '板紙と白いカード',
-    depth: 0.078,
-    bevel: 0.07,
-    radius: 0.14,
-    gap: 0.06,
-    gloss: 0.06,
-    sheen: 0.14,
-    tint: 0.56,
-    shadow: 0.38,
-    grain: 0.45,
-    facets: 8,
-    bevelStyle: 'soft',
-    bevelAlpha: 0.8,
-    colors: {
-      // 灰色は板紙（クラフト）、色つきは白いカード。紙どうしなので、
-      // 色相ではなく**紙の種類**で差を付けないと見分けが付かない
-      grey: { top: '#bdb19b', mid: '#9c9179', deep: '#675e4a', side: '#756c56' },
-      lit: { top: '#fffdf6', mid: '#f7f0e1', deep: '#c6bba1', side: '#d6cbb1' },
-    },
-    tray: { frame: '#4a4336', floor: '#373127', well: '#2b261e' },
-    texture: paperTexture,
-  },
-  {
-    key: 'fabric',
-    name: '布',
-    note: '平織りのリネン',
-    depth: 0.085,
-    bevel: 0.1,
-    radius: 0.24,
-    gap: 0.064,
-    gloss: 0.05,
-    sheen: 0.16,
-    tint: 0.64,
-    shadow: 0.4,
-    grain: 0.6,
-    facets: 8,
-    bevelStyle: 'soft',
-    bevelAlpha: 0.75,
-    colors: {
-      // 灰色は染めた麻、色つきは晒した麻。織り目は同じで、糸の色だけが違う
-      grey: { top: '#968d7e', mid: '#756d5f', deep: '#48423a', side: '#554f44' },
-      lit: { top: '#f2ecdd', mid: '#ded7c4', deep: '#9c947f', side: '#aba38d' },
-    },
-    tray: { frame: '#464036', floor: '#332f28', well: '#272420' },
-    texture: fabricTexture,
+    /*
+     * 受け皿は、枠を立てずに平らに敷く。
+     * 写真は「白い台の上に置かれたガラス」で、暗い箱に嵌まっているのではない ――
+     * 枠と落ち影を付けると、ガラスが箱の底に沈んで透明感がまるごと消える。
+     */
+    tray: { frame: '#eef0f7', floor: '#edeff6', well: '#dde1ec' },
   },
 ];
 
-/** 素材の並び（設定画面もこの順で出す） */
+/** デザインの並び（設定画面もこの順で出す） */
 const MATERIAL_KEYS = DEFS.map((d) => d.key);
 
 /**
- * 何も選んでいないときの素材。
- * 迷ったら**いちばん読みやすいもの**を出す ―― 素材は好みで選ぶ飾りで、
+ * 何も選んでいないときのデザイン。
+ * 迷ったら**いちばん読みやすいもの**を出す ―― 見た目は好みで選ぶ飾りで、
  * 遊べることのほうが先にある。
  */
 const DEFAULT_MATERIAL = 'plain';
 
 const BY_KEY = new Map(DEFS.map((d) => [d.key, d]));
 
-/** 素材を引く。知らない名前なら既定の素材 */
+/**
+ * デザインを引く。知らない名前なら既定のデザイン。
+ * 廃止したデザイン（石・木・金属・紙・布・ガラス）を選んだまま残っている
+ * 端末も、ここで黙ってプレーンへ落ちる ―― 設定が古いだけで遊べなくはならない。
+ */
 function materialFor(key) {
   return BY_KEY.get(key) || BY_KEY.get(DEFAULT_MATERIAL);
 }
@@ -2815,15 +2356,14 @@ function materialList() {
 /**
  * ブロックの色を決める。
  *
- * 灰色ブロックは素材そのままの色。色つきブロックは、素材の明るいほうの地を
- * 進行度の色相へ引っぱる ―― 引っぱる強さは素材ごと（木を真っ青にすると
- * 木に見えなくなるが、ガラスは何色でもガラスに見える）。
+ * 灰色ブロックはデザインそのままの色。色つきブロックは、明るいほうの地を
+ * 進行度の色相へ引っぱる。
  */
 function paletteFor(mat, isColored, tintHex) {
   const src = isColored ? mat.colors.lit : mat.colors.grey;
   if (!isColored || !tintHex) return { ...src, key: `${mat.key}|grey` };
   /*
-   * プレーンだけは素材へ混ぜない。混ぜると明るさが素材の側に引き戻されて、
+   * プレーンだけは混ぜない。混ぜると明るさがデザインの側に引き戻されて、
    * 琥珀まで進んでも青のままの明るさになってしまう ―― 何も乗っていない面では、
    * 進行度の色そのものが見えるのが正しい。
    */
@@ -2847,31 +2387,15 @@ function paletteFor(mat, isColored, tintHex) {
 }
 
 /**
- * テクスチャを焼くときの色。**進行度では動かさない。**
- *
- * タイル 1 枚を焼くのに数十ミリ秒かかるので、進行度が変わるたびに焼き直すと
- * 遊んでいる最中に引っかかる。そこでタイルは素材そのものの色で 1 度だけ焼き、
- * 進行度の色は描くときに色相だけ被せる（render.js の bakeSurface）。
- * 明るさは被せても変わらないので、木目や石の粒の陰影はそのまま残る。
- */
-function texturePaletteFor(mat, isColored) {
-  const src = isColored ? mat.colors.lit : mat.colors.grey;
-  return { ...src, key: `${mat.key}|${isColored ? 'lit' : 'grey'}` };
-}
-
-/**
  * 盤面（トレイ）の色。
  *
- * **進行度では動かさない。** 動かすと、色が 1 段変わるたびにトレイを丸ごと
- * 焼き直すことになり（枠・床・空きマスの 3 枚のテクスチャと内側の影）、
- * 遊んでいる最中に 90ms 近く止まった。
- * 温度の変化は色つきブロックと背景の光が担っているので、
- * 受け皿は素材そのものの色で据えておくほうが、画面としても落ち着く。
+ * クリスタルでは**進行度で動かさない。** 写真のガラスは白い台の上に置かれて
+ * いるのが正しい見え方で、台まで色づくとガラスが染まって見える。
  */
 function trayPaletteFor(mat, tintHex) {
   /*
    * 例外はプレーンだけ。焼くものが「角丸の塗り 2 枚」しか無いので、
-   * 色が 1 段動くたびに焼き直しても目に見えるほどの間は空かない ――
+   * 色が 1 段動くたびに描き直しても目に見えるほどの間は空かない ――
    * そのぶん、盤面まで含めて温度が変わる元の見え方が戻ってくる。
    */
   if (mat.trayTint && tintHex) {
@@ -2882,156 +2406,105 @@ function trayPaletteFor(mat, tintHex) {
   return { ...mat.tray, key: `${mat.key}|tray` };
 }
 
-// ---------------------------------------------------------------- タイルの控え
+// ===== src/photoArt.js =====
+// クリスタルの写真。tools/photoArt.mjs が art/crystal/*.png から生成。直接編集しないこと。
+//
+// **なぜ画像を JS に埋めているか。** 別ファイルで配ると、Service Worker が
+// 先読みする一覧に足す必要があり、足し忘れると「機内モードで素材を切り替えたら
+// ブロックが消える」という直しにくい壊れ方をする。app.js に混ぜてあれば、
+// app.js のハッシュが変わり、先読みも版ずれの心配もまとめて片づく。
+//
+// 中身は無色（グレースケール）。色は貼るときに被せる ―― そうすれば
+// 進行度で色が変わっても、ガラスの陰影はそのまま残る。
 
-const tileCache = new Map();
+const PHOTO_UNIT = 160;
 
-/**
- * 素材 × 色 のタイルを 1 枚だけ焼いて使い回す。
- * 1 枚 256×256 の生成に数ミリ秒かかるので、毎フレーム作るわけにはいかない。
- */
-function tileFor(mat, pal) {
-  if (!mat.texture) return null; // プレーンは模様を持たない
-  const key = `${mat.key}|${pal.top}|${pal.mid}|${pal.deep}`;
-  const hit = tileCache.get(key);
-  if (hit) return hit;
-  const cv = mat.texture(pal, hashSeed(key));
-  // 使い回しが効かないほど溜まったら、古いものから捨てる（進行度で色が動くため）
-  if (tileCache.size > 24) tileCache.delete(tileCache.keys().next().value);
-  tileCache.set(key, cv);
-  return cv;
-}
+/** 写真 1 枚ぶん。cols/rows はもとのブロックが何マスだったか */
+const PHOTOS = [
+  { cols: 1, rows: 1, src: 'data:image/png;base64,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' },
+  { cols: 1, rows: 2, src: 'data:image/png;base64,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' },
+  { cols: 2, rows: 1, src: 'data:image/png;base64,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' },
+  { cols: 2, rows: 2, src: 'data:image/png;base64,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' },
+];
 
-/** 素材を切り替えたときなど、焼いたタイルを全部捨てる */
-function clearTileCache() {
-  tileCache.clear();
-  scaleCache.clear();
-}
-
-const scaleCache = new Map();
+/** 読み込み済みの画像。読めるまでは null（そのあいだは無地で描く） */
+const loaded = PHOTOS.map(() => null);
+let pending = 0;
+let onReady = null;
 
 /**
- * タイルを実寸に焼き直したもの。
- *
- * **createPattern に拡大縮小を掛けたまま敷いてはいけない。** 繰り返しの継ぎ目に
- * 半端な画素が挟まり、ブロックの上に白い格子の線が走る（実機ではっきり見えた）。
- * 整数の大きさに焼き直してから等倍で敷けば、継ぎ目は原理的に出ない。
- *
- * @param {boolean} turn 90° 回す（木目を長辺に沿わせるとき）。正方形なので
- *   回しても継ぎ目は崩れないし、画素の補間も起きない
+ * 写真を読み込む。データ URI なので通信は起きないが、復号は非同期なので、
+ * 読み終わったところで一度だけ知らせる（焼いてある絵を捨てさせるため）。
  */
-function scaledTile(mat, pal, size, turn = false) {
-  if (!mat.texture) return null;
-  // 8 の倍数に丸める。下で余白を 1/8 だけ取るので、そこが割り切れないと
-  // 縮尺がわずかにずれ、せっかく消した継ぎ目が戻ってくる
-  const px = Math.max(16, Math.round(size / 8) * 8);
-  const key = `${mat.key}|${pal.top}|${pal.mid}|${pal.deep}|${px}|${turn ? 1 : 0}`;
-  const hit = scaleCache.get(key);
-  if (hit) return hit;
-
-  const src = tileFor(mat, pal);
-  if (!src) return null;
-
-  /*
-   * 素のタイルは継ぎ目なく繋がるが、**縮めた瞬間に継ぎ目が戻る** ――
-   * drawImage は端の外側を読めないので、右端の画素が左端ではなく自分自身と
-   * 混ざり、1 本の線になる。
-   *
-   * そこで周囲に「回り込んだぶん」の余白を付けてから縮め、中央だけを切り出す。
-   * 中央の画素は上下左右に本物の隣を持つので、継ぎ目が生まれない。
-   *
-   * 余白は 1/8 で足りる。最初は 3×3 に並べていたが、それだと縮小先が
-   * 9 倍の面積になり、素材を切り替えるたびに 300ms 近く固まった。
-   */
-  const m = TILE / 8;
-  const sw = TILE + m * 2;
-  const pm = px / 8;
-  const pw = px + pm * 2;
-
-  const rep = makeCanvas(sw, sw);
-  const wide = makeCanvas(pw, pw);
-  const cv = makeCanvas(px, px);
-  if (!rep || !wide || !cv) return null;
-
-  const rctx = rep.getContext('2d');
-  for (let j = -1; j <= 1; j++) {
-    for (let i = -1; i <= 1; i++) rctx.drawImage(src, m + i * TILE, m + j * TILE);
-  }
-
-  const wctx = wide.getContext('2d');
-  wctx.imageSmoothingEnabled = true;
-  if (wctx.imageSmoothingQuality) wctx.imageSmoothingQuality = 'high';
-  wctx.drawImage(rep, 0, 0, pw, pw);
-
-  const ctx = cv.getContext('2d');
-  if (turn) {
-    ctx.translate(px, 0);
-    ctx.rotate(Math.PI / 2);
-  }
-  ctx.drawImage(wide, pm, pm, px, px, 0, 0, px, px);
-
-  if (scaleCache.size > 32) scaleCache.delete(scaleCache.keys().next().value);
-  scaleCache.set(key, cv);
-  return cv;
+function loadPhotos(done) {
+  onReady = done;
+  if (typeof Image === 'undefined') return;
+  if (pending || loaded.some((v) => v)) return;
+  pending = PHOTOS.length;
+  PHOTOS.forEach((p, i) => {
+    const im = new Image();
+    im.onload = () => {
+      loaded[i] = im;
+      pending--;
+      if (!pending && onReady) onReady();
+    };
+    im.onerror = () => {
+      pending--;
+      if (!pending && onReady) onReady();
+    };
+    im.src = p.src;
+  });
 }
-
-// ---------------------------------------------------------------- 面取りの陰影
 
 /**
- * 面取りの 1 面の明るさ。法線 (nx, ny) が光のほうを向くほど明るい。
+ * cols×rows のブロックに貼る写真を選ぶ。
  *
- * 金属だけ返り方を変えてある ―― 磨いた金属は拡散光をほとんど返さず、
- * 光源の**鏡像**を返す。だから上の面が明るいだけでなく、下の面も
- * （周りの明るい床を映して）明るくなる。この 2 つ目の山が無いと、
- * どれだけ磨いても「灰色のプラスチック」にしか見えない。
+ * 縦横の比がいちばん近いものを採り、比が同じなら大きいほうを採る ――
+ * 引き伸ばすのは中央だけ（9 分割）なので、比さえ合っていれば
+ * 面取りの太さは崩れない。写真の無い形は、いちばん近い形から作られる。
  */
-function facetShade(mat, nx, ny) {
-  const d = nx * LIGHT.x + ny * LIGHT.y;
-  if (mat.key === 'metal' || mat.key === 'crystal') {
-    const direct = Math.max(0, d);
-    const bounce = Math.max(0, -d); // 下から返ってくる環境光
-    // 面ごとの差を大きく取る。差が小さいと、磨いた面ではなく
-    // 「灰色のプラスチックに角を付けたもの」にしか見えない
-    return 0.34 + Math.pow(direct, 1.15) * 1.05 + Math.pow(bounce, 2.2) * 0.5;
+function photoFor(cols, rows) {
+  const want = Math.log(cols / rows);
+  let best = -1;
+  let score = Infinity;
+  for (let i = 0; i < PHOTOS.length; i++) {
+    if (!loaded[i]) continue;
+    const p = PHOTOS[i];
+    const d = Math.abs(Math.log(p.cols / p.rows) - want) * 8
+      + Math.abs(Math.log((p.cols * p.rows) / (cols * rows)));
+    if (d < score) { score = d; best = i; }
   }
-  return 0.62 + Math.max(0, d) * 0.62 + Math.max(0, -d) * 0.06;
+  return best < 0 ? null : loaded[best];
 }
 
-/** 面取りの 1 面の色 */
-function facetColor(mat, pal, nx, ny) {
-  const s = facetShade(mat, nx, ny);
-  const base = pal.mid;
-  return s >= 1 ? shade(base, (s - 1) * 0.9) : mixHex(pal.deep, base, clip(s, 0, 1));
-}
-
-/** ブロックの縁に引く 1 本の線。地より少し濃いだけにして、輪郭を主張させない */
-function edgeColor(pal) {
-  return luma(pal.deep) > 140 ? shade(pal.deep, -0.22) : shade(pal.deep, -0.3);
-}
-
-/** 効果（破片・光の輪）に使う代表色。素材が変わっても演出の色が浮かないように */
-function effectColors(mat, pal) {
-  return {
-    base: pal.mid,
-    light: shade(pal.top, 0.18),
-    dark: pal.deep,
-    shadow: hexRgb(pal.deep).join(','),
-  };
+/** 写真がまだ 1 枚も読めていない（＝無地で描くしかない） */
+function photosReady() {
+  return loaded.some((v) => v);
 }
 
 // ===== src/render.js =====
 // Canvas 描画。盤面・ブロック・着地予測ゴースト・演出をすべてここで描く。
 //
-// ブロックは「色の付いた板」ではなく、**素材から削り出した塊**として描く。
-// 順番は 接地影 → 側面の厚み → 天面のテクスチャ → 面取り → 縁 の 1 本道で、
-// 素材（src/materials.js）はその道に寸法と色と塗り方を渡すだけ。
-// 素材ごとに立体の作りを分岐させると、素材を足すたびに立体が壊れる。
+// ブロックの描き方はデザイン（src/materials.js）ごとに 2 通りしかない ――
+// プレーンは輪郭を 1 回塗るだけ、クリスタルは接地影を敷いて写真を 9 分割で貼る。
+// デザインはこの経路に寸法と色を渡すだけで、立体の作りそのものは分岐しない。
 //
-// 速さについて。天面のテクスチャは 256×256 のタイルを 1 枚焼いて使い回し、
-// **ブロック 1 個の絵そのものもオフスクリーンに焼いて使い回す**。
+// 速さについて。**ブロック 1 個の絵はオフスクリーンに焼いて使い回す。**
 // 同じ形・同じ色のブロックは 1 枚を共有するので、盤上に 20 個あっても
 // 焼くのは数枚で済む。毎フレームやるのは、その絵を貼ることだけ。
-// 影のぼかしや面取りの扇を毎フレーム描くと、それだけで 60fps が出ない。
+// 影のぼかしや写真の 9 分割を毎フレーム描くと、それだけで 60fps が出ない。
+
+/** オフスクリーンのキャンバス。OffscreenCanvas が無い環境でも動くようにする */
+function makeCanvas(w, h) {
+  if (typeof document !== 'undefined' && document.createElement) {
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.ceil(w));
+    cv.height = Math.max(1, Math.ceil(h));
+    return cv;
+  }
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(Math.ceil(w), Math.ceil(h));
+  return null;
+}
 
 /** roundRect は Safari 16.4 未満に無い。無ければ自前で足す */
 function installRoundRect() {
@@ -3195,7 +2668,7 @@ function progressColor(t) {
 /**
  * 進行度 -> 画面の後ろに敷く色（CSS へ渡す）。
  *
- * 素材の地（baseHex）を渡すと、**色つきブロックとまったく同じ色**を薄めて返す ――
+ * デザインの地（baseHex）を渡すと、**色つきブロックとまったく同じ色**を薄めて返す ――
  * 背景だけが blocks と違う色だと、2 つの色が画面で喧嘩する。
  * 渡さなければ進行度の色そのもの。
  *
@@ -3240,47 +2713,6 @@ function chamferRect(path, p, cut) {
   path.closePath();
 }
 
-/**
- * 面取りを何枚の面に割るか、その境界の向きを決める。
- *
- * 角から角へ均等に 8 分割すると、細長いブロックでは対角線が角を通らず、
- * 長辺の途中で面が割れてしまう。だから角度は**その矩形の角の位置から逆算**する ――
- * 角の落とし（丸みなら丸みの端、面取りなら切り口の両端）を通る 8 本の線が境界。
- * こうすると額縁の留め継ぎのように、角でぴたりと 45° に合う。
- */
-function facetRays(box, cut) {
-  const cx = (box.x0 + box.x1) / 2;
-  const cy = (box.y0 + box.y1) / 2;
-  const c = Math.max(0.5, Math.min(cut, box.w / 2 - 0.5, box.h / 2 - 0.5));
-  const { x0, y0, x1, y1 } = box;
-  // 右上の切り口の始点から時計回り。点と点のあいだが 1 枚の面になる
-  const pts = [
-    [x1 - c, y0], [x1, y0 + c], // 右上の角
-    [x1, y1 - c], [x1 - c, y1], // 右辺 → 右下の角
-    [x0 + c, y1], [x0, y1 - c], // 下辺 → 左下の角
-    [x0, y0 + c], [x0 + c, y0], // 左辺 → 左上の角
-  ];
-  // 各面の外向き法線。pts[i] と pts[i+1] のあいだの面が normals[i]
-  const K = Math.SQRT1_2;
-  const normals = [
-    [K, -K],  // 右上の角
-    [1, 0],   // 右辺
-    [K, K],   // 右下の角
-    [0, 1],   // 下辺
-    [-K, K],  // 左下の角
-    [-1, 0],  // 左辺
-    [-K, -K], // 左上の角
-    [0, -1],  // 上辺
-  ];
-  // atan2 は ±π で折り返す。そのまま arc() に渡すと、折り返した 1 枚だけが
-  // 円をほぼ 1 周してしまうので、単調に増えるようにほどいておく
-  const angles = pts.map(([x, y]) => Math.atan2(y - cy, x - cx));
-  for (let i = 1; i < angles.length; i++) {
-    while (angles[i] < angles[i - 1]) angles[i] += Math.PI * 2;
-  }
-  return { cx, cy, angles, normals };
-}
-
 class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
@@ -3312,35 +2744,33 @@ class Renderer {
     /** 色を何段に分けるか。レベルの最短手数がそのまま段数になる */
     this.steps = 32;
 
-    /** ブロックの素材。設定で切り替わる */
+    /** ブロックのデザイン。設定で切り替わる */
     this.material = materialFor(DEFAULT_MATERIAL);
     /**
      * 焼き上げたブロックの絵。
-     * 鍵は「素材 × 形 × 色 × マスの大きさ」。同じ鍵なら 1 枚を全員で使う。
+     * 鍵は「デザイン × 形 × 色 × マスの大きさ」。同じ鍵なら 1 枚を全員で使う。
      */
     this.pieceCache = new Map();
-    /** 焼き上げた盤面。素材・大きさ・色が変わったときだけ焼き直す */
-    this.trayCache = null;
-    this.trayKey = '';
 
     this.refreshTint();
 
     this.options = { symbols: false, ghost: true, calm: false };
   }
 
-  /** 素材を切り替える。焼いてある絵は全部捨てる */
+  /** デザインを切り替える。焼いてある絵は全部捨てる */
   setMaterial(key) {
     const next = materialFor(key);
     if (next === this.material) return;
     this.material = next;
     this.invalidateBakes();
+    // 写真を貼るデザイン（クリスタル）は、画像が復号できるまで無地で描くしかない。
+    // 読めたところで焼いてある絵を捨て、貼り直す
+    if (next.photo) loadPhotos(() => this.invalidateBakes());
   }
 
   invalidateBakes() {
     this.pieceCache.clear();
-    this.trayCache = null;
-    this.trayKey = '';
-    this._tintAt = -1; // 素材が変われば同じ進行度でも色が変わる
+    this._tintAt = -1; // デザインが変われば同じ進行度でも色が変わる
     this.refreshTint();
   }
 
@@ -3397,7 +2827,7 @@ class Renderer {
     return 26 + this.progress * 68;
   }
 
-  /** ブロックの色。灰色は素材そのまま、色つきは進行度の色を素材に混ぜたもの */
+  /** ブロックの色。灰色はデザインそのまま、色つきは進行度の色を混ぜたもの */
   palFor(colorIndex) {
     return colorIndex === -9 ? this.stonePal : this.litPal; // -9 は board.js の BLOCKER
   }
@@ -3405,7 +2835,7 @@ class Renderer {
   /**
    * 演出（破片・光の輪・残像）に使う色。
    * ブロックそのものではなく「そこにあった色」を伝えられればいいので、
-   * 素材の代表色 3 つに畳んで返す。
+   * デザインの代表色 3 つに畳んで返す。
    */
   colorOf(colorIndex) {
     const pal = this.palFor(colorIndex);
@@ -3442,11 +2872,10 @@ class Renderer {
     this.oy = Math.floor((h - boardPx) / 2);
     // マスの大きさが変われば、焼いてある絵は全部寸法違い
     if (this.cell !== prev) this.invalidateBakes();
-    else { this.trayCache = null; this.trayKey = ''; }
   }
 
   /**
-   * マスとマスのすき間。素材ごとに決まる（石は目地が広く、金属は詰まっている）。
+   * マスとマスのすき間。デザインごとに決まる（クリスタルは写真の目地に合わせて広い）。
    * ここが空いているぶんだけ、下のトレイと落ち影が見える ＝ 厚みが読める。
    */
   get tileGap() { return Math.max(1, this.cell * this.material.gap); }
@@ -3454,9 +2883,6 @@ class Renderer {
   get tileRadius() { return Math.max(1.5, this.cell * (this.material.radius || 0.12)); }
   /** ブロックの厚み（側面の見える高さ） */
   get depth() { return Math.max(1.5, this.cell * this.material.depth); }
-  /** 面取りの幅 */
-  get bevel() { return Math.max(1.5, this.cell * this.material.bevel); }
-
   /** 画面座標 -> 盤面セル */
   toCell(clientX, clientY) {
     const rect = this.canvas.getBoundingClientRect();
@@ -3621,159 +3047,25 @@ class Renderer {
   /**
    * 盤面（トレイ）。
    *
-   * ブロックが**中に収まっている**ことを見せたいので、枠は 1 段高く、床は
-   * 1 段低く描く。高いところは上面が明るく、低いところは上端に影が落ちる ――
-   * 明暗の付け方をひっくり返すだけで、同じ形が「出っ張り」にも「窪み」にも見える。
-   *
-   * 空きマスはさらにもう 1 段深い窪みにしてある。通路がどこにあるかは
-   * このゲームでいちばん読みたい情報なので、影の濃さで他と差を付ける。
-   */
-  drawTray(board) {
-    /*
-     * 平らな盤面は焼かずに、その場で描く。
-     *
-     * プレーンは盤面の色も進行度を追いかけるので、焼いてしまうと色が 1 段動くたびに
-     * 盤面ぶんのキャンバスを作り直すことになる ―― 大きな盤面で 1 手ごとに 55ms
-     * 止まった。中身は角丸の塗り 2 枚しか無いので、毎フレーム直に描くほうがずっと軽い。
-     */
-    if (this.material.flat) {
-      this.bakeFlatTray(this.ctx, board, this.trayPal, this.ox, this.oy, this.cell * this.size);
-      return;
-    }
-    const key = `${this.material.key}|${this.cell}|${this.size}|${this.ox},${this.oy}`
-      + `|${this.trayPal ? this.trayPal.key : ''}|${this.emptyKey(board)}`;
-    if (this.trayKey !== key || !this.trayCache) {
-      this.trayCache = this.bakeTray(board);
-      this.trayKey = key;
-    }
-    if (this.trayCache) {
-      const t = this.trayCache;
-      this.ctx.drawImage(t.canvas, t.x, t.y, t.w, t.h);
-    }
-  }
-
-  /** 空きマスの並び。ここが変わったときだけトレイを焼き直せばいい */
-  emptyKey(board) {
-    if (!board) return '';
-    const out = [];
-    for (let y = 0; y < this.size; y++) {
-      for (let x = 0; x < this.size; x++) if (board.at(x, y) === -1) out.push(`${x}.${y}`);
-    }
-    return out.join(',');
-  }
-
-  bakeTray(board) {
-    const mat = this.material;
-    const pal = this.trayPal;
-    const n = this.size;
-    const cell = this.cell;
-    const w = cell * n;
-    // 枠の幅。盤面が小さいほど相対的に太くして、額縁らしく見せる
-    const frame = Math.max(6, cell * 0.3);
-    const outPad = Math.ceil(frame + cell * 0.3);
-    const side = w + outPad * 2;
-    const s = this.dpr;
-    const cv = makeCanvas(side * s, side * s);
-    if (!cv) return null;
-    const ctx = cv.getContext('2d');
-    ctx.scale(s, s);
-    const x0 = outPad;
-    const y0 = outPad;
-    const radius = Math.max(6, cell * 0.3);
-
-    const grain = mat.grain == null ? 1 : mat.grain;
-
-    // --- 落ち影（盤面そのものが台の上に置かれている） ---
-    ctx.save();
-    ctx.shadowColor = 'rgba(24,22,20,0.3)';
-    ctx.shadowBlur = cell * 0.4;
-    ctx.shadowOffsetY = cell * 0.16;
-    ctx.fillStyle = '#000';
-    ctx.beginPath();
-    ctx.roundRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2, radius);
-    ctx.fill();
-    ctx.restore();
-
-    // --- 枠 ---
-    const outerRect = new Path2D();
-    outerRect.roundRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2, radius);
-    ctx.save();
-    ctx.clip(outerRect);
-    ctx.fillStyle = pal.frame;
-    ctx.fillRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2);
-    const framePal = {
-      top: shade(pal.frame, 0.18), mid: pal.frame, deep: shade(pal.frame, -0.24), side: pal.frame,
-    };
-    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 3.4 * this.dpr), 0.85 * grain);
-    // 枠は 1 段高い ―― 上端が明るく、下端が暗い
-    const fg = ctx.createLinearGradient(0, y0 - frame, 0, y0 + w + frame);
-    fg.addColorStop(0, 'rgba(255,255,255,0.32)');
-    fg.addColorStop(0.5, 'rgba(255,255,255,0)');
-    fg.addColorStop(1, 'rgba(0,0,0,0.22)');
-    ctx.fillStyle = fg;
-    ctx.fillRect(x0 - frame, y0 - frame, w + frame * 2, w + frame * 2);
-    ctx.restore();
-
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(x0 - frame + 0.5, y0 - frame + 0.5, w + frame * 2 - 1, w + frame * 2 - 1, radius);
-    ctx.stroke();
-    ctx.restore();
-
-    // --- 床（1 段低い。上端に枠の影が落ちる） ---
-    const floorPad = frame * 0.34;
-    const floor = new Path2D();
-    floor.roundRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2,
-      Math.max(3, radius * 0.6));
-    ctx.save();
-    ctx.clip(floor);
-    ctx.fillStyle = pal.floor;
-    ctx.fillRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2);
-    // 枠と同じ模様が続かないようにずらす
-    this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2.4 * this.dpr), 0.5 * grain, 37, 61);
-    ctx.fillStyle = 'rgba(0,0,0,0.16)';
-    ctx.fillRect(x0 - floorPad, y0 - floorPad, w + floorPad * 2, w + floorPad * 2);
-    ctx.restore();
-    this.insetShadow(ctx, floor, cell * 0.34, 0.5);
-
-    // --- 空きマス（もう 1 段深い窪み） ---
-    const gap = this.tileGap;
-    const size = this.tileSize;
-    const tr = this.tileRadius;
-    const holes = new Path2D();
-    let any = false;
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        if (board && board.at(x, y) !== -1) continue;
-        holes.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
-        any = true;
-      }
-    }
-    if (any) {
-      ctx.save();
-      ctx.clip(holes);
-      ctx.fillStyle = pal.well;
-      ctx.fillRect(0, 0, side, side);
-      this.fillTexture(ctx, scaledTile(mat, framePal, cell * 2 * this.dpr), 0.38 * grain, 13, 29);
-      ctx.fillStyle = 'rgba(0,0,0,0.2)';
-      ctx.fillRect(0, 0, side, side);
-      ctx.restore();
-      this.insetShadow(ctx, holes, cell * 0.22, 0.62);
-    }
-
-    return { canvas: cv, x: this.ox - outPad, y: this.oy - outPad, w: side, h: side };
-  }
-
-  /**
-   * 平らな盤面（プレーン）。
-   *
    * ブロックと同じ寸法・同じすき間の淡いマスを敷き詰めただけの面で、影も枠も無い。
    * 上半分だけを 1px の白い線でなぞる ―― ガラス板の縁が光を拾ったときの 1 本で、
    * これだけで面が「浮いている」ように見える。
+   *
+   * **焼かずに毎フレーム直に描く。** プレーンは盤面の色も進行度を追いかけるので、
+   * 焼くと色が 1 段動くたびに盤面ぶんのキャンバスを作り直すことになり、
+   * 大きな盤面で 1 手ごとに 55ms 止まった。中身は角丸の塗り 2 枚しか無い。
+   *
+   * 枠を立てて影を落とす受け皿も持っていたが、写真のクリスタルはそれでは
+   * 成り立たない ―― ガラスが暗い箱の底に沈んで、透明感がまるごと消える。
+   * 写真は「白い台の上に置かれたガラス」で、いま残っている 2 つのデザインは
+   * どちらもこの平らな台に載っている。
    */
-  bakeFlatTray(ctx, board, pal, x0, y0, w) {
+  drawTray(board) {
+    const ctx = this.ctx;
+    const pal = this.trayPal;
+    const x0 = this.ox;
+    const y0 = this.oy;
+    const w = this.cell * this.size;
     const n = this.size;
     const cell = this.cell;
     const pad = Math.max(2, cell * 0.06);
@@ -3803,36 +3095,25 @@ class Renderer {
     const gap = this.tileGap;
     const size = this.tileSize;
     const tr = this.tileRadius;
+    // 角の落とし方はブロックと揃える。空きマスは「ブロックが抜けた跡」なので、
+    // 丸と八角が混ざると盤面が 2 種類の形でできているように見える
+    const cut = this.material.chamfer ? this.material.chamfer * cell : 0;
     ctx.save();
     ctx.fillStyle = pal.well;
     ctx.beginPath();
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         if (board && board.at(x, y) !== -1) continue;
-        ctx.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
+        const px = x0 + x * cell + gap;
+        const py = y0 + y * cell + gap;
+        if (cut) {
+          chamferRect(ctx, {
+            px, py, pw: size, ph: size, up: false, down: false, left: false, right: false,
+          }, cut);
+        } else ctx.roundRect(px, py, size, size, tr);
       }
     }
     ctx.fill();
-    ctx.restore();
-  }
-
-  /**
-   * 窪みの内側に落ちる影。
-   * 形の内側を切り抜き、外側を塗った面に影を落とすと、影だけが内側へ回り込む ――
-   * これが「へこんでいる」ことのいちばん確かなしるしになる。
-   */
-  insetShadow(ctx, path, blur, strength) {
-    ctx.save();
-    ctx.clip(path);
-    ctx.shadowColor = `rgba(18,16,14,${strength})`;
-    ctx.shadowBlur = blur;
-    ctx.shadowOffsetY = blur * 0.34;
-    // 外側だけを塗る（even-odd で「とても大きな矩形 − この形」を作る）
-    const outside = new Path2D();
-    outside.rect(-2000, -2000, 6000, 6000);
-    outside.addPath(path);
-    ctx.fillStyle = 'rgba(0,0,0,1)';
-    ctx.fill(outside, 'evenodd');
     ctx.restore();
   }
 
@@ -3893,29 +3174,6 @@ class Renderer {
 
   // ---------------------------------------------------------------- ブロックを焼く
 
-  /**
-   * 素材のタイルを敷く。
-   *
-   * **必ず画素そのままの座標で敷くこと。** 変換行列に拡大が掛かったまま
-   * createPattern を敷くと、繰り返しの継ぎ目に半端な画素が挟まり、
-   * ブロックの上を白い格子の線が走る（実機ではっきり見えた）。
-   * 切り抜き（clip）は変換を戻しても効いたままなので、ここだけ等倍に落とせばよい。
-   */
-  fillTexture(ctx, tile, alpha, offsetX = 0, offsetY = 0) {
-    if (!tile) return;
-    const pattern = ctx.createPattern(tile, 'repeat');
-    if (!pattern) return;
-    const ox = Math.round(offsetX);
-    const oy = Math.round(offsetY);
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.globalAlpha = alpha;
-    ctx.translate(ox, oy);
-    ctx.fillStyle = pattern;
-    ctx.fillRect(-ox, -oy, ctx.canvas.width, ctx.canvas.height);
-    ctx.restore();
-  }
-
   /** ブロックの外接矩形（セル単位） */
   cellBounds(cells) {
     let minX = Infinity;
@@ -3939,21 +3197,20 @@ class Renderer {
   /**
    * ブロック 1 個の絵をオフスクリーンに焼く。
    *
-   * 影のぼかし・面取りの扇・テクスチャの敷き込みは、どれも 1 個あたり
-   * 10 回近い描画になる。盤上に 20 個あると毎フレーム 200 回。
-   * 焼いてしまえば毎フレームやるのは drawImage 1 回だけになる。
+   * 影のぼかしと写真の 9 分割は、どれも 1 個あたり 10 回近い描画になる。
+   * 盤上に 20 個あると毎フレーム 200 回。焼いてしまえば毎フレームやるのは
+   * drawImage 1 回だけになる。
    *
    * @param {number[][]} cells 盤面座標のセル
    * @param {object} pal 色（materials.paletteFor）
-   * @param {number} variant 同じ形でもテクスチャの位置をずらすための番号
    * @param {boolean} colored 色つきブロックか（灰色は進行度の色を被せない）
    */
-  bakePiece(cells, pal, variant, colored) {
+  bakePiece(cells, pal, colored) {
     const mat = this.material;
     const cell = this.cell;
     const { minX, minY, cols, rows } = this.cellBounds(cells);
     const depth = this.depth;
-    // 影と厚みがはみ出すぶんの余白。平らな素材は何もはみ出さないので 1px でいい
+    // 影がはみ出すぶんの余白。平らなデザインは何もはみ出さないので 1px でいい
     const pad = mat.flat ? 1 : Math.ceil(depth + cell * 0.34);
     const w = cols * cell + pad * 2;
     const h = rows * cell + pad * 2;
@@ -3967,19 +3224,16 @@ class Renderer {
 
     const ox = pad - minX * cell;
     const oy = pad - minY * cell;
-    const gap = this.tileGap;
-    const bevel = this.bevel;
-    const radius = this.tileRadius;
     const chamfer = mat.chamfer ? mat.chamfer * cell : 0;
-
-    const rects = this.rectsFor(cells, ox, oy, gap, radius);
+    const radius = this.tileRadius;
+    const rects = this.rectsFor(cells, ox, oy, this.tileGap, radius);
     const outer = this.pathOf(rects, chamfer);
     const box = this.bboxOf(rects);
 
     /*
-     * 平らな素材（プレーン）はここで終わり。
+     * プレーンはここで終わり。
      *
-     * 立体の経路を薄くするのではなく、**通らない**。接地影も側面も面取りも縁の線も
+     * 薄い立体にするのではなく、**何も通らない**。接地影も面取りも縁の線も
      * 無いので、目が拾うものが「色と形」だけになる ―― どのブロックがどこまでかを
      * いちばん速く読めるのがこの見た目で、だから既定にしてある。
      */
@@ -3989,43 +3243,84 @@ class Renderer {
       return { canvas: cv, pad, minX, minY, w, h };
     }
 
-    // 卓面（面取りの内側）。角の落としも面取りのぶんだけ小さくなる
-    const innerCut = chamfer ? Math.max(1, chamfer - bevel * 0.7) : Math.max(0.5, radius - bevel * 0.6);
-    const innerRects = this.rectsFor(cells, ox, oy, gap + bevel, innerCut);
-    const inner = this.pathOf(innerRects, chamfer ? innerCut : 0);
-
-    // 順番が意味を持つ。
-    //
-    // 面取りは「輪郭と卓面のあいだの輪」だが、**輪を even-odd で切り抜いてはいけない**。
-    // ブロックが複数マスにまたがると、マスの継ぎ目で内側の輪郭が重なり、
-    // そこだけ半端な被覆率になって細い線が走る（盤面にマス目が浮いて見えた）。
-    // 代わりに「面取りを一面に塗ってから、卓面をその上に重ねて隠す」―― こうすれば
-    // 輪は塗り重ねの差として現れるだけで、切り抜きが要らない。
-    // 縁をなぞるとき用の、外周だけの 1 本の輪郭（マスの境目を含まない）
+    /*
+     * クリスタルは、盤面に落ちる影を敷いてから写真を貼るだけ。
+     * 面取りも艶も帯も**写真がすでに全部持っている**ので、上から足すと二重に光る。
+     */
     const rim = this.boundaryOf(cells, rects, box, radius, chamfer);
-    const innerBox = this.bboxOf(innerRects);
-    const innerRim = this.boundaryOf(cells, innerRects, innerBox, innerCut, chamfer ? innerCut : 0);
-
-    const skin = {
-      pal, mat, cols, rows, variant, box,
-      colored,
-      tintHex: this.tint.base,
-    };
     this.bakeShadow(ctx, outer, rim, mat, cell, depth);
-    this.bakeSide(ctx, outer, box, pal, mat, depth);
-    // 天面をいったん全面に描く。面取りはこの上に乗せる
-    this.bakeFace(ctx, outer, skin, 1);
-    if (mat.bevelStyle === 'facet') {
-      // 留め継ぎの面。いったん全面を面の色で塗り、卓面を上から重ねて中央を隠す ――
-      // 輪だけを even-odd で切り抜くと、マスの継ぎ目に線が残る
-      this.bakeFacets(ctx, outer, box, pal, mat, chamfer || radius * 0.85);
-      this.bakeTable(ctx, inner, skin);
-    } else {
-      this.bakeSoftBevel(ctx, outer, rim, box, pal, mat);
-    }
-    this.bakeEdge(ctx, rim, innerRim, pal, mat, cell);
-
+    this.bakePhoto(ctx, outer, box, cols, rows, pal, colored);
     return { canvas: cv, pad, minX, minY, w, h };
+  }
+
+  /**
+   * 写真を 1 個のブロックに貼る。
+   *
+   * ブロックは 1×1 から 8×3 まで何マスにもなるので、写真をそのまま引き伸ばすと
+   * 面取りまで一緒に伸びて、細長いブロックだけ縁が太くなる。そこで **9 分割**で
+   * 貼る ―― 四隅と四辺は伸ばさずそのまま、中央だけを伸ばす。
+   * エメラルドカットの面取りは「一定の幅の帯」なので、これでどの大きさでも
+   * 写真と同じ太さのまま収まる。全部のレベルに同じ 4 枚で足りるのはこのため。
+   *
+   * 色は貼ってから被せる。'color' は「色相と彩度は塗った色、明るさは下のまま」
+   * という混ぜ方なので、ガラスの陰影を潰さずに色だけが変わる ――
+   * 進行度の色（手数の目盛り）が、写真の上でもそのまま働く。
+   */
+  bakePhoto(ctx, outer, box, cols, rows, pal, colored) {
+    const mat = this.material;
+    const img = photoFor(cols, rows);
+    ctx.save();
+    ctx.clip(outer);
+    if (img) this.drawNineSlice(ctx, img, box, cols, rows);
+    else {
+      // まだ復号できていない。無地で置いておく（読めたら焼き直される）
+      ctx.fillStyle = pal.mid;
+      ctx.fillRect(box.x0, box.y0, box.w, box.h);
+    }
+    ctx.globalCompositeOperation = 'color';
+    // 色つきは進行度の色、灰色は写真がもともと帯びている青み。
+    // 濃さを 1 まで上げると、ガラスではなく**塗った板**に見える ――
+    // 少し透かすと、地の無彩色が残って「染めたガラス」になる
+    ctx.globalAlpha = colored ? mat.tint : 1;
+    ctx.fillStyle = colored ? this.tint.base : mat.photoTint;
+    ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+    ctx.restore();
+  }
+
+  /**
+   * 9 分割で貼る。
+   *
+   * 縁の太さは**マスに比例させる**（写真の側も貼る側も）。ブロックが何マスでも
+   * 1 マスあたりの見え方が変わらないので、盤面のなかで面取りの太さが揃う。
+   * 継ぎ目は destination 側を 0.5px 重ねて隠す ―― ぴったり突き合わせると、
+   * 拡大縮小の補間が切れる位置に髪の毛ほどの線が出る。
+   */
+  drawNineSlice(ctx, img, box, cols, rows) {
+    const sw = img.naturalWidth || img.width;
+    const sh = img.naturalHeight || img.height;
+    if (!sw || !sh) return;
+    // 縁の取り方。面取り（0.17）＋角の落とし（0.2）が収まるだけ内側まで
+    const K = 0.3;
+    const sb = Math.min(PHOTO_UNIT * K, sw / 2 - 1, sh / 2 - 1);
+    const db = Math.min(Math.min(box.w / cols, box.h / rows) * K, box.w / 2 - 0.5, box.h / 2 - 0.5);
+    const bleed = 0.5;
+    const sx = [0, sb, sw - sb, sw];
+    const sy = [0, sb, sh - sb, sh];
+    const dx = [box.x0, box.x0 + db, box.x1 - db, box.x1];
+    const dy = [box.y0, box.y0 + db, box.y1 - db, box.y1];
+    // 伸ばす面を先に、角を最後に。逆にすると、重ねた 0.5px が角に被さって
+    // 面取りの稜線が鈍る ―― いちばん形を持っているのが角なので、そこを上に置く
+    const order = [[1, 1], [1, 0], [1, 2], [0, 1], [2, 1], [0, 0], [2, 0], [0, 2], [2, 2]];
+    for (const [i, j] of order) {
+      const bx = i === 1 ? bleed : 0;
+      const by = j === 1 ? bleed : 0;
+      ctx.drawImage(
+        img,
+        sx[i], sy[j], sx[i + 1] - sx[i], sy[j + 1] - sy[j],
+        dx[i] - bx, dy[j] - by,
+        (dx[i + 1] - dx[i]) + bx * 2, (dy[j + 1] - dy[j]) + by * 2,
+      );
+    }
   }
 
   /**
@@ -4049,216 +3344,6 @@ class Renderer {
     // 塗りだけだと縁の半端な画素が残り、黒い髪の毛のような線になる。
     // 外周を 1px の線でもなぞって、その半端まで消す
     ctx.lineWidth = 1;
-    ctx.stroke(rim);
-    ctx.restore();
-  }
-
-  /** 側面。塊の厚み。下へ押し出したぶんが、すき間から帯になって見える */
-  bakeSide(ctx, outer, box, pal, mat, depth) {
-    ctx.save();
-    ctx.translate(0, depth);
-    const g = ctx.createLinearGradient(0, box.y0, 0, box.y1 + depth);
-    g.addColorStop(0, pal.side);
-    g.addColorStop(0.55, mixHex(pal.side, pal.deep, 0.5));
-    g.addColorStop(1, shade(pal.deep, -0.26));
-    ctx.fillStyle = g;
-    ctx.fill(outer);
-    ctx.restore();
-  }
-
-  /**
-   * 素材の地。指定された形に、色とテクスチャだけを敷く。
-   * タイル 1 枚はおよそ 3 マスぶん。マスが小さくても、木目や石の粒が
-   * 「そのブロックに対して」同じ割合で見える。
-   * 木と金属は筋を長辺に沿わせる ―― 板の取り方が変われば、別の板に見える。
-   */
-  bakeSurface(ctx, box, skin, alpha) {
-    const { pal, mat, cols, rows, variant, colored } = skin;
-    const along = (mat.key === 'wood' || mat.key === 'metal') && rows > cols;
-    // タイルは**素材そのものの色**で焼く。進行度で焼き直すと、色が 1 段動くたびに
-    // 数十ミリ秒止まる。色は下の「色相を被せる」ひと塗りで付ける
-    const tile = scaledTile(mat, texturePaletteFor(mat, colored), this.cell * 3 * this.dpr, along);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = pal.mid;
-    ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
-    /*
-     * 模様は**地の上に薄く重ねる**。
-     *
-     * 昔はここを不透明で敷いていたが、マスが 40px 前後まで小さくなると
-     * 粒や織り目が形と同じ細かさになり、ブロックの輪郭が模様に埋もれて読めなくなる。
-     * grain のぶんだけ透かして、下のベタ塗りを残す ―― 素材は「触れそうな表面」に
-     * 見えればよく、拡大鏡で見るためのものではない。
-     */
-    // 同じ形のブロックでも模様の位置をずらす（並ぶと繰り返しが目に付く）
-    if (tile) {
-      this.fillTexture(ctx, tile, alpha * (mat.grain == null ? 1 : mat.grain),
-        tile.width * variant * 0.37, tile.height * variant * 0.61);
-    }
-    ctx.globalAlpha = 1;
-
-    /*
-     * 進行度の色相を被せる。
-     *
-     * 'color' は「色相と彩度は塗った色、明るさは下のまま」という混ぜ方。
-     * ふつうの半透明で塗ると陰影まで一緒に薄まって、木目も石の粒も潰れる ――
-     * これなら凹凸はそのまま残り、色だけが変わる。
-     */
-    if (colored && mat.tint > 0 && skin.tintHex) {
-      ctx.save();
-      ctx.globalCompositeOperation = 'color';
-      ctx.globalAlpha = alpha * mat.tint;
-      ctx.fillStyle = skin.tintHex;
-      ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
-      ctx.restore();
-    }
-  }
-
-  /**
-   * 天面。素材の地を敷き、その上に帯・斜めの明暗・艶を重ねる。
-   * 面取りの前に全面へ、面取りのあとに卓面へ ―― 同じ関数を 2 度使う。
-   */
-  bakeFace(ctx, path, skin, alpha) {
-    const { pal, mat, box } = skin;
-    ctx.save();
-    ctx.clip(path);
-
-    this.bakeSurface(ctx, box, skin, alpha);
-
-    // 帯状の映り込み（金属だけ）。研磨の筋と直交する向きに置く
-    if (mat.banded) {
-      const g = ctx.createLinearGradient(0, box.y0, 0, box.y1);
-      // 帯は 3 本まで。以前は 5 本入れていたが、板ではなく波板に見えた
-      g.addColorStop(0, 'rgba(255,255,255,0.3)');
-      g.addColorStop(0.18, 'rgba(255,255,255,0.02)');
-      g.addColorStop(0.44, 'rgba(0,0,0,0.16)');
-      g.addColorStop(0.62, 'rgba(255,255,255,0.18)');
-      g.addColorStop(1, 'rgba(0,0,0,0.14)');
-      ctx.fillStyle = g;
-      ctx.fillRect(box.x0, box.y0, box.w, box.h);
-    }
-
-    // 斜めの明暗。光の来ている側が明るい
-    const s = mat.sheen;
-    if (s > 0) {
-      const g = ctx.createLinearGradient(box.x0, box.y0, box.x1, box.y1);
-      g.addColorStop(0, `rgba(255,255,255,${s * 0.5})`);
-      g.addColorStop(0.42, 'rgba(255,255,255,0)');
-      g.addColorStop(1, `rgba(20,16,12,${s * 0.4})`);
-      ctx.fillStyle = g;
-      ctx.fillRect(box.x0, box.y0, box.w, box.h);
-    }
-
-    // 艶。左上寄りに広い光の溜まりを置く
-    if (mat.gloss > 0.15) {
-      const r = Math.max(box.w, box.h) * 0.62;
-      const g = ctx.createRadialGradient(
-        box.x0 + box.w * 0.3, box.y0 + box.h * 0.2, 0,
-        box.x0 + box.w * 0.3, box.y0 + box.h * 0.2, r,
-      );
-      g.addColorStop(0, `rgba(255,255,255,${mat.gloss * 0.26})`);
-      g.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(box.x0, box.y0, box.w, box.h);
-    }
-
-    ctx.restore();
-  }
-
-  /**
-   * 卓面。面取りを塗ったあとに、その中央だけを塗り直して隠す。
-   * 透ける素材はいったん下を消してから薄く塗る ―― 消さないと、下に敷いた
-   * 面取りと側面が透けて、トレイではなく自分の影を見ることになる。
-   */
-  bakeTable(ctx, inner, skin) {
-    const { mat, box } = skin;
-    if (mat.translucent) {
-      ctx.save();
-      ctx.clip(inner);
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.fillStyle = '#000';
-      ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
-      ctx.restore();
-    }
-    this.bakeFace(ctx, inner, skin, mat.translucent || 1);
-  }
-
-  /**
-   * 留め継ぎの面取り（金属・クリスタル）。
-   * 中心から 8 方向へ扇を放ち、面ごとに明るさを変える。角度は矩形の角から
-   * 逆算してあるので（facetRays）、角でぴたりと 45° に合う。
-   * ここでは全面を塗り、中央は卓面で隠す ―― 輪を切り抜くとマスの継ぎ目に線が出る。
-   */
-  bakeFacets(ctx, outer, box, pal, mat, cut) {
-    const { cx, cy, angles, normals } = facetRays(box, cut);
-    const r = Math.hypot(box.w, box.h);
-    ctx.save();
-    ctx.clip(outer);
-    ctx.globalAlpha = mat.bevelAlpha == null ? 1 : mat.bevelAlpha;
-    for (let i = 0; i < angles.length; i++) {
-      const a0 = angles[i];
-      const a1 = i === angles.length - 1 ? angles[0] + Math.PI * 2 : angles[i + 1];
-      ctx.fillStyle = facetColor(mat, pal, normals[i][0], normals[i][1]);
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.arc(cx, cy, r, a0, a1);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  /**
-   * 丸い縁の面取り（石・木・紙・布）。
-   *
-   * 面では割らない。輪郭を**太さを変えながら何度もなぞる** ―― 太くて薄い線から
-   * 細くて濃い線へ重ねると、縁でいちばん強く、内へ向かって滑らかに消える帯になる。
-   * 内側の輪郭で切り抜くやり方だと、そこに硬い境目が出て「丸み」に見えない。
-   */
-  bakeSoftBevel(ctx, outer, rim, box, pal, mat) {
-    const bevel = this.bevel;
-    const r = Math.hypot(box.w, box.h) / 2;
-    const cx = (box.x0 + box.x1) / 2;
-    const cy = (box.y0 + box.y1) / 2;
-    const g = ctx.createLinearGradient(
-      cx + LIGHT.x * r, cy + LIGHT.y * r,
-      cx - LIGHT.x * r, cy - LIGHT.y * r,
-    );
-    g.addColorStop(0, facetColor(mat, pal, LIGHT.x, LIGHT.y));
-    g.addColorStop(0.5, facetColor(mat, pal, -LIGHT.y, LIGHT.x));
-    g.addColorStop(1, facetColor(mat, pal, -LIGHT.x, -LIGHT.y));
-
-    const alpha = mat.bevelAlpha == null ? 1 : mat.bevelAlpha;
-    ctx.save();
-    ctx.clip(outer);
-    ctx.strokeStyle = g;
-    ctx.lineJoin = 'round';
-    const steps = 4;
-    for (let i = 0; i < steps; i++) {
-      ctx.globalAlpha = alpha * (0.26 + i * 0.16);
-      ctx.lineWidth = bevel * 2 * (1 - i / steps);
-      ctx.stroke(rim);
-    }
-    ctx.restore();
-  }
-
-  /** 縁の線と、クリスタルの稜線 */
-  bakeEdge(ctx, rim, innerRim, pal, mat, cell) {
-    ctx.save();
-    ctx.lineWidth = Math.max(1, cell * 0.018);
-    ctx.globalAlpha = 0.5;
-    ctx.strokeStyle = edgeColor(pal);
-    ctx.stroke(rim);
-    ctx.restore();
-
-    if (!mat.prism) return;
-    // 面と面の継ぎ目が光を拾う。ガラスの「エッジの線」はこれで出る
-    ctx.save();
-    ctx.lineWidth = Math.max(1, cell * 0.022);
-    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-    ctx.stroke(innerRim);
-    ctx.globalAlpha = 0.55;
-    ctx.lineWidth = Math.max(1, cell * 0.014);
-    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
     ctx.stroke(rim);
     ctx.restore();
   }
@@ -4293,7 +3378,6 @@ class Renderer {
    *
    * 同じブロックの隣り合うマスは、接する側のすき間と角丸を 0 にして繋げる ――
    * こうすると L 字でも凹型でも「1 個の塊」に見える。
-   * pad を大きくすると、そのぶん内側へ縮んだ相似形になる（面取りの内側の輪郭）。
    */
   rectsFor(cells, ox, oy, pad, r) {
     const cell = this.cell;
@@ -4341,11 +3425,6 @@ class Renderer {
     return this.rectsFor(piece.cells, this.ox + dx, this.oy + dy, this.tileGap, this.tileRadius);
   }
 
-  /**
-   * 矩形の並び -> 輪郭の Path2D。
-   * 角の落とし方は素材が決める ―― 丸める（石・木・金属・紙・布）か、
-   * 45° で切り落とす（クリスタル。エメラルドカットの角はここで決まる）。
-   */
   /**
    * ブロックの**外周だけ**をなぞる 1 本の閉じた輪郭。
    *
@@ -4433,15 +3512,14 @@ class Renderer {
       return;
     }
 
-    // 焼いてある絵を貼る。同じ形・同じ素材・同じ色なら 1 枚を全員で使い回す
+    // 焼いてある絵を貼る。同じ形・同じデザイン・同じ色なら 1 枚を全員で使い回す
     const pal = this.palFor(piece.color);
     const { minX, minY } = this.cellBounds(piece.cells);
-    const variant = ((piece.id % 4) + 4) % 4;
     const key = `${this.material.key}|${this.shapeKey(piece.cells, minX, minY)}`
-      + `|${pal.key}|${this.cell}|${variant}`;
+      + `|${pal.key}|${this.cell}`;
     let baked = this.pieceCache.get(key);
     if (baked === undefined) {
-      baked = this.bakePiece(piece.cells, pal, variant, piece.color !== -9);
+      baked = this.bakePiece(piece.cells, pal, piece.color !== -9);
       /*
        * 盤上の形は数種類しかないが、色つきの絵は残り手数が 1 動くたびに増える。
        * 300 手のレベルなら 600 枚まで積み上がるので、上限を超えたら**古いものから**
@@ -5910,7 +4988,7 @@ const RULES_KEY = 'slidepop.seenRules';
 /** 設定の初期値。「データを消す」でここへ戻る */
 const DEFAULT_SETTINGS = {
   sound: true, haptics: true, symbols: false, ghost: true, calm: false,
-  /** ブロックの素材。見た目だけが変わり、盤面もルールも変わらない */
+  /** ブロックのデザイン。見た目だけが変わり、盤面もルールも変わらない */
   material: DEFAULT_MATERIAL,
 };
 
@@ -6934,9 +6012,9 @@ class Game {
   }
 
   /**
-   * ブロックの素材を選ぶボタンを並べる。
-   * 見本は「その素材で焼いた実物」ではなく代表色の四角 ―― 一覧を実物で描くと
-   * 選ぶだけで6素材ぶんのテクスチャを焼くことになり、シートを開くたびに固まる。
+   * ブロックのデザインを選ぶボタンを並べる。
+   * 見本は「そのデザインで焼いた実物」ではなく代表色の四角 ―― 一覧を実物で描くと
+   * シートを開くだけで写真の復号と焼き上げが走り、そこで引っかかる。
    */
   buildMaterialPicker() {
     const grid = this.dom.materialGrid;
@@ -6973,7 +6051,7 @@ class Game {
     this.toast(`ブロックを「${mat.name}」にしました`);
   }
 
-  /** いま選ばれている素材に印を付ける */
+  /** いま選ばれているデザインに印を付ける */
   markMaterial() {
     const grid = this.dom.materialGrid;
     if (!grid) return;

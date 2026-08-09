@@ -8,8 +8,8 @@ export function mix(a, b, t) {
   return a + (b - a) * t;
 }
 
-/** 下限と上限で挟む */
-export function clip(v, lo, hi) {
+/** 下限と上限で挟む。ここの中だけで使う */
+function clip(v, lo, hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
@@ -52,13 +52,6 @@ export function rgbHsl(rgb) {
   else if (max === g) h = ((b - r) / d + 2) / 6;
   else h = ((r - g) / d + 4) / 6;
   return [h * 360, s * 100, l * 100];
-}
-
-/** 2 色を混ぜる（t=0 で a、t=1 で b） */
-export function mixHex(a, b, t) {
-  const x = hexRgb(a);
-  const y = hexRgb(b);
-  return rgbHex([0, 1, 2].map((i) => mix(x[i], y[i], clip(t, 0, 1))));
 }
 
 /**
