@@ -2,7 +2,7 @@
 //   node tools/harvest.mjs [--seconds 600] [--shard 0] [--shards 1]
 //                          [--levels 1000] [--color mixed|small|big|huge]
 //                          [--sizes 4,5,6,7,8] [--grey half|all|few|none]
-//                          [--slack 1.15] [--maxpar 999] [--resume]
+//                          [--slack 1.15] [--minpar 0] [--maxpar 999] [--resume]
 //                          [--out data/pool-0.jsonl]
 //
 // 「欲しい最短手数を先に決めて、それになる盤面を探す」のがこのツール。
@@ -62,6 +62,16 @@ const onlySizes = arg('sizes', '') ? new Set(arg('sizes', '').split(',').map(Num
  * 在庫が厚いほど tools/levels.mjs が「2マスの灰色が少ない盤面」を選べる。
  */
 const maxPar = Number(arg('maxpar', 9999));
+
+/**
+ * 逆に、この手数**未満**は採らない。
+ *
+ * --maxpar と組み合わせて、シャードに帯を割り当てるために使う。浅い手数は
+ * すぐ埋まってしまうので、指定しないと深い帯を狙わせたいシャードまで
+ * 浅いほうへ流れていく（「まだ足りない手数のうちいちばん長いもの」を採る
+ * 作りなので、浅い在庫が薄いとそちらが選ばれてしまう）。
+ */
+const minPar = Number(arg('minpar', 0));
 const shard = Number(arg('shard', 0));
 const shards = Number(arg('shards', 1));
 const levels = Number(arg('levels', 1000));
@@ -197,7 +207,7 @@ const slack = Number(arg('slack', 1.15));
 const need = new Map();
 for (let lv = 1; lv <= levels; lv++) {
   const p = targetPar(lv);
-  if (p > maxPar) continue;
+  if (p > maxPar || p < minPar) continue;
   need.set(p, (need.get(p) || 0) + 1);
 }
 
