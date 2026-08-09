@@ -21,7 +21,7 @@ import {
 } from '../src/levels.js';
 import { LEVEL_CODES } from '../src/levelData.js';
 import { encodeLevel, decodeLevel } from '../src/levelCodec.js';
-import { canonicalKey, rectsOf } from '../src/exact.js';
+import { canonicalKey, rectsOf, compile, Explorer } from '../src/exact.js';
 
 /** 通しで確かめるレベル（全部やると遅いので代表点を拾う） */
 const SAMPLE = [1, 2, 3, 5, 8, 13, 20, 35, 50, 80, 100, 150, 250, 400, 600, 800, 1000];
@@ -308,6 +308,57 @@ test('回転・鏡像で重なる盤面は無い（初期盤面もゴールの�
   }
   assert.equal(starts.size, BAKED_LEVELS, `初期盤面が ${BAKED_LEVELS - starts.size} 本ぶん重複している`);
   assert.equal(goals.size, BAKED_LEVELS, `ゴールの形が ${BAKED_LEVELS - goals.size} 本ぶん重複している`);
+});
+
+test('滑らせて行き来できる盤面（同じ連結成分）が2レベルに出てこない', () => {
+  // 初期盤面もゴールの形も違うのに、滑らせていくと相手の配置に着いてしまう
+  // ―― それは同じパズルの入口違いでしかない。ひとつの成分に「くっついた形」が
+  // 複数あると、ひとつ上のテストをすり抜ける。
+  //
+  // 指紋は「その成分に含まれるくっついた形すべての正準形の最小値」。成分の
+  // どこから始めても同じ値になるので、入口が違っても一致する。
+  //
+  // 1本あたり全探索が要るので、ここは Lv85〜115 だけを通しで見る抜き取り検査。
+  // 以前この帯に重複が固まっていた（Lv90/91・Lv97/99・Lv104/106）。
+  // **全レベルを見るのは node tools/dupcheck.mjs のほう**（4分ほどかかる）。
+  const explorer = new Explorer(200000);
+  const buf = new Uint8Array(32);
+  const rectsAt = (ctx, pos) => {
+    const rects = [];
+    for (let k = 0; k < ctx.n; k++) {
+      const ax = pos[k] % ctx.size;
+      const ay = (pos[k] - ax) / ctx.size;
+      let minx = Infinity; let miny = Infinity; let maxx = -1; let maxy = -1;
+      for (const [sx, sy] of ctx.shapes[k]) {
+        const x = ax + sx; const y = ay + sy;
+        if (x < minx) minx = x;
+        if (y < miny) miny = y;
+        if (x > maxx) maxx = x;
+        if (y > maxy) maxy = y;
+      }
+      rects.push({ kind: k < 2 ? 'c' : 'g', x: minx, y: miny, w: maxx - minx + 1, h: maxy - miny + 1 });
+    }
+    return rects;
+  };
+
+  const seen = new Map();
+  for (let lv = 85; lv <= 115; lv++) {
+    const data = levelData(lv);
+    const board = new Board(data.size);
+    for (const p of data.pieces) board.addPiece(p.c, p.s, `${p.w}x${p.h}`);
+    const colorIds = [...board.pieces.values()].filter((p) => p.color === 0).map((p) => p.id);
+    const ctx = compile(board, colorIds);
+    assert.ok(explorer.run(ctx), `Lv${lv}: 展開しきれなかった`);
+
+    let sig = null;
+    for (const slot of explorer.slotsAtDistance(0, Infinity)) {
+      const key = canonicalKey(ctx.size, rectsAt(ctx, explorer.read(slot, buf)));
+      if (sig === null || key < sig) sig = key;
+    }
+    assert.ok(sig !== null, `Lv${lv}: くっついた形が成分の中に無い`);
+    assert.ok(!seen.has(sig), `Lv${lv} と Lv${seen.get(sig)} は同じ盤面（滑らせて行き来できる）`);
+    seen.set(sig, lv);
+  }
 });
 
 test('同じ配役の使い回しになっていない', () => {
