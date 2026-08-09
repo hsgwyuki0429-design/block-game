@@ -4,3 +4,6 @@ node_modules/
 
 # tools/harvest.mjs が貯める盤面の在庫。焼いたあと（src/levelData.js）だけが要る
 data/
+
+# wrangler dev がローカルに持つ記録（本番の Durable Object とは別物）
+.wrangler/

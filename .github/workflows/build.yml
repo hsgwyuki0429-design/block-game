@@ -1,0 +1,58 @@
+# src/ を直したら app.js を焼き直して、そのままコミットする。
+#
+# なぜ要るか:
+#   配信されるのは app.js（index.html が読むのはこれ 1 本）で、src/ ではない。
+#   GitHub の web エディタから src/config.js を直しても app.js は古いままなので、
+#   直したはずの設定がブラウザに一切届かない ―― 実際に、ランキングの接続先を
+#   入れたのに「この端末」のままだった、という事故が起きている。
+#
+#   手元で npm run build を忘れないようにするのではなく、忘れても直るようにする。
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tools/**'
+      - 'index.html'
+      - 'styles.css'
+  workflow_dispatch:
+
+# 焼き直した app.js を押し戻すために要る
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: app.js を焼き直す
+        run: npm run build
+
+      # 焼いてからテストする。--check がここで通ることまで含めて確かめてから押し戻す
+      - name: テスト
+        run: npm test
+
+      - name: 変わっていたらコミットする
+        run: |
+          if git diff --quiet -- app.js index.html; then
+            echo "app.js は最新。押し戻すものは無い"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js index.html
+          git commit -m "build: src/ の変更を app.js に反映"
+          git push

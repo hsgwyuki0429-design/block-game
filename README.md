@@ -16,7 +16,7 @@
 npm start          # http://localhost:8080 で遊ぶ
 npm run build      # src/ から app.js を生成（src/ を編集したら必ず実行）
 npm run icons      # ホーム画面用アイコンを生成（tools/icons.mjs）
-npm test           # ルール・全探索・レベル進行・ランキング・素材・配信物のテスト（91 件）
+npm test           # ルール・全探索・レベル進行・ランキング・素材・配信物のテスト（102 件）
 npm run verify     # 焼いてある 1000 レベルを検証し、統計を出す
 
 node tools/harvest.mjs --seconds 1800 --shard 0 --shards 4   # 盤面の採集（並列可）
@@ -480,13 +480,35 @@ dist : 配置 → ゴールまでの厳密な最短手数
 
 順位は**手数の少ない順**。同着はタイムの短い順、それも同じなら先に出した方が上。同じ名前はその人のいちばん良い 1 件だけを残す ―― 1 人で上位が埋まると、何人が挑んだのかが分からなくなるため。
 
-### 接続先を決める
+### サーバを立てる ― `npm run rank:deploy` だけ
 
-ランキングのサーバはこのリポジトリには入っていない（配信は静的ファイルだけ）。**`src/config.js` の `RANKING_ENDPOINT` に URL を 1 行入れる**と、世界共通ランキングに切り替わる。
+ランキングのサーバは **`worker/` に入っている**（Cloudflare Workers）。立てるのに要るのは 2 コマンドで、うち 1 つは初回だけ。
+
+```
+npm run rank:login    # 初回だけ。ブラウザで Cloudflare にログインする
+npm run rank:deploy   # これで上がる
+npm run rank:log      # 届いた投稿と弾いた投稿を流し見する
+```
+
+**器を作るコマンドも、ID を貼り付ける作業も無い。** 記録の置き場は Durable Object（SQLite）で、`wrangler.toml` に書いたクラス名だけで結びつくので、`deploy` の 1 回で器から表まで揃う。表は `worker/worker.js` の `constructor` が自分で作る。
+
+Cloudflare の Git 連携（Workers Builds）を使うなら、手元で叩く必要すらない ―― main に push すれば勝手に上がる。ダッシュボードの設定はこの 3 つ。
+
+| 項目 | 値 |
+|---|---|
+| Root directory | `/` |
+| Build command | `npm run build` |
+| Deploy command | `npx wrangler deploy` |
+
+**`wrangler.toml` をリポジトリのルートから動かさないこと。** Workers Builds は Root directory の直下で `wrangler deploy` を走らせるので、`worker/` の中に置くと設定が見つからず Deploy だけが落ちる。
+
+D1 や KV を使わなかったのはこのため ―― どちらも「先に `create` して、出てきた ID を設定ファイルに貼る」手順が要る。ついでに KV の読み書き競合（読んで・足して・書く、のあいだに別の投稿が挟まると片方が消える）も避けられる。Durable Object はレベルごとに 1 つのインスタンスへ直列化されるので、同時にクリアされても記録は落ちない。
+
+URL は `https://<name>.<アカウントのサブドメイン>.workers.dev/` になる。`name` は `worker/wrangler.toml` にあり、`src/config.js` の `RANKING_ENDPOINT` と揃えてある。**同じ `name` で上げ直せば URL は変わらないので、`src/config.js` は触らなくてよい。**
 
 **空のあいだは、この端末の中だけにランキングを貯める。** 名前入力もクリア時の強制保存も順位表示もそのまま動き、画面には「この端末」と出る。あとから URL を差せば、同じ画面のまま「世界」に変わる。
 
-サーバに求める約束ごとは 2 つだけ。
+サーバに求める約束ごとは 2 つだけ（`worker/` はこれを満たしている）。
 
 ```
 GET  <URL>?level=12&limit=50
@@ -500,6 +522,8 @@ POST <URL>   Content-Type: application/json
 ```
 
 CORS（`Access-Control-Allow-Origin`）を許すことだけ忘れないこと。
+
+サーバ側でも投稿は検分する（`worker/rules.mjs`）。**範囲外の値は丸めずに弾く** ―― 丸めて受け入れると「0 手クリア」が一覧の先頭に居座って誰にも消せなくなる。名前を整える関数はクライアントと同じものを読み込んでいるので、両者がずれようがない。同じ名前は主キーで 1 行に押さえてあり、並べ替えで間引くのではなく **そもそも 2 行目を作らせない**。
 
 **通信が失敗しても記録は消えない。**投稿は必ず先に端末へ書いてから送るので、圏外でクリアしてもその回が無かったことにはならない。届かなかったときは画面にそう出る。
 
@@ -542,6 +566,12 @@ tools/levels.mjs    採った在庫を手数カーブに流し込んで src/leve
 tools/icons.mjs     依存ゼロの PNG 書き出しでアイコンを生成
 tools/verify.mjs    焼き上がったレベルの大量検証と統計
 server.mjs          依存ゼロの静的サーバ
+wrangler.toml       ランキングサーバの設定。name がそのまま URL になる
+                    （ルートに置くこと ― Cloudflare の Git 連携がここを見る）
+worker/
+  worker.js         世界共通ランキング本体（Durable Object + SQLite）
+  rules.mjs         受け取った値の検分。ブラウザ API に触れないので Node からテストできる
+.github/workflows/build.yml   src/ が変わったら app.js を焼き直して押し戻す
 ```
 
 ルールの実装（`src/board.js`）と全探索（`src/exact.js`）はブラウザ API に一切依存していないので、Node からそのままテストできる。

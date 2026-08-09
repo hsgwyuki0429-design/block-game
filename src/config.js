@@ -13,6 +13,13 @@
  *
  *   例) 'https://slidepop-rank.example.workers.dev/scores'
  *
+ * **この URL を直したら `npm run build` を必ず走らせること。** ブラウザが読むのは
+ * src/ ではなく app.js なので、焼き直さないとここの変更は一切届かない
+ * （GitHub の web エディタから直したときは .github/workflows/build.yml が代わりに焼く）。
+ *
+ * 接続先のサーバ本体は worker/ に入っている。`npm run rank:deploy` で上がり、
+ * 上の URL の <name> の部分は wrangler.toml（リポジトリのルート）の name と揃っている。
+ *
  * サーバに求める約束ごとは 2 つだけ:
  *
  *   GET  <URL>?level=12&limit=50
