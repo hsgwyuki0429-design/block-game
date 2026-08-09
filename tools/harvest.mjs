@@ -39,9 +39,10 @@
 import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { layout, compile, Explorer, GREY_RECTS } from '../src/exact.js';
-import { encodeLevel } from '../src/levelCodec.js';
+import { layout, compile, Explorer, GREY_RECTS, canonicalKey, rectsOf } from '../src/exact.js';
+import { encodeLevel, decodeLevel } from '../src/levelCodec.js';
 import { makeRng, hashSeed } from '../src/rng.js';
+import { Board } from '../src/board.js';
 import { targetPar } from '../src/levels.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -158,6 +159,36 @@ const PER_LAYOUT = 1;
  */
 const CAP = Number(arg('cap', 70000));
 
+/**
+ * 「くっついた瞬間の盤面」の指紋。回転・鏡像で重なるものは同じ指紋になる。
+ *
+ * これが同じ盤面は、途中がどう違っても**同じパズルの別の入口**でしかない。
+ * 焼く側（tools/levels.mjs）はそこで弾くので、採集の段階から避けておくと
+ * 「探したのに使われない」無駄が減る。
+ */
+function goalSignature(code) {
+  let data;
+  try {
+    data = decodeLevel(code);
+  } catch {
+    return null;
+  }
+  const board = new Board(data.size);
+  for (const p of data.pieces) board.addPiece(p.c, p.s, `${p.w}x${p.h}`);
+  for (let i = 0; i < data.solution.length - 1; i++) {
+    if (!board.applyMove(data.solution[i][0], data.solution[i][1])) return null;
+  }
+  const [id, dir, distance] = data.solution[data.solution.length - 1];
+  if (board.slideDistance(id, dir) !== distance) return null;
+  board.movePiece(id, dir, distance);
+  return canonicalKey(data.size, rectsOf(board));
+}
+
+/** すでに採ってある「くっついた形」。同じものは二度採らない */
+const knownGoals = new Set();
+/** すでに調べた出発点。同じ配置を何度も全探索しない */
+const studied = new Set();
+
 // ── 欲しい手数の表を作る ──
 // 目標より少し多めに集める。焼く側は「小さい盤面から先に使う」ので、
 // 同じ手数でも大きさ違いの在庫があったほうがよい（余りは捨てられる）
@@ -179,6 +210,13 @@ if (process.argv.includes('--resume')) {
       if (!line.trim()) continue;
       const par = JSON.parse(line).par;
       have.set(par, (have.get(par) || 0) + 1);
+    }
+  }
+  for (const file of (await readdir(dir).catch(() => [])).filter((f) => f.endsWith('.jsonl'))) {
+    for (const line of (await readFile(resolve(dir, file), 'utf8')).split('\n')) {
+      if (!line.trim()) continue;
+      const sig = goalSignature(JSON.parse(line).code);
+      if (sig) knownGoals.add(sig);
     }
   }
   let left = 0;
@@ -267,6 +305,11 @@ while (Date.now() < deadline && remaining() > 0) {
     });
     if (!built) break attempt;
 
+    // 同じ出発点はもう調べてある ―― 全探索は数十ミリ秒かかるので、ここで省く
+    const startSig = canonicalKey(built.board.size, rectsOf(built.board));
+    if (studied.has(startSig)) break attempt;
+    studied.add(startSig);
+
     let ctx;
     try {
       ctx = compile(built.board, built.colorIds);
@@ -299,6 +342,9 @@ while (Date.now() < deadline && remaining() > 0) {
         } catch {
           continue;
         }
+        const goal = goalSignature(code);
+        if (!goal || knownGoals.has(goal)) continue; // 同じパズルの別の入口
+        knownGoals.add(goal);
         pending.push(JSON.stringify({
           par, size: puzzle.size, cells: puzzle.cells, lay: `${shard}.${explored}`, code,
         }));
