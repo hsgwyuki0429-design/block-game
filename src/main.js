@@ -20,6 +20,7 @@ const dom = {
   btnStartLabel: $('btn-start-label'),
   btnStartSub: $('btn-start-sub'),
   btnOpenLevels: $('btn-open-levels'),
+  btnHomeRank: $('btn-home-rank'),
   btnInstall: $('btn-install'),
   homeProgress: $('home-progress'),
 
@@ -73,10 +74,15 @@ const dom = {
   btnReset: $('btn-reset'),
   resetNote: $('reset-note'),
 
-  // ランキング（レベル別・世界共通）
+  // ランキング（星の数・レベル別／世界共通）
   btnRank: $('btn-rank'),
   modalRank: $('modal-rank'),
   rankTitle: $('rank-title'),
+  rankTabs: $('rank-tabs'),
+  rankPick: $('rank-pick'),
+  rankLevelInput: $('rank-level'),
+  btnRankPrev: $('btn-rank-prev'),
+  btnRankNext: $('btn-rank-next'),
   rankScope: $('rank-scope'),
   rankList: $('rank-list'),
   rankNote: $('rank-note'),

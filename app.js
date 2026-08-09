@@ -5333,7 +5333,14 @@ class Sound {
 const RANKING_ENDPOINT = 'https://slidepop.hsgw-yuki0429.workers.dev/';
 
 // ===== src/ranking.js =====
-// レベル別ランキング。
+// ランキング。表は2つある。
+//
+//   ・**レベル別** ―― そのレベルを何手で解いたか。手数の少ない順
+//   ・**星の数**   ―― その人が持っている星の総数。多い順
+//
+// レベル別だけだと「1つの盤面をどれだけ詰めたか」しか競えない。星の数の表は
+// **どれだけ広く、どれだけ上手く解いてきたか**を1本の数字で並べる ―― 遊んだ量と
+// 質が同じ物差しに乗るので、ホームから開いたときに自分の立ち位置がすぐ分かる。
 //
 // 方針:
 //
@@ -5344,6 +5351,8 @@ const RANKING_ENDPOINT = 'https://slidepop.hsgw-yuki0429.workers.dev/';
 //     （変えたいときは設定から変えられる）。
 //   ・順位は**手数の少ない順**。同着はタイムの短い順、それも同じなら先に出した方が上。
 //     星ではなく手数で並べるのは、星が手数から決まる粗い階段でしかないから。
+//   ・星の数の表は**星の多い順**。同数なら**クリア数の少ない順** ―― 同じ 30 個でも、
+//     10 レベルで集めた人のほうが 30 レベルかけた人より上手い。それも同じなら先着順。
 //
 // 接続先（src/config.js の RANKING_ENDPOINT）が空のあいだは、この端末の
 // localStorage にだけ貯める。世界共通に切り替えても記録の見た目は変わらない ――
@@ -5354,8 +5363,10 @@ const RANKING_ENDPOINT = 'https://slidepop.hsgw-yuki0429.workers.dev/';
 
 /** 保存した名前。一度決めたら以後は自動で使う */
 const NAME_KEY = 'slidepop.name';
-/** 端末内ランキングの置き場 */
+/** 端末内ランキングの置き場（レベル別） */
 const RANK_KEY = 'slidepop.rank.v1';
+/** 端末内ランキングの置き場（星の数） */
+const STAR_KEY = 'slidepop.stars.v1';
 
 /** 名前の長さの上限。長い名前は一覧で他人の行を潰す */
 const NAME_MAX = 12;
@@ -5461,17 +5472,72 @@ function pushLocal(level, entry) {
   return data[key];
 }
 
-/** 端末内ランキングを空にする（「データを消す」から呼ぶ） */
+/** 端末内ランキングを空にする（「データを消す」から呼ぶ）。表は2つとも消す */
 function clearLocalRanking() {
-  try { localStorage.removeItem(RANK_KEY); } catch { /* 諦める */ }
+  for (const key of [RANK_KEY, STAR_KEY]) {
+    try { localStorage.removeItem(key); } catch { /* 諦める */ }
+  }
+}
+
+// ---------------------------------------------------------------- 星の数の表
+
+/**
+ * 星の数の並べ替えと重複の始末。
+ *
+ * 星の多い順。同数ならクリア数の少ない順（同じ星を少ないレベルで集めた人が上）、
+ * それも同じなら先に出した方が上。レベル別と同じく**1人1行**に潰す ――
+ * 星の総数はその人の現在地なので、古い記録が並ぶ意味がない。
+ */
+function starSort(entries) {
+  const best = new Map();
+  for (const e of entries) {
+    const name = sanitizeName(e.name) || '???';
+    const row = {
+      name,
+      stars: Math.max(0, Math.round(Number(e.stars) || 0)),
+      cleared: Math.max(0, Math.round(Number(e.cleared) || 0)),
+      at: Number(e.at) || 0,
+    };
+    const cur = best.get(name);
+    if (!cur || row.stars > cur.stars || (row.stars === cur.stars && row.cleared < cur.cleared)) {
+      best.set(name, row);
+    }
+  }
+  return [...best.values()]
+    .sort((a, b) => b.stars - a.stars || a.cleared - b.cleared || a.at - b.at);
+}
+
+function loadStars() {
+  try {
+    const data = JSON.parse(localStorage.getItem(STAR_KEY) || '[]');
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 端末内の星ランキングを読む */
+function localStarEntries() {
+  return starSort(loadStars());
+}
+
+/** 端末内の星ランキングに1件足して、並べ直したものを返す */
+function pushStars(entry) {
+  const list = starSort([...loadStars(), entry]).slice(0, RANK_LIMIT);
+  try { localStorage.setItem(STAR_KEY, JSON.stringify(list)); } catch { /* 諦める */ }
+  return list;
 }
 
 // ---------------------------------------------------------------- 通信
 
-/** 応答の形を吸収する。素の配列でも { entries: [...] } でも受け取る */
-function entriesOf(payload) {
-  if (Array.isArray(payload)) return rankSort(payload);
-  if (payload && Array.isArray(payload.entries)) return rankSort(payload.entries);
+/**
+ * 応答の形を吸収する。素の配列でも { entries: [...] } でも受け取る。
+ * 並べ替えはこちらでやり直す ―― サーバが正しい順で返す保証はないし、
+ * 壊れた行を落とすのもこの関数の仕事。
+ */
+function entriesOf(payload, sort = rankSort) {
+  if (Array.isArray(payload)) return sort(payload);
+  if (payload && Array.isArray(payload.entries)) return sort(payload.entries);
   return null;
 }
 
@@ -5554,6 +5620,267 @@ function rankOf(entries, entry) {
   const name = sanitizeName(entry.name) || '???';
   const i = entries.findIndex((e) => e.name === name && e.moves === entry.moves);
   return i >= 0 ? i + 1 : null;
+}
+
+/** 星の一覧の中でその人が何位か（1 始まり）。見つからなければ null */
+function starRankOf(entries, name) {
+  if (!entries) return null;
+  const clean = sanitizeName(name) || '???';
+  const i = entries.findIndex((e) => e.name === clean);
+  return i >= 0 ? i + 1 : null;
+}
+
+// ---------------------------------------------------------------- 星の数（通信）
+
+/** 星ランキングの入口。レベル別と同じ URL を board で振り分ける */
+function starUrl(base) {
+  return `${base}${base.includes('?') ? '&' : '?'}board=stars&limit=${RANK_LIMIT}`;
+}
+
+/**
+ * 星の数のランキングを取る。
+ * @returns {Promise<{entries:Object[], global:boolean, offline:boolean}>}
+ */
+async function fetchStarRanking() {
+  const base = endpoint();
+  if (!base) return { entries: localStarEntries(), global: false, offline: false };
+  try {
+    const payload = await request(starUrl(base), { headers: { Accept: 'application/json' } });
+    const entries = entriesOf(payload, starSort);
+    if (!entries) throw new Error('形式が違う応答');
+    return { entries, global: true, offline: false };
+  } catch {
+    return { entries: localStarEntries(), global: true, offline: true };
+  }
+}
+
+/**
+ * いま持っている星の数を出す。レベル別と違って**上書き**の投稿 ――
+ * 星の総数はその人の現在地なので、増えるたびに同じ行を書き替えていく。
+ *
+ * @returns {Promise<{entries:Object[], rank:number|null, global:boolean, offline:boolean}>}
+ */
+async function submitStars({ name, stars, cleared }) {
+  const entry = {
+    name: sanitizeName(name) || '???',
+    stars: Math.max(0, Math.round(Number(stars) || 0)),
+    cleared: Math.max(0, Math.round(Number(cleared) || 0)),
+    at: Date.now(),
+  };
+  const local = pushStars(entry);
+  const base = endpoint();
+
+  if (!base) {
+    return { entries: local, rank: starRankOf(local, entry.name), global: false, offline: false };
+  }
+
+  try {
+    const payload = await request(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ board: 'stars', ...entry }),
+    });
+    let entries = entriesOf(payload, starSort);
+    if (!entries) {
+      const got = await fetchStarRanking();
+      if (got.offline) throw new Error('投稿後の取得に失敗');
+      entries = got.entries;
+    }
+    const rank = payload && Number.isFinite(payload.rank) && payload.rank > 0
+      ? Math.round(payload.rank)
+      : starRankOf(entries, entry.name);
+    return { entries, rank, global: true, offline: false };
+  } catch {
+    return { entries: local, rank: starRankOf(local, entry.name), global: true, offline: true };
+  }
+}
+
+// ===== src/sheet.js =====
+// シートを下へ払って閉じる。
+//
+// 下から せり上がってくる紙は、指で下へ押し戻せないと嘘に見える。閉じるボタンは
+// 右上の小さな丸ひとつしかないので、盤面を見ながら片手で持っているときほど遠い ――
+// 「開いてしまったから閉じる」だけの操作に、画面の端まで指を運ばせない。
+//
+// 作りの要点:
+//
+//   ・**指の位置にそのまま付いてくる**。しきい値を超えた瞬間に消えるのではなく、
+//     下げたぶんだけ下がり、背景の暗さも一緒に薄くなる。途中で気が変わったら
+//     戻せる ―― 戻せるからこそ、思い切って引ける。
+//   ・**中身が上まで来ているときだけ**引き下げる。ルールのシートは長くて縦に
+//     スクロールするので、読んでいる途中の下向きスワイプでシートごと落ちたら
+//     読めたものではない。
+//   ・touch イベントを直に使う。Pointer Events だと、シートを閉じる向きの指を
+//     つかむために touch-action: none が要り、そうすると中身がスクロールできない。
+//     「スクロールを始めてよいか」をこちらで決めたいので、touchmove を
+//     preventDefault できる形にしてある（passive: false）。
+
+/** ここまで下げたら「引き下げ」とみなす。それ未満は中身のスクロールに譲る */
+const SHEET_GRAB = 8;
+/** カードの高さのこれだけ下げたら、離した時点で閉じる */
+const SHEET_CLOSE_RATIO = 0.3;
+/** px/ms。速く払われたら、下げた距離が足りなくても閉じる */
+const SHEET_FLICK = 0.5;
+/** 払いで閉じると認める最小の距離。指が触れただけで閉じないための床 */
+const SHEET_FLICK_MIN = 24;
+
+/** 触っている指を changedTouches から拾う */
+function touchOf(list, id) {
+  for (const t of list) if (t.identifier === id) return t;
+  return null;
+}
+
+/**
+ * 開くときに呼ぶ。前に引きずった跡（位置・背景の濃さ・畳む途中のアニメ）を消す。
+ * これを忘れると、閉じかけの姿のまま次のシートが開く。
+ */
+function resetSheet(sheet) {
+  const card = sheet && sheet.querySelector('.sheet-card');
+  if (!card) return;
+  card.classList.remove('dragging', 'settling', 'dropping');
+  card.style.transform = '';
+  card.style.animation = '';
+  sheet.classList.remove('closing');
+  sheet.style.removeProperty('--sheet-shade');
+}
+
+/**
+ * シートに「下へ払って閉じる」を付ける。
+ *
+ * @param {HTMLElement} sheet .sheet（背景の暗幕ごと）
+ * @param {{ canClose?: () => boolean, onClose?: () => void }} opts
+ *   canClose 閉じてよいか（名前を決めるシートは決めきるまで false）
+ *   onClose  閉じ切ったときに呼ばれる。実際に隠すのは呼び出し側の仕事
+ */
+function attachSheetSwipe(sheet, opts = {}) {
+  const canClose = opts.canClose || (() => true);
+  const onClose = opts.onClose || (() => {});
+  const card = sheet && sheet.querySelector('.sheet-card');
+  if (!card) return;
+
+  /** つかんでいる指。null なら見ていない */
+  let touchId = null;
+  let x0 = 0;
+  let y0 = 0;
+  let lastY = 0;
+  let lastT = 0;
+  /** 下げた量（px）と、直近の速度（px/ms） */
+  let dy = 0;
+  let vy = 0;
+  let dragging = false;
+  let timer = 0;
+
+  /** 指の位置を、カードの下がり具合と背景の薄さに写す */
+  const paint = (y) => {
+    card.style.transform = y > 0 ? `translate3d(0,${y.toFixed(1)}px,0)` : '';
+    const h = card.offsetHeight || 1;
+    // 下げ切る手前で背景が透明になるほうが「もう閉じる」と伝わる
+    const shade = Math.max(0, 1 - (y / h) * 1.4);
+    sheet.style.setProperty('--sheet-shade', shade.toFixed(3));
+  };
+
+  /** 指を離したあとの後始末。done は畳み終わり／戻り終わりで呼ばれる */
+  const after = (ms, done) => {
+    clearTimeout(timer);
+    timer = setTimeout(done, ms);
+  };
+
+  /** 元の位置へ戻す */
+  const settle = () => {
+    card.classList.add('settling');
+    paint(0);
+    after(420, () => {
+      card.classList.remove('settling');
+      card.style.animation = '';
+      sheet.style.removeProperty('--sheet-shade');
+    });
+  };
+
+  /** 下まで畳んでから閉じる */
+  const drop = () => {
+    card.classList.add('dropping');
+    card.style.transform = 'translate3d(0,100%,0)';
+    // 暗幕もカードと同じ時間をかけて引く（先に消えると紙だけが取り残される）
+    sheet.classList.add('closing');
+    sheet.style.setProperty('--sheet-shade', '0');
+    after(240, () => {
+      resetSheet(sheet);
+      onClose();
+    });
+  };
+
+  card.addEventListener('touchstart', (e) => {
+    if (touchId != null || e.touches.length !== 1) return;
+    if (!canClose()) return;
+    // 入力欄の中は、文字を選ぶために指が縦に動く。ここを掴むとキーボードが
+    // 出ている最中にシートが落ちる
+    const target = e.target;
+    if (target instanceof Element && target.closest('input, textarea, select')) return;
+
+    const t = e.touches[0];
+    touchId = t.identifier;
+    x0 = t.clientX;
+    y0 = t.clientY;
+    lastY = t.clientY;
+    lastT = e.timeStamp;
+    dy = 0;
+    vy = 0;
+    dragging = false;
+  }, { passive: true });
+
+  card.addEventListener('touchmove', (e) => {
+    if (touchId == null) return;
+    const t = touchOf(e.changedTouches, touchId);
+    if (!t) return;
+
+    if (!dragging) {
+      const gx = t.clientX - x0;
+      const gy = t.clientY - y0;
+      // 横に払っている／上へ動かしている＝中身を読みたい。この指はもう見ない
+      if (Math.abs(gx) > Math.abs(gy) || gy < -2) { touchId = null; return; }
+      if (gy < SHEET_GRAB) return;
+      // 中身が上まで来ていないなら、下向きは「上へスクロール」の意味になる
+      if (card.scrollTop > 0) { touchId = null; return; }
+      // すでにブラウザがスクロールを始めていたら、もう横取りできない
+      if (!e.cancelable) { touchId = null; return; }
+      dragging = true;
+      // 戻っている途中で掴み直されることがある。残っている transition を外さないと、
+      // ここから先の指の動きが 0.4 秒遅れて付いてくる
+      clearTimeout(timer);
+      card.classList.remove('settling', 'dropping');
+      card.classList.add('dragging');
+      // せり上がりの途中で掴まれることがある。走っているアニメは
+      // インラインの transform より強いので、ここで降ろす
+      card.style.animation = 'none';
+      // つかんだ瞬間にカードが SHEET_GRAB ぶん飛ばないよう、原点をずらす
+      y0 += SHEET_GRAB;
+    }
+
+    if (e.cancelable) e.preventDefault();
+    dy = Math.max(0, t.clientY - y0);
+    if (e.timeStamp > lastT) vy = (t.clientY - lastY) / (e.timeStamp - lastT);
+    lastY = t.clientY;
+    lastT = e.timeStamp;
+    paint(dy);
+  }, { passive: false });
+
+  const release = (e) => {
+    if (touchId == null) return;
+    if (!touchOf(e.changedTouches, touchId)) return;
+    touchId = null;
+    if (!dragging) return;
+    dragging = false;
+    card.classList.remove('dragging');
+
+    const h = card.offsetHeight || 1;
+    const far = dy > h * SHEET_CLOSE_RATIO;
+    const flicked = vy > SHEET_FLICK && dy > SHEET_FLICK_MIN;
+    if (canClose() && (far || flicked)) drop();
+    else settle();
+  };
+
+  card.addEventListener('touchend', release);
+  card.addEventListener('touchcancel', release);
 }
 
 // ===== src/game.js =====
@@ -5705,10 +6032,16 @@ class Game {
     /** 投稿・取得の世代。レベルを跨いだ古い応答を捨てるために使う */
     this.rankToken = 0;
     this.rankViewToken = 0;
+    /** いま見ているランキングの表（'stars' = 星の数 / 'level' = レベル別） */
+    this.rankBoard = 'stars';
+    /** レベル別の表で見ているレベル */
+    this.rankLevel = 1;
 
     this.applySettings();
     this.bindUi();
     this.bindInput();
+    // すでに星を持っている人を、星のランキングに載せる（名前があるときだけ）
+    this.postStars();
 
     const ro = new ResizeObserver(() => this.renderer.resize(this.board.size));
     ro.observe(dom.canvas);
@@ -6265,6 +6598,9 @@ class Game {
     // ホーム
     d.btnStart.addEventListener('click', () => this.load(this.startLevel));
     d.btnOpenLevels.addEventListener('click', () => this.showLevels());
+    // ホームから開くときは星の数の表から。ここは「自分がどれだけ集めたか」を
+    // 見に来る場所で、特定の1レベルの手数を見に来る場所ではない
+    if (d.btnHomeRank) d.btnHomeRank.addEventListener('click', () => this.showStarRanking());
     d.btnInstall.addEventListener('click', () => this.install());
     this.bindInstall();
 
@@ -6300,10 +6636,34 @@ class Game {
           this.closeModals();
         }
       });
+      // 下へ払っても閉じられるようにする。閉じるボタンは右上の丸ひとつしか
+      // 無いので、盤面を見ながら片手で持っているときほど遠い
+      attachSheetSwipe(modal, {
+        canClose: () => !(modal === d.modalName && this.nameLocked),
+        onClose: () => { modal.hidden = true; this.disarmReset(); },
+      });
     }
 
     // ランキング
     if (d.btnRank) d.btnRank.addEventListener('click', () => this.showRanking(this.level));
+    if (d.rankTabs) {
+      d.rankTabs.addEventListener('click', (e) => {
+        const tab = e.target.closest && e.target.closest('[data-board]');
+        if (tab) this.setRankBoard(tab.dataset.board);
+      });
+    }
+    if (d.btnRankPrev) d.btnRankPrev.addEventListener('click', () => this.stepRankLevel(-1));
+    if (d.btnRankNext) d.btnRankNext.addEventListener('click', () => this.stepRankLevel(1));
+    if (d.rankLevelInput) {
+      d.rankLevelInput.addEventListener('change', () => this.pickRankLevel(d.rankLevelInput.value));
+      d.rankLevelInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          d.rankLevelInput.blur();
+          this.pickRankLevel(d.rankLevelInput.value);
+        }
+      });
+    }
     if (d.btnNameSave) d.btnNameSave.addEventListener('click', () => this.commitName());
     if (d.nameInput) {
       d.nameInput.addEventListener('keydown', (e) => {
@@ -6625,6 +6985,9 @@ class Game {
   }
 
   openModal(el) {
+    // 前に払って閉じたときの姿（下がった位置・薄い暗幕）が残っていると、
+    // 次に開いたシートが閉じかけの形で現れる
+    resetSheet(el);
     el.hidden = false;
   }
 
@@ -6872,8 +7235,13 @@ class Game {
     const wasLocked = this.nameLocked;
     this.nameLocked = false;
     d.modalName.hidden = true;
-    if (wasLocked) this.submitResult();
-    else this.toast(`ランキングの名前を「${clean}」にしました`);
+    if (wasLocked) {
+      this.submitResult();
+    } else {
+      // 名前が変わったら、星の表にも新しい名前で載せ直す
+      this.postStars();
+      this.toast(`ランキングの名前を「${clean}」にしました`);
+    }
   }
 
   /** 設定シートに出す、いまの名前 */
@@ -6897,6 +7265,9 @@ class Game {
       d.overlayRank.classList.add('pending');
       d.overlayRank.textContent = isGlobalRanking() ? 'ランキングに記録しています…' : '記録しています…';
     }
+
+    // 星が増えていれば、通算の表にも反映しておく（返事は待たない）
+    this.postStars();
 
     const res = await submitScore({
       level,
@@ -6929,22 +7300,106 @@ class Game {
     }
   }
 
-  /** レベル別のランキングを開く */
-  async showRanking(level = this.level) {
+  /**
+   * いま持っている星の数を、星のランキングへ出す。
+   *
+   * レベル別の投稿と違って**画面には出さない** ―― クリア直後に見たいのはその
+   * レベルの順位で、通算の順位はホームから見に行くもの。裏で静かに更新する。
+   *
+   * 前に出した数と同じなら何もしない。星は 1 レベルクリアするごとにしか動かないので、
+   * 起動のたびに同じ数を投げても増えるのは通信だけ。届かなかったときは
+   * 印を付けずに置いて、次の機会に出し直す。
+   */
+  async postStars() {
+    const name = savedName();
+    const stars = this.totalStars;
+    if (!name || stars <= 0) return;
+    if (this.store.starsPosted === stars && this.store.starsName === name) return;
+
+    const res = await submitStars({ name, stars, cleared: this.clearedCount });
+    if (res.offline) return;
+    this.store.starsPosted = stars;
+    this.store.starsName = name;
+    saveStore(this.store);
+  }
+
+  /** レベル別のランキングを開く（ゲーム画面のドックと、クリア直後から） */
+  showRanking(level = this.level) {
+    this.openRanking('level', level);
+  }
+
+  /** 星の数のランキングを開く（ホームから） */
+  showStarRanking() {
+    this.openRanking('stars', this.level);
+  }
+
+  /**
+   * ランキングのシートを開く。
+   * @param {'stars'|'level'} board どちらの表から見せるか
+   * @param {number} level レベル別へ切り替えたときに開くレベル
+   */
+  openRanking(board, level = this.level) {
     const d = this.dom;
     if (!d.modalRank) return;
-    const lv = normalizeLevel(level);
-    const token = ++this.rankViewToken;
-
-    d.rankTitle.textContent = `レベル ${lv} のランキング`;
-    d.rankScope.textContent = isGlobalRanking() ? '世界共通 ― 手数の少ない順' : 'この端末 ― 手数の少ない順';
-    d.rankList.innerHTML = '<div class="rank-empty">読み込んでいます…</div>';
-    d.rankNote.textContent = ' ';
+    this.rankLevel = normalizeLevel(level);
     this.openModal(d.modalRank);
+    this.setRankBoard(board);
+  }
 
-    const res = await fetchRanking(lv);
-    if (token !== this.rankViewToken) return; // 別のレベルを開き直された
-    this.renderRanking(res);
+  /** 表を切り替える（タブ）。切り替えたらその場で取りに行く */
+  setRankBoard(board) {
+    const d = this.dom;
+    this.rankBoard = board === 'level' ? 'level' : 'stars';
+
+    if (d.rankTabs) {
+      for (const tab of d.rankTabs.children) {
+        const on = tab.dataset.board === this.rankBoard;
+        tab.classList.toggle('on', on);
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      }
+    }
+    if (d.rankPick) d.rankPick.hidden = this.rankBoard !== 'level';
+    if (d.rankLevelInput) d.rankLevelInput.value = String(this.rankLevel);
+    if (d.btnRankPrev) d.btnRankPrev.disabled = this.rankLevel <= 1;
+
+    this.loadRanking();
+  }
+
+  /** 見るレベルを1つずらす */
+  stepRankLevel(delta) {
+    this.pickRankLevel(this.rankLevel + delta);
+  }
+
+  /** 見るレベルを決め直す。同じレベルなら取りに行かない */
+  pickRankLevel(raw) {
+    const d = this.dom;
+    const lv = normalizeLevel(parseInt(raw, 10) || 1);
+    if (d.rankLevelInput) d.rankLevelInput.value = String(lv);
+    if (d.btnRankPrev) d.btnRankPrev.disabled = lv <= 1;
+    if (lv === this.rankLevel && this.rankBoard === 'level') return;
+    this.rankLevel = lv;
+    this.loadRanking();
+  }
+
+  /** いま選ばれている表を取りに行って、描き直す */
+  async loadRanking() {
+    const d = this.dom;
+    const board = this.rankBoard;
+    const lv = this.rankLevel;
+    const token = ++this.rankViewToken;
+    const where = isGlobalRanking() ? '世界共通' : 'この端末';
+
+    d.rankTitle.textContent = board === 'stars' ? '星の数ランキング' : `レベル ${lv} のランキング`;
+    d.rankScope.textContent = board === 'stars'
+      ? `${where} ― 星の多い順`
+      : `${where} ― 手数の少ない順`;
+    d.rankList.innerHTML = '<div class="rank-empty">読み込んでいます…</div>';
+    d.rankNote.textContent = ' ';
+
+    const res = board === 'stars' ? await fetchStarRanking() : await fetchRanking(lv);
+    // 待っているあいだに別の表・別のレベルへ切り替えられていたら、もう出す場所が無い
+    if (token !== this.rankViewToken) return;
+    this.renderRanking(res, board);
   }
 
   /**
@@ -6952,15 +7407,18 @@ class Game {
    * 名前はサーバーから来る他人の文字列なので、必ず textContent で入れる
    * （innerHTML に流すと、名前に書いた HTML がこちらの画面で動いてしまう）。
    */
-  renderRanking(res) {
+  renderRanking(res, board = 'level') {
     const d = this.dom;
     const me = savedName();
+    const stars = board === 'stars';
     d.rankList.innerHTML = '';
 
     if (!res.entries.length) {
       const empty = document.createElement('div');
       empty.className = 'rank-empty';
-      empty.textContent = 'まだ誰も記録していません。最初のひとりになりましょう。';
+      empty.textContent = stars
+        ? 'まだ誰も星を持っていません。1レベルクリアすれば、ここに載ります。'
+        : 'まだ誰も記録していません。最初のひとりになりましょう。';
       d.rankList.appendChild(empty);
     } else {
       res.entries.slice(0, RANK_LIMIT).forEach((e, i) => {
@@ -6972,22 +7430,34 @@ class Game {
         const name = document.createElement('span');
         name.className = 'rank-name';
         name.textContent = e.name;
-        const moves = document.createElement('span');
-        moves.className = 'rank-moves';
-        moves.textContent = `${e.moves}手`;
-        const time = document.createElement('span');
-        time.className = 'rank-time';
-        time.textContent = formatTime(e.time);
-        row.append(pos, name, moves, time);
+        // 表によって右側の2つが入れ替わる（星の数とクリア数／手数とタイム）
+        const value = document.createElement('span');
+        const note = document.createElement('span');
+        if (stars) {
+          value.className = 'rank-stars';
+          value.textContent = `★${e.stars}`;
+          note.className = 'rank-cleared';
+          note.textContent = `${e.cleared}レベル`;
+        } else {
+          value.className = 'rank-moves';
+          value.textContent = `${e.moves}手`;
+          note.className = 'rank-time';
+          note.textContent = formatTime(e.time);
+        }
+        row.append(pos, name, value, note);
         d.rankList.appendChild(row);
       });
     }
 
-    d.rankNote.textContent = res.offline
-      ? 'サーバーにつながらないので、この端末の記録を出しています。'
-      : (res.global
-        ? `世界中の記録から、手数の少ない順に${RANK_LIMIT}位まで。`
-        : 'いまはこの端末の記録だけです。');
+    if (res.offline) {
+      d.rankNote.textContent = 'サーバーにつながらないので、この端末の記録を出しています。';
+    } else if (!res.global) {
+      d.rankNote.textContent = 'いまはこの端末の記録だけです。';
+    } else {
+      d.rankNote.textContent = stars
+        ? `世界中の記録から、星の多い順に${RANK_LIMIT}位まで。同じ星ならクリア数の少ない人が上です。`
+        : `世界中の記録から、手数の少ない順に${RANK_LIMIT}位まで。`;
+    }
   }
 
   // ------------------------------------------------------------ ループ
@@ -7141,6 +7611,7 @@ const dom = {
   btnStartLabel: $('btn-start-label'),
   btnStartSub: $('btn-start-sub'),
   btnOpenLevels: $('btn-open-levels'),
+  btnHomeRank: $('btn-home-rank'),
   btnInstall: $('btn-install'),
   homeProgress: $('home-progress'),
 
@@ -7194,10 +7665,15 @@ const dom = {
   btnReset: $('btn-reset'),
   resetNote: $('reset-note'),
 
-  // ランキング（レベル別・世界共通）
+  // ランキング（星の数・レベル別／世界共通）
   btnRank: $('btn-rank'),
   modalRank: $('modal-rank'),
   rankTitle: $('rank-title'),
+  rankTabs: $('rank-tabs'),
+  rankPick: $('rank-pick'),
+  rankLevelInput: $('rank-level'),
+  btnRankPrev: $('btn-rank-prev'),
+  btnRankNext: $('btn-rank-next'),
   rankScope: $('rank-scope'),
   rankList: $('rank-list'),
   rankNote: $('rank-note'),

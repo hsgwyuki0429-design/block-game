@@ -13,10 +13,15 @@
 //
 // レベルごとに別のインスタンスへ分ける（idFromName('level:12')）。
 // レベルは上限なく増えるが、実際に遊ばれたレベルの器しか作られない。
+//
+// 表は 2 つある。レベル別（scores）と、星の総数（stars）。
+// 星の表は全員が 1 つの器を共有するので、専用のインスタンス（idFromName('board:stars')）
+// にだけ作られる。**クラスを増やしていない**のがここの肝 ―― 増やすと wrangler.toml に
+// バインディングと migration を足すことになり、「deploy 1 回で揃う」が崩れる。
 
 import { DurableObject } from 'cloudflare:workers';
 import { RANK_LIMIT } from '../src/ranking.js';
-import { readEntry, readLevel, readLimit } from './rules.mjs';
+import { readBoard, readEntry, readLevel, readLimit, readStarEntry } from './rules.mjs';
 
 /** 一度に返せる件数の上限。要求がこれを超えても、ここで頭打ちにする */
 const LIMIT_MAX = 200;
@@ -59,6 +64,18 @@ export class RankStore extends DurableObject {
        )`,
     );
     ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS scores_rank ON scores (moves, time, at)');
+
+    // 星の総数の表。使うのは 'board:stars' の器だけだが、作るのは無料なので
+    // 分岐は置かない（空の表が 1 つ増えるだけ）。
+    ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS stars (
+         name    TEXT    PRIMARY KEY,
+         stars   INTEGER NOT NULL,
+         cleared INTEGER NOT NULL,
+         at      INTEGER NOT NULL
+       )`,
+    );
+    ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS stars_rank ON stars (stars DESC, cleared, at)');
   }
 
   /**
@@ -107,6 +124,53 @@ export class RankStore extends DurableObject {
 
     return { ok: true, rank: ahead + 1, entries: this.top(limit) };
   }
+
+  /**
+   * 星の数の上位 limit 件。
+   * 並びは src/ranking.js の starSort と同じ ―― 星の多い順、
+   * 同数はクリア数の少ない順、それも同じなら先に出した方が上。
+   */
+  topStars(limit) {
+    return this.ctx.storage.sql.exec(
+      `SELECT name, stars, cleared, at FROM stars
+        ORDER BY stars DESC, cleared ASC, at ASC
+        LIMIT ?`,
+      limit,
+    ).toArray();
+  }
+
+  /**
+   * 星の数を 1 件書いて、その人の順位と一覧を返す。
+   *
+   * レベル別と違って**遊べば遊ぶほど増える現在地**なので、来た値でそのまま
+   * 上書きする ―― ただし減る向きだけは書かない。端末のデータを消してから
+   * 遊び直した人の記録を、その瞬間に 0 に落としてしまわないため
+   * （消したのは端末側の控えであって、集めた星の事実ではない）。
+   */
+  submitStars(entry, limit) {
+    const sql = this.ctx.storage.sql;
+    const cur = sql.exec('SELECT stars, cleared FROM stars WHERE name = ?', entry.name).toArray()[0];
+    const improved = !cur
+      || entry.stars > cur.stars
+      || (entry.stars === cur.stars && entry.cleared < cur.cleared);
+
+    if (improved) {
+      sql.exec(
+        `INSERT INTO stars (name, stars, cleared, at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+             stars = excluded.stars, cleared = excluded.cleared, at = excluded.at`,
+        entry.name, entry.stars, entry.cleared, entry.at,
+      );
+    }
+
+    const best = improved ? entry : cur;
+    const ahead = sql.exec(
+      'SELECT COUNT(*) AS n FROM stars WHERE stars > ? OR (stars = ? AND cleared < ?)',
+      best.stars, best.stars, best.cleared,
+    ).one().n;
+
+    return { ok: true, rank: ahead + 1, entries: this.topStars(limit) };
+  }
 }
 
 /** そのレベルの器を掴む */
@@ -114,7 +178,18 @@ function storeFor(env, level) {
   return env.RANK.get(env.RANK.idFromName(`level:${level}`));
 }
 
+/** 星の数はレベルを跨ぐので、全員で 1 つの器を使う */
+function starStore(env) {
+  return env.RANK.get(env.RANK.idFromName('board:stars'));
+}
+
 async function handleGet(url, env) {
+  const limit = readLimit(url.searchParams.get('limit'), RANK_LIMIT, LIMIT_MAX);
+
+  if (readBoard(url.searchParams.get('board')) === 'stars') {
+    return json({ entries: await starStore(env).topStars(limit) });
+  }
+
   const raw = url.searchParams.get('level');
   // level なしで叩かれたら生存確認とみなす（deploy 直後の疎通確認に使える）
   if (raw == null) return json({ ok: true, service: 'slidepop-rank' });
@@ -122,7 +197,6 @@ async function handleGet(url, env) {
   const level = readLevel(raw);
   if (level == null) return json({ error: 'invalid level' }, 400);
 
-  const limit = readLimit(url.searchParams.get('limit'), RANK_LIMIT, LIMIT_MAX);
   return json({ entries: await storeFor(env, level).top(limit) });
 }
 
@@ -132,6 +206,12 @@ async function handlePost(request, env) {
     body = await request.json();
   } catch {
     return json({ error: 'invalid json' }, 400);
+  }
+
+  if (readBoard(body && body.board) === 'stars') {
+    const entry = readStarEntry(body);
+    if (!entry) return json({ error: 'invalid body' }, 400);
+    return json(await starStore(env).submitStars(entry, RANK_LIMIT));
   }
 
   const entry = readEntry(body);

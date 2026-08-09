@@ -23,8 +23,9 @@ import { attachInput } from './input.js';
 import { Sound } from './audio.js';
 import {
   savedName, saveName, forgetName, sanitizeName, clearLocalRanking,
-  isGlobalRanking, fetchRanking, submitScore, RANK_LIMIT,
+  isGlobalRanking, fetchRanking, submitScore, fetchStarRanking, submitStars, RANK_LIMIT,
 } from './ranking.js';
+import { attachSheetSwipe, resetSheet } from './sheet.js';
 
 /**
  * 保存領域。
@@ -163,10 +164,16 @@ export class Game {
     /** 投稿・取得の世代。レベルを跨いだ古い応答を捨てるために使う */
     this.rankToken = 0;
     this.rankViewToken = 0;
+    /** いま見ているランキングの表（'stars' = 星の数 / 'level' = レベル別） */
+    this.rankBoard = 'stars';
+    /** レベル別の表で見ているレベル */
+    this.rankLevel = 1;
 
     this.applySettings();
     this.bindUi();
     this.bindInput();
+    // すでに星を持っている人を、星のランキングに載せる（名前があるときだけ）
+    this.postStars();
 
     const ro = new ResizeObserver(() => this.renderer.resize(this.board.size));
     ro.observe(dom.canvas);
@@ -723,6 +730,9 @@ export class Game {
     // ホーム
     d.btnStart.addEventListener('click', () => this.load(this.startLevel));
     d.btnOpenLevels.addEventListener('click', () => this.showLevels());
+    // ホームから開くときは星の数の表から。ここは「自分がどれだけ集めたか」を
+    // 見に来る場所で、特定の1レベルの手数を見に来る場所ではない
+    if (d.btnHomeRank) d.btnHomeRank.addEventListener('click', () => this.showStarRanking());
     d.btnInstall.addEventListener('click', () => this.install());
     this.bindInstall();
 
@@ -758,10 +768,34 @@ export class Game {
           this.closeModals();
         }
       });
+      // 下へ払っても閉じられるようにする。閉じるボタンは右上の丸ひとつしか
+      // 無いので、盤面を見ながら片手で持っているときほど遠い
+      attachSheetSwipe(modal, {
+        canClose: () => !(modal === d.modalName && this.nameLocked),
+        onClose: () => { modal.hidden = true; this.disarmReset(); },
+      });
     }
 
     // ランキング
     if (d.btnRank) d.btnRank.addEventListener('click', () => this.showRanking(this.level));
+    if (d.rankTabs) {
+      d.rankTabs.addEventListener('click', (e) => {
+        const tab = e.target.closest && e.target.closest('[data-board]');
+        if (tab) this.setRankBoard(tab.dataset.board);
+      });
+    }
+    if (d.btnRankPrev) d.btnRankPrev.addEventListener('click', () => this.stepRankLevel(-1));
+    if (d.btnRankNext) d.btnRankNext.addEventListener('click', () => this.stepRankLevel(1));
+    if (d.rankLevelInput) {
+      d.rankLevelInput.addEventListener('change', () => this.pickRankLevel(d.rankLevelInput.value));
+      d.rankLevelInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          d.rankLevelInput.blur();
+          this.pickRankLevel(d.rankLevelInput.value);
+        }
+      });
+    }
     if (d.btnNameSave) d.btnNameSave.addEventListener('click', () => this.commitName());
     if (d.nameInput) {
       d.nameInput.addEventListener('keydown', (e) => {
@@ -1083,6 +1117,9 @@ export class Game {
   }
 
   openModal(el) {
+    // 前に払って閉じたときの姿（下がった位置・薄い暗幕）が残っていると、
+    // 次に開いたシートが閉じかけの形で現れる
+    resetSheet(el);
     el.hidden = false;
   }
 
@@ -1330,8 +1367,13 @@ export class Game {
     const wasLocked = this.nameLocked;
     this.nameLocked = false;
     d.modalName.hidden = true;
-    if (wasLocked) this.submitResult();
-    else this.toast(`ランキングの名前を「${clean}」にしました`);
+    if (wasLocked) {
+      this.submitResult();
+    } else {
+      // 名前が変わったら、星の表にも新しい名前で載せ直す
+      this.postStars();
+      this.toast(`ランキングの名前を「${clean}」にしました`);
+    }
   }
 
   /** 設定シートに出す、いまの名前 */
@@ -1355,6 +1397,9 @@ export class Game {
       d.overlayRank.classList.add('pending');
       d.overlayRank.textContent = isGlobalRanking() ? 'ランキングに記録しています…' : '記録しています…';
     }
+
+    // 星が増えていれば、通算の表にも反映しておく（返事は待たない）
+    this.postStars();
 
     const res = await submitScore({
       level,
@@ -1387,22 +1432,106 @@ export class Game {
     }
   }
 
-  /** レベル別のランキングを開く */
-  async showRanking(level = this.level) {
+  /**
+   * いま持っている星の数を、星のランキングへ出す。
+   *
+   * レベル別の投稿と違って**画面には出さない** ―― クリア直後に見たいのはその
+   * レベルの順位で、通算の順位はホームから見に行くもの。裏で静かに更新する。
+   *
+   * 前に出した数と同じなら何もしない。星は 1 レベルクリアするごとにしか動かないので、
+   * 起動のたびに同じ数を投げても増えるのは通信だけ。届かなかったときは
+   * 印を付けずに置いて、次の機会に出し直す。
+   */
+  async postStars() {
+    const name = savedName();
+    const stars = this.totalStars;
+    if (!name || stars <= 0) return;
+    if (this.store.starsPosted === stars && this.store.starsName === name) return;
+
+    const res = await submitStars({ name, stars, cleared: this.clearedCount });
+    if (res.offline) return;
+    this.store.starsPosted = stars;
+    this.store.starsName = name;
+    saveStore(this.store);
+  }
+
+  /** レベル別のランキングを開く（ゲーム画面のドックと、クリア直後から） */
+  showRanking(level = this.level) {
+    this.openRanking('level', level);
+  }
+
+  /** 星の数のランキングを開く（ホームから） */
+  showStarRanking() {
+    this.openRanking('stars', this.level);
+  }
+
+  /**
+   * ランキングのシートを開く。
+   * @param {'stars'|'level'} board どちらの表から見せるか
+   * @param {number} level レベル別へ切り替えたときに開くレベル
+   */
+  openRanking(board, level = this.level) {
     const d = this.dom;
     if (!d.modalRank) return;
-    const lv = normalizeLevel(level);
-    const token = ++this.rankViewToken;
-
-    d.rankTitle.textContent = `レベル ${lv} のランキング`;
-    d.rankScope.textContent = isGlobalRanking() ? '世界共通 ― 手数の少ない順' : 'この端末 ― 手数の少ない順';
-    d.rankList.innerHTML = '<div class="rank-empty">読み込んでいます…</div>';
-    d.rankNote.textContent = ' ';
+    this.rankLevel = normalizeLevel(level);
     this.openModal(d.modalRank);
+    this.setRankBoard(board);
+  }
 
-    const res = await fetchRanking(lv);
-    if (token !== this.rankViewToken) return; // 別のレベルを開き直された
-    this.renderRanking(res);
+  /** 表を切り替える（タブ）。切り替えたらその場で取りに行く */
+  setRankBoard(board) {
+    const d = this.dom;
+    this.rankBoard = board === 'level' ? 'level' : 'stars';
+
+    if (d.rankTabs) {
+      for (const tab of d.rankTabs.children) {
+        const on = tab.dataset.board === this.rankBoard;
+        tab.classList.toggle('on', on);
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      }
+    }
+    if (d.rankPick) d.rankPick.hidden = this.rankBoard !== 'level';
+    if (d.rankLevelInput) d.rankLevelInput.value = String(this.rankLevel);
+    if (d.btnRankPrev) d.btnRankPrev.disabled = this.rankLevel <= 1;
+
+    this.loadRanking();
+  }
+
+  /** 見るレベルを1つずらす */
+  stepRankLevel(delta) {
+    this.pickRankLevel(this.rankLevel + delta);
+  }
+
+  /** 見るレベルを決め直す。同じレベルなら取りに行かない */
+  pickRankLevel(raw) {
+    const d = this.dom;
+    const lv = normalizeLevel(parseInt(raw, 10) || 1);
+    if (d.rankLevelInput) d.rankLevelInput.value = String(lv);
+    if (d.btnRankPrev) d.btnRankPrev.disabled = lv <= 1;
+    if (lv === this.rankLevel && this.rankBoard === 'level') return;
+    this.rankLevel = lv;
+    this.loadRanking();
+  }
+
+  /** いま選ばれている表を取りに行って、描き直す */
+  async loadRanking() {
+    const d = this.dom;
+    const board = this.rankBoard;
+    const lv = this.rankLevel;
+    const token = ++this.rankViewToken;
+    const where = isGlobalRanking() ? '世界共通' : 'この端末';
+
+    d.rankTitle.textContent = board === 'stars' ? '星の数ランキング' : `レベル ${lv} のランキング`;
+    d.rankScope.textContent = board === 'stars'
+      ? `${where} ― 星の多い順`
+      : `${where} ― 手数の少ない順`;
+    d.rankList.innerHTML = '<div class="rank-empty">読み込んでいます…</div>';
+    d.rankNote.textContent = ' ';
+
+    const res = board === 'stars' ? await fetchStarRanking() : await fetchRanking(lv);
+    // 待っているあいだに別の表・別のレベルへ切り替えられていたら、もう出す場所が無い
+    if (token !== this.rankViewToken) return;
+    this.renderRanking(res, board);
   }
 
   /**
@@ -1410,15 +1539,18 @@ export class Game {
    * 名前はサーバーから来る他人の文字列なので、必ず textContent で入れる
    * （innerHTML に流すと、名前に書いた HTML がこちらの画面で動いてしまう）。
    */
-  renderRanking(res) {
+  renderRanking(res, board = 'level') {
     const d = this.dom;
     const me = savedName();
+    const stars = board === 'stars';
     d.rankList.innerHTML = '';
 
     if (!res.entries.length) {
       const empty = document.createElement('div');
       empty.className = 'rank-empty';
-      empty.textContent = 'まだ誰も記録していません。最初のひとりになりましょう。';
+      empty.textContent = stars
+        ? 'まだ誰も星を持っていません。1レベルクリアすれば、ここに載ります。'
+        : 'まだ誰も記録していません。最初のひとりになりましょう。';
       d.rankList.appendChild(empty);
     } else {
       res.entries.slice(0, RANK_LIMIT).forEach((e, i) => {
@@ -1430,22 +1562,34 @@ export class Game {
         const name = document.createElement('span');
         name.className = 'rank-name';
         name.textContent = e.name;
-        const moves = document.createElement('span');
-        moves.className = 'rank-moves';
-        moves.textContent = `${e.moves}手`;
-        const time = document.createElement('span');
-        time.className = 'rank-time';
-        time.textContent = formatTime(e.time);
-        row.append(pos, name, moves, time);
+        // 表によって右側の2つが入れ替わる（星の数とクリア数／手数とタイム）
+        const value = document.createElement('span');
+        const note = document.createElement('span');
+        if (stars) {
+          value.className = 'rank-stars';
+          value.textContent = `★${e.stars}`;
+          note.className = 'rank-cleared';
+          note.textContent = `${e.cleared}レベル`;
+        } else {
+          value.className = 'rank-moves';
+          value.textContent = `${e.moves}手`;
+          note.className = 'rank-time';
+          note.textContent = formatTime(e.time);
+        }
+        row.append(pos, name, value, note);
         d.rankList.appendChild(row);
       });
     }
 
-    d.rankNote.textContent = res.offline
-      ? 'サーバーにつながらないので、この端末の記録を出しています。'
-      : (res.global
-        ? `世界中の記録から、手数の少ない順に${RANK_LIMIT}位まで。`
-        : 'いまはこの端末の記録だけです。');
+    if (res.offline) {
+      d.rankNote.textContent = 'サーバーにつながらないので、この端末の記録を出しています。';
+    } else if (!res.global) {
+      d.rankNote.textContent = 'いまはこの端末の記録だけです。';
+    } else {
+      d.rankNote.textContent = stars
+        ? `世界中の記録から、星の多い順に${RANK_LIMIT}位まで。同じ星ならクリア数の少ない人が上です。`
+        : `世界中の記録から、手数の少ない順に${RANK_LIMIT}位まで。`;
+    }
   }
 
   // ------------------------------------------------------------ ループ

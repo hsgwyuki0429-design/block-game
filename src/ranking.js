@@ -1,4 +1,11 @@
-// レベル別ランキング。
+// ランキング。表は2つある。
+//
+//   ・**レベル別** ―― そのレベルを何手で解いたか。手数の少ない順
+//   ・**星の数**   ―― その人が持っている星の総数。多い順
+//
+// レベル別だけだと「1つの盤面をどれだけ詰めたか」しか競えない。星の数の表は
+// **どれだけ広く、どれだけ上手く解いてきたか**を1本の数字で並べる ―― 遊んだ量と
+// 質が同じ物差しに乗るので、ホームから開いたときに自分の立ち位置がすぐ分かる。
 //
 // 方針:
 //
@@ -9,6 +16,8 @@
 //     （変えたいときは設定から変えられる）。
 //   ・順位は**手数の少ない順**。同着はタイムの短い順、それも同じなら先に出した方が上。
 //     星ではなく手数で並べるのは、星が手数から決まる粗い階段でしかないから。
+//   ・星の数の表は**星の多い順**。同数なら**クリア数の少ない順** ―― 同じ 30 個でも、
+//     10 レベルで集めた人のほうが 30 レベルかけた人より上手い。それも同じなら先着順。
 //
 // 接続先（src/config.js の RANKING_ENDPOINT）が空のあいだは、この端末の
 // localStorage にだけ貯める。世界共通に切り替えても記録の見た目は変わらない ――
@@ -21,8 +30,10 @@ import { RANKING_ENDPOINT } from './config.js';
 
 /** 保存した名前。一度決めたら以後は自動で使う */
 export const NAME_KEY = 'slidepop.name';
-/** 端末内ランキングの置き場 */
+/** 端末内ランキングの置き場（レベル別） */
 export const RANK_KEY = 'slidepop.rank.v1';
+/** 端末内ランキングの置き場（星の数） */
+export const STAR_KEY = 'slidepop.stars.v1';
 
 /** 名前の長さの上限。長い名前は一覧で他人の行を潰す */
 export const NAME_MAX = 12;
@@ -128,17 +139,72 @@ function pushLocal(level, entry) {
   return data[key];
 }
 
-/** 端末内ランキングを空にする（「データを消す」から呼ぶ） */
+/** 端末内ランキングを空にする（「データを消す」から呼ぶ）。表は2つとも消す */
 export function clearLocalRanking() {
-  try { localStorage.removeItem(RANK_KEY); } catch { /* 諦める */ }
+  for (const key of [RANK_KEY, STAR_KEY]) {
+    try { localStorage.removeItem(key); } catch { /* 諦める */ }
+  }
+}
+
+// ---------------------------------------------------------------- 星の数の表
+
+/**
+ * 星の数の並べ替えと重複の始末。
+ *
+ * 星の多い順。同数ならクリア数の少ない順（同じ星を少ないレベルで集めた人が上）、
+ * それも同じなら先に出した方が上。レベル別と同じく**1人1行**に潰す ――
+ * 星の総数はその人の現在地なので、古い記録が並ぶ意味がない。
+ */
+export function starSort(entries) {
+  const best = new Map();
+  for (const e of entries) {
+    const name = sanitizeName(e.name) || '???';
+    const row = {
+      name,
+      stars: Math.max(0, Math.round(Number(e.stars) || 0)),
+      cleared: Math.max(0, Math.round(Number(e.cleared) || 0)),
+      at: Number(e.at) || 0,
+    };
+    const cur = best.get(name);
+    if (!cur || row.stars > cur.stars || (row.stars === cur.stars && row.cleared < cur.cleared)) {
+      best.set(name, row);
+    }
+  }
+  return [...best.values()]
+    .sort((a, b) => b.stars - a.stars || a.cleared - b.cleared || a.at - b.at);
+}
+
+function loadStars() {
+  try {
+    const data = JSON.parse(localStorage.getItem(STAR_KEY) || '[]');
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 端末内の星ランキングを読む */
+export function localStarEntries() {
+  return starSort(loadStars());
+}
+
+/** 端末内の星ランキングに1件足して、並べ直したものを返す */
+function pushStars(entry) {
+  const list = starSort([...loadStars(), entry]).slice(0, RANK_LIMIT);
+  try { localStorage.setItem(STAR_KEY, JSON.stringify(list)); } catch { /* 諦める */ }
+  return list;
 }
 
 // ---------------------------------------------------------------- 通信
 
-/** 応答の形を吸収する。素の配列でも { entries: [...] } でも受け取る */
-function entriesOf(payload) {
-  if (Array.isArray(payload)) return rankSort(payload);
-  if (payload && Array.isArray(payload.entries)) return rankSort(payload.entries);
+/**
+ * 応答の形を吸収する。素の配列でも { entries: [...] } でも受け取る。
+ * 並べ替えはこちらでやり直す ―― サーバが正しい順で返す保証はないし、
+ * 壊れた行を落とすのもこの関数の仕事。
+ */
+function entriesOf(payload, sort = rankSort) {
+  if (Array.isArray(payload)) return sort(payload);
+  if (payload && Array.isArray(payload.entries)) return sort(payload.entries);
   return null;
 }
 
@@ -221,4 +287,77 @@ export function rankOf(entries, entry) {
   const name = sanitizeName(entry.name) || '???';
   const i = entries.findIndex((e) => e.name === name && e.moves === entry.moves);
   return i >= 0 ? i + 1 : null;
+}
+
+/** 星の一覧の中でその人が何位か（1 始まり）。見つからなければ null */
+export function starRankOf(entries, name) {
+  if (!entries) return null;
+  const clean = sanitizeName(name) || '???';
+  const i = entries.findIndex((e) => e.name === clean);
+  return i >= 0 ? i + 1 : null;
+}
+
+// ---------------------------------------------------------------- 星の数（通信）
+
+/** 星ランキングの入口。レベル別と同じ URL を board で振り分ける */
+function starUrl(base) {
+  return `${base}${base.includes('?') ? '&' : '?'}board=stars&limit=${RANK_LIMIT}`;
+}
+
+/**
+ * 星の数のランキングを取る。
+ * @returns {Promise<{entries:Object[], global:boolean, offline:boolean}>}
+ */
+export async function fetchStarRanking() {
+  const base = endpoint();
+  if (!base) return { entries: localStarEntries(), global: false, offline: false };
+  try {
+    const payload = await request(starUrl(base), { headers: { Accept: 'application/json' } });
+    const entries = entriesOf(payload, starSort);
+    if (!entries) throw new Error('形式が違う応答');
+    return { entries, global: true, offline: false };
+  } catch {
+    return { entries: localStarEntries(), global: true, offline: true };
+  }
+}
+
+/**
+ * いま持っている星の数を出す。レベル別と違って**上書き**の投稿 ――
+ * 星の総数はその人の現在地なので、増えるたびに同じ行を書き替えていく。
+ *
+ * @returns {Promise<{entries:Object[], rank:number|null, global:boolean, offline:boolean}>}
+ */
+export async function submitStars({ name, stars, cleared }) {
+  const entry = {
+    name: sanitizeName(name) || '???',
+    stars: Math.max(0, Math.round(Number(stars) || 0)),
+    cleared: Math.max(0, Math.round(Number(cleared) || 0)),
+    at: Date.now(),
+  };
+  const local = pushStars(entry);
+  const base = endpoint();
+
+  if (!base) {
+    return { entries: local, rank: starRankOf(local, entry.name), global: false, offline: false };
+  }
+
+  try {
+    const payload = await request(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ board: 'stars', ...entry }),
+    });
+    let entries = entriesOf(payload, starSort);
+    if (!entries) {
+      const got = await fetchStarRanking();
+      if (got.offline) throw new Error('投稿後の取得に失敗');
+      entries = got.entries;
+    }
+    const rank = payload && Number.isFinite(payload.rank) && payload.rank > 0
+      ? Math.round(payload.rank)
+      : starRankOf(entries, entry.name);
+    return { entries, rank, global: true, offline: false };
+  } catch {
+    return { entries: local, rank: starRankOf(local, entry.name), global: true, offline: true };
+  }
 }
