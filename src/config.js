@@ -26,4 +26,4 @@
  *
  * CORS を許す（Access-Control-Allow-Origin）ことだけ忘れないこと。
  */
-export const RANKING_ENDPOINT = '';
+export const RANKING_ENDPOINT = 'https://slidepop.hsgw-yuki0429.workers.dev/';
