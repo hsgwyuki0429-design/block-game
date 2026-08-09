@@ -18,10 +18,19 @@
 //      灰色の位置こそ違え、ブロックの顔ぶれ（配役）が同じままになる。
 //      並べると「さっきと同じ盤面」に見えるので、使い回さない。
 //
-//      見るのは2つ ―― 初期盤面と、**最後にくっついたときの盤面**。
-//      後者が同じなら、途中がどう違っても「同じパズルの別の入口」でしかない
+//      見るのは3つ ―― 初期盤面、**最後にくっついたときの盤面**、そして
+//      **その盤面が属する連結成分**。
+//
+//      2つめが同じなら、途中がどう違っても「同じパズルの別の入口」でしかない
 //      （別々の shard が同じ配置を引き当てると、これが起きる）。
-//      どちらも正方形の対称性8通りで揃えた指紋で見比べる。
+//
+//      3つめは、初期もゴールも違うのに**滑らせて行き来できてしまう**場合を捕まえる。
+//      ひとつの成分に「くっついた形」が複数あると、2つめの指紋をすり抜ける ――
+//      実測で 1000 本中 26 本がこれだった（Lv90/91・Lv97/99 のように隣り合うと
+//      すぐ気づかれる）。成分の指紋は「その成分に含まれるくっついた形すべての
+//      正準形の最小値」で、成分のどこから始めても同じ値になる。
+//
+//      いずれも正方形の対称性8通りで揃えた指紋で見比べる。
 //
 //   ② 盤面はできるだけ小さいものから使う。
 //      同じ手数なら小さい盤面のほうが読みやすく、詰まった手触りも出る。
@@ -42,7 +51,7 @@ import { fileURLToPath } from 'node:url';
 import { targetPar } from '../src/levels.js';
 import { decodeLevel } from '../src/levelCodec.js';
 import { Board } from '../src/board.js';
-import { canonicalKey, rectsOf } from '../src/exact.js';
+import { canonicalKey, rectsOf, compile, Explorer } from '../src/exact.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = resolve(ROOT, 'src/levelData.js');
@@ -97,6 +106,60 @@ function inspect(code) {
   return { start, goal };
 }
 
+// ── 連結成分の指紋 ──
+// 初期盤面もゴールも違うのに、滑らせて行き来できてしまう盤面がある。
+// それは「同じパズルの入口違い」でしかないので、1レベルまでに抑える。
+//
+// 指紋は「その成分に含まれる**くっついた形すべて**の正準形のうち、いちばん小さいもの」。
+// 成分のどこから始めても同じ値になるので、入口が違っても一致する。
+const explorer = new Explorer(200000);
+/** 同じ探索から切り出した行（lay が同じ）は必ず同じ成分。使い回して展開を減らす */
+const compCache = new Map();
+
+/** ctx と位置配列から長方形の一覧を組む（rectsOf は Board 用なので、ここは直接） */
+function rectsAt(ctx, pos) {
+  const rects = [];
+  for (let k = 0; k < ctx.n; k++) {
+    const ax = pos[k] % ctx.size;
+    const ay = (pos[k] - ax) / ctx.size;
+    let minx = Infinity; let miny = Infinity; let maxx = -1; let maxy = -1;
+    for (const [sx, sy] of ctx.shapes[k]) {
+      const x = ax + sx; const y = ay + sy;
+      if (x < minx) minx = x;
+      if (y < miny) miny = y;
+      if (x > maxx) maxx = x;
+      if (y > maxy) maxy = y;
+    }
+    rects.push({ kind: k < 2 ? 'c' : 'g', x: minx, y: miny, w: maxx - minx + 1, h: maxy - miny + 1 });
+  }
+  return rects;
+}
+
+/**
+ * 盤面が属する連結成分の指紋。展開しきれなかったら null（＝判定できない）。
+ * 1枚あたり数十〜数百ミリ秒かかるので、選ぶ直前まで呼ばない。
+ */
+function componentSig(row) {
+  if (compCache.has(row.lay)) return compCache.get(row.lay);
+  let sig = null;
+  try {
+    const data = decodeLevel(row.code);
+    const board = new Board(data.size);
+    for (const p of data.pieces) board.addPiece(p.c, p.s, `${p.w}x${p.h}`);
+    const colorIds = [...board.pieces.values()].filter((p) => p.color === 0).map((p) => p.id);
+    const ctx = compile(board, colorIds);
+    if (explorer.run(ctx)) {
+      const buf = new Uint8Array(32);
+      for (const slot of explorer.slotsAtDistance(0, Infinity)) {
+        const key = canonicalKey(ctx.size, rectsAt(ctx, explorer.read(slot, buf)));
+        if (sig === null || key < sig) sig = key;
+      }
+    }
+  } catch { sig = null; }
+  compCache.set(row.lay, sig);
+  return sig;
+}
+
 /** @type {Map<number, {par:number,size:number,cells:number,lay:string,code:string}[]>} */
 const stock = new Map();
 const seen = new Set();
@@ -148,7 +211,10 @@ const usedLayouts = new Map();
 const usedCodes = new Set();
 const usedStarts = new Set();
 const usedGoals = new Set();
+const usedComponents = new Map();
 let dupes = 0;
+let compDupes = 0;
+let compUnknown = 0;
 
 /**
  * 手数 par の在庫から1本取る。
@@ -164,7 +230,15 @@ const takeFrom = (par, maxUse) => {
     if (usedCodes.has(row.code)) continue;
     if (usedStarts.has(row.startSig) || usedGoals.has(row.goalSig)) { dupes++; continue; }
     if ((usedLayouts.get(row.lay) || 0) >= maxUse) continue;
+    // ここまで来た行だけ成分を調べる（展開が重いので、拾う直前まで先送りする）。
+    // 展開しきれなかった行は判定できないので、通す ―― 塞ぐと在庫が痩せる
+    // 使い回しを許す段（maxUse >= 2）では成分の重なりも同じだけ許す。
+    // ここを固く塞ぐと、盤面の使い回しという最後の逃げ道まで消えてしまう
+    const comp = componentSig(row);
+    if (comp === null) compUnknown++;
+    else if ((usedComponents.get(comp) || 0) >= maxUse) { compDupes++; continue; }
     usedCodes.add(row.code);
+    if (comp !== null) usedComponents.set(comp, (usedComponents.get(comp) || 0) + 1);
     usedStarts.add(row.startSig);
     usedGoals.add(row.goalSig);
     usedLayouts.set(row.lay, (usedLayouts.get(row.lay) || 0) + 1);
@@ -262,6 +336,9 @@ console.error(`在庫 ${read} 行 / 重複を除いて ${seen.size} 件 / 使っ
 console.error(`レベル ${chosen.length} 本 / 最短手数 ${chosen[0].par} 〜 ${chosen[chosen.length - 1].par}`);
 console.error(`盤面を使い回したレベル: ${chosen.length - layouts.size} 本（0 なら全レベルが別の盤面）`);
 console.error(`回転・鏡像込みで重複していて飛ばした在庫: ${dupes} 回`);
+console.error(`同じ連結成分（入口違い）で飛ばした在庫: ${compDupes} 回`
+  + (compUnknown ? ` / 展開しきれず判定できなかった: ${compUnknown} 件` : ''));
+console.error(`連結成分の指紋: ${usedComponents.size}/${chosen.length} 通り`);
 console.error(`初期盤面の指紋: ${new Set(chosen.map((r) => r.startSig)).size}/${chosen.length} 通り`
   + ` / くっついた形の指紋: ${new Set(chosen.map((r) => r.goalSig)).size}/${chosen.length} 通り`);
 console.error(`目標カーブとのずれ: 平均 ${avg(err).toFixed(2)}手 / 最大 ${Math.max(...err)}手 / 代用 ${substituted.length} 件`);
