@@ -21,6 +21,7 @@ import {
 } from '../src/levels.js';
 import { LEVEL_CODES } from '../src/levelData.js';
 import { encodeLevel, decodeLevel } from '../src/levelCodec.js';
+import { canonicalKey, rectsOf } from '../src/exact.js';
 
 /** 通しで確かめるレベル（全部やると遅いので代表点を拾う） */
 const SAMPLE = [1, 2, 3, 5, 8, 13, 20, 35, 50, 80, 100, 150, 250, 400, 600, 800, 1000];
@@ -283,6 +284,30 @@ test('同じレベルなら、どの端末でも同じ譜面になる', () => {
 
 test('焼いてあるレベルはすべて別の譜面', () => {
   assert.equal(new Set(LEVEL_CODES).size, LEVEL_CODES.length, '同じ盤面が2回出てくる');
+});
+
+test('回転・鏡像で重なる盤面は無い（初期盤面もゴールの形も）', () => {
+  // 裏返しただけの盤面は人間の目には「さっきと同じ」にしか見えないので、
+  // 正方形の対称性8通りで揃えた指紋で数える。
+  // ゴールの形（色つきがくっついた瞬間）も見る ―― そこが同じなら、途中が
+  // どう違っても同じパズルの別の入口でしかない
+  const starts = new Set();
+  const goals = new Set();
+  for (let lv = 1; lv <= BAKED_LEVELS; lv++) {
+    const data = levelData(lv);
+    const board = new Board(data.size);
+    for (const p of data.pieces) board.addPiece(p.c, p.s, `${p.w}x${p.h}`);
+    starts.add(canonicalKey(data.size, rectsOf(board)));
+
+    for (let i = 0; i < data.solution.length - 1; i++) {
+      board.applyMove(data.solution[i][0], data.solution[i][1]);
+    }
+    const [id, dir, distance] = data.solution[data.solution.length - 1];
+    board.movePiece(id, dir, distance); // 消さずに動かす＝くっついた瞬間の形
+    goals.add(canonicalKey(data.size, rectsOf(board)));
+  }
+  assert.equal(starts.size, BAKED_LEVELS, `初期盤面が ${BAKED_LEVELS - starts.size} 本ぶん重複している`);
+  assert.equal(goals.size, BAKED_LEVELS, `ゴールの形が ${BAKED_LEVELS - goals.size} 本ぶん重複している`);
 });
 
 test('同じ配役の使い回しになっていない', () => {

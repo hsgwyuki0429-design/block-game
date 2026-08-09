@@ -332,6 +332,60 @@ function touching(ctx, pos, stamp, gen) {
 }
 
 /**
+ * 盤面の指紋。**回転・鏡像で重なる盤面は同じ指紋になる。**
+ *
+ * 正方形の対称性は8通り（回転4 × 鏡像2）。人間の目には「同じ盤面を裏返しただけ」
+ * にしか見えないので、レベルとして並べるときは1枚と数えたい。
+ *
+ * ブロックは全部長方形なので、指紋は「種類・左上・幅・高さ」を並べて字句順に
+ * 揃えたもので足りる。8通りぜんぶ作って、いちばん小さいものを代表に採る。
+ *
+ * @param {number} size 盤面の一辺
+ * @param {{kind:string, x:number, y:number, w:number, h:number}[]} rects
+ */
+export function canonicalKey(size, rects) {
+  let best = null;
+  for (let t = 0; t < 8; t++) {
+    const parts = [];
+    for (const r of rects) {
+      // t >= 4 は先に左右反転してから回す
+      let { x, y, w, h } = r;
+      if (t >= 4) x = size - x - w;
+      for (let k = t % 4; k > 0; k--) {
+        // 時計回り90度: (x, y) -> (size-1-y, x)
+        const nx = size - y - h;
+        const ny = x;
+        const nw = h;
+        const nh = w;
+        x = nx; y = ny; w = nw; h = nh;
+      }
+      parts.push(`${r.kind}${x},${y},${w},${h}`);
+    }
+    parts.sort();
+    const key = `${size}|${parts.join(' ')}`;
+    if (best === null || key < best) best = key;
+  }
+  return best;
+}
+
+/** Board -> canonicalKey に渡せる長方形の並び */
+export function rectsOf(board) {
+  return [...board.pieces.values()].map((p) => {
+    const xs = p.cells.map((c) => c[0]);
+    const ys = p.cells.map((c) => c[1]);
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    return {
+      kind: p.color === BLOCKER ? 'g' : 'c',
+      x,
+      y,
+      w: Math.max(...xs) - x + 1,
+      h: Math.max(...ys) - y + 1,
+    };
+  });
+}
+
+/**
  * 全探索の作業場。表もキューも作り置きして使い回す ―― 探索そのものは
  * 何万回も回すので、1回ごとにメモリを確保していると、そこが律速になる。
  */
