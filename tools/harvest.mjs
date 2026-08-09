@@ -37,6 +37,7 @@
 // big / huge で回した shard を混ぜる。
 
 import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
+import { appendFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { layout, compile, Explorer, GREY_RECTS, canonicalKey, rectsOf } from '../src/exact.js';
@@ -287,6 +288,15 @@ const flush = async () => {
   pending = [];
 };
 
+// 外から止められたとき（採集を回し直すたびに kill している）にも取りこぼさない。
+// 非同期の flush は間に合わないので、ここだけ同期で書く。
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    if (pending.length) appendFileSync(out, `${pending.join('\n')}\n`);
+    process.exit(0);
+  });
+}
+
 while (Date.now() < deadline && remaining() > 0) {
   tries++;
   const stat = pickRecipe(rng);
@@ -350,7 +360,10 @@ while (Date.now() < deadline && remaining() > 0) {
         got++;
       }
     }
-    if (pending.length >= 64) await flush();
+    // 採れたらその場で書き出す。深い盤面は1枚に何分もかかるので、
+    // 溜めている間に止められると、その時間がまるごと消える。
+    // 採取は数分に数回しかないので、毎回書いても負担にならない。
+    if (got > 0) await flush();
   }
 
   stat.ms += Math.max(1, Date.now() - at);
