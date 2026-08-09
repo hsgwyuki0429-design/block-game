@@ -1,12 +1,15 @@
-# SLIDE POP! の世界共通ランキング。
+# SLIDE POP! の世界共通ランキング。中身は worker/ にある。
 #
-#   npm run rank:login    # 初回だけ（ブラウザで Cloudflare にログイン）
-#   npm run rank:deploy   # これだけ。器も表も勝手に出来る
+#   npm run rank:deploy   # 手元から上げる（初回だけ npm run rank:login）
+#
+# **このファイルはリポジトリのルートに置くこと。** Cloudflare の Git 連携
+# （Workers Builds）は Root directory の直下で `npx wrangler deploy` を走らせるので、
+# worker/ の中に置くと設定が見つからず Deploy だけが失敗する。
 #
 # name は URL になる（https://<name>.<アカウントのサブドメイン>.workers.dev/）。
 # ここを変えると src/config.js の RANKING_ENDPOINT も直す必要がある ―― 揃えておくこと。
 name = "slidepop"
-main = "worker.js"
+main = "worker/worker.js"
 compatibility_date = "2026-08-01"
 workers_dev = true
 

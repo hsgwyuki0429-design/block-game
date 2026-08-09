@@ -5261,7 +5261,7 @@ class Sound {
  * （GitHub の web エディタから直したときは .github/workflows/build.yml が代わりに焼く）。
  *
  * 接続先のサーバ本体は worker/ に入っている。`npm run rank:deploy` で上がり、
- * 上の URL の <name> の部分は worker/wrangler.toml の name と揃っている。
+ * 上の URL の <name> の部分は wrangler.toml（リポジトリのルート）の name と揃っている。
  *
  * サーバに求める約束ごとは 2 つだけ:
  *

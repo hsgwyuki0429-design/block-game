@@ -483,7 +483,17 @@ npm run rank:deploy   # これで上がる
 npm run rank:log      # 届いた投稿と弾いた投稿を流し見する
 ```
 
-**器を作るコマンドも、ID を貼り付ける作業も無い。** 記録の置き場は Durable Object（SQLite）で、`worker/wrangler.toml` に書いたクラス名だけで結びつくので、`deploy` の 1 回で器から表まで揃う。表は `worker/worker.js` の `constructor` が自分で作る。
+**器を作るコマンドも、ID を貼り付ける作業も無い。** 記録の置き場は Durable Object（SQLite）で、`wrangler.toml` に書いたクラス名だけで結びつくので、`deploy` の 1 回で器から表まで揃う。表は `worker/worker.js` の `constructor` が自分で作る。
+
+Cloudflare の Git 連携（Workers Builds）を使うなら、手元で叩く必要すらない ―― main に push すれば勝手に上がる。ダッシュボードの設定はこの 3 つ。
+
+| 項目 | 値 |
+|---|---|
+| Root directory | `/` |
+| Build command | `npm run build` |
+| Deploy command | `npx wrangler deploy` |
+
+**`wrangler.toml` をリポジトリのルートから動かさないこと。** Workers Builds は Root directory の直下で `wrangler deploy` を走らせるので、`worker/` の中に置くと設定が見つからず Deploy だけが落ちる。
 
 D1 や KV を使わなかったのはこのため ―― どちらも「先に `create` して、出てきた ID を設定ファイルに貼る」手順が要る。ついでに KV の読み書き競合（読んで・足して・書く、のあいだに別の投稿が挟まると片方が消える）も避けられる。Durable Object はレベルごとに 1 つのインスタンスへ直列化されるので、同時にクリアされても記録は落ちない。
 
@@ -549,8 +559,9 @@ tools/levels.mjs    採った在庫を手数カーブに流し込んで src/leve
 tools/icons.mjs     依存ゼロの PNG 書き出しでアイコンを生成
 tools/verify.mjs    焼き上がったレベルの大量検証と統計
 server.mjs          依存ゼロの静的サーバ
+wrangler.toml       ランキングサーバの設定。name がそのまま URL になる
+                    （ルートに置くこと ― Cloudflare の Git 連携がここを見る）
 worker/
-  wrangler.toml     ランキングサーバの設定。name がそのまま URL になる
   worker.js         世界共通ランキング本体（Durable Object + SQLite）
   rules.mjs         受け取った値の検分。ブラウザ API に触れないので Node からテストできる
 .github/workflows/build.yml   src/ が変わったら app.js を焼き直して押し戻す
