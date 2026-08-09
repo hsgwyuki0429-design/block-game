@@ -2699,10 +2699,10 @@ function effectColors(mat, pal) {
 // ブロックの形は 8 種類しかない（src/shapes.js の長方形だけ）。だから絵も 8 枚 ――
 // それに空きマスの窪みを 1 枚足して 9 枚で全部を賄える。合わせて 35KB ほど。
 //
-// 絵は**マスの矩形から少しだけ内へ寄せた範囲**を写している（SPRITE_INSET）。
-// 目地はその外側に残るので、貼るときも同じだけ内へ寄せれば、隣り合ったブロックの
-// あいだに写真とまったく同じ幅の目地が空く。マスいっぱいに貼ると目地が消えて、
-// 盤が 1 枚の板に見える。
+// 絵は**目地（ブロックとブロックのあいだに覗く盤の地）のまん中**で切ってある。
+// そこがマスの境目そのものなので、1 枚がちょうど 1 マス分になり、マスの矩形へ
+// そのまま置ける ―― 目地の半分ずつが絵の中に入っているので、隣り合わせれば
+// 写真と同じ幅の目地が空く。
 
 /** 絵の置き場所。index.html からの相対 */
 const BASE = 'assets/crystal/';
@@ -2713,17 +2713,15 @@ const SPRITE_KEYS = ['1x2', '2x1', '1x3', '3x1', '2x2', '2x3', '3x2', '3x3', 'em
 /** 配信物に含める必要があるファイル（sw.js の先読みと、配信物のテストが見る） */
 const SPRITE_FILES = SPRITE_KEYS.map((k) => `${BASE}${k}.webp`);
 
-/**
- * 貼るとき、マスの矩形から一辺につきこの割合だけ内へ寄せる。
+/*
+ * 絵は**ちょうど 1 マス分**を写している。目地のまん中で切ってあるので、
+ * マスの矩形へそのまま置けば、面取りも目地も写真と同じ位置に載る。
  *
- * 切り出しのときは 3% 内へ寄せてある（隣の色つきブロックの面取りが
- * わずかに食い込んでいて、ちょうどで切ると青い筋が混ざるため）。
- * ただし**貼るときは同じだけ寄せてはいけない。** 写真のブロックはマスの矩形から
- * ほんの少しはみ出しているので、3% 内側へ戻すとブロックが痩せ、目地だけが
- * 太くなる（実際、写真より目地の広い盤になった）。ほぼ 0 まで詰めて、
- * 切り落とした 3% を貼るときに引き伸ばして返す。
+ * 一度、マスの矩形から 3% 内側で切って貼るときに伸ばし返す、という作りにした。
+ * はみ出し方は辺ごとに違うので、ある辺では面取りの外縁を削り、別の辺では
+ * 隣のブロックが混ざる ―― 伸ばして埋めると面取りの輪が内へ寄り、写真と
+ * 重ねるとどのブロックの縁にも明るい輪が出た。切り口を目地に置けば起きない。
  */
-const SPRITE_INSET = 0.006;
 
 const images = new Map();
 let started = false;
@@ -3597,14 +3595,13 @@ class Renderer {
     ctx.stroke();
     ctx.restore();
 
-    // 空きマスの窪み。ブロックと同じ寄せ方で貼る（目地の幅が揃う）
+    // 空きマスの窪み。ブロックと同じくちょうど 1 マス分
     const well = spriteFor('empty');
     if (well && board) {
-      const m = cell * SPRITE_INSET;
       for (let y = 0; y < n; y++) {
         for (let x = 0; x < n; x++) {
           if (board.at(x, y) !== -1) continue;
-          ctx.drawImage(well, x0 + x * cell + m, y0 + y * cell + m, cell - m * 2, cell - m * 2);
+          ctx.drawImage(well, x0 + x * cell, y0 + y * cell, cell, cell);
         }
       }
     }
@@ -3827,16 +3824,15 @@ class Renderer {
      *
      * 立体の経路（接地影・側面・面取り・縁）は 1 つも通らない ―― 写真には
      * それが全部**焼き込まれている**ので、上から重ねると影が二重になる。
-     * 貼る位置はマスの矩形から SPRITE_INSET だけ内へ寄せたところ。
-     * 写真もそう切り出してあるので、外に残る細い縁がそのまま目地になる。
+     * 絵はちょうど 1 マス分（目地のまん中で切ってある）なので、マスの矩形へ
+     * そのまま置く。目地の半分ずつが絵に入っているので、隣り合えば目地が空く。
      */
     const sprite = this.spriteFor(cols, rows, cells);
     if (sprite) {
-      const m = cell * SPRITE_INSET;
-      const dx = ox + minX * cell + m;
-      const dy = oy + minY * cell + m;
-      const dw = cols * cell - m * 2;
-      const dh = rows * cell - m * 2;
+      const dx = ox + minX * cell;
+      const dy = oy + minY * cell;
+      const dw = cols * cell;
+      const dh = rows * cell;
       ctx.drawImage(sprite, dx, dy, dw, dh);
       /*
        * 色つきは進行度の色相を被せる。

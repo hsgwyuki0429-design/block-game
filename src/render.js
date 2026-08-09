@@ -17,7 +17,7 @@ import {
   LIGHT, materialFor, DEFAULT_MATERIAL, paletteFor, trayPaletteFor,
   scaledTile, facetColor, edgeColor, makeCanvas, texturePaletteFor,
 } from './materials.js';
-import { loadSprites, spriteFor, spritesReady, SPRITE_INSET } from './sprites.js';
+import { loadSprites, spriteFor, spritesReady } from './sprites.js';
 
 /** roundRect は Safari 16.4 未満に無い。無ければ自前で足す */
 function installRoundRect() {
@@ -832,14 +832,13 @@ export class Renderer {
     ctx.stroke();
     ctx.restore();
 
-    // 空きマスの窪み。ブロックと同じ寄せ方で貼る（目地の幅が揃う）
+    // 空きマスの窪み。ブロックと同じくちょうど 1 マス分
     const well = spriteFor('empty');
     if (well && board) {
-      const m = cell * SPRITE_INSET;
       for (let y = 0; y < n; y++) {
         for (let x = 0; x < n; x++) {
           if (board.at(x, y) !== -1) continue;
-          ctx.drawImage(well, x0 + x * cell + m, y0 + y * cell + m, cell - m * 2, cell - m * 2);
+          ctx.drawImage(well, x0 + x * cell, y0 + y * cell, cell, cell);
         }
       }
     }
@@ -1062,16 +1061,15 @@ export class Renderer {
      *
      * 立体の経路（接地影・側面・面取り・縁）は 1 つも通らない ―― 写真には
      * それが全部**焼き込まれている**ので、上から重ねると影が二重になる。
-     * 貼る位置はマスの矩形から SPRITE_INSET だけ内へ寄せたところ。
-     * 写真もそう切り出してあるので、外に残る細い縁がそのまま目地になる。
+     * 絵はちょうど 1 マス分（目地のまん中で切ってある）なので、マスの矩形へ
+     * そのまま置く。目地の半分ずつが絵に入っているので、隣り合えば目地が空く。
      */
     const sprite = this.spriteFor(cols, rows, cells);
     if (sprite) {
-      const m = cell * SPRITE_INSET;
-      const dx = ox + minX * cell + m;
-      const dy = oy + minY * cell + m;
-      const dw = cols * cell - m * 2;
-      const dh = rows * cell - m * 2;
+      const dx = ox + minX * cell;
+      const dy = oy + minY * cell;
+      const dw = cols * cell;
+      const dh = rows * cell;
       ctx.drawImage(sprite, dx, dy, dw, dh);
       /*
        * 色つきは進行度の色相を被せる。
