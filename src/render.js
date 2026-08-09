@@ -365,7 +365,7 @@ export class Renderer {
     if (this._tintAt === q) return;
     this._tintAt = q;
     this.tint = progressColor(q);
-    this.stonePal = paletteFor(this.material, false, null);
+    this.greyPal = paletteFor(this.material, false, null);
     this.litPal = paletteFor(this.material, true, this.tint.base);
     this.trayPal = trayPaletteFor(this.material, this.tint.base);
   }
@@ -384,7 +384,7 @@ export class Renderer {
 
   /** ブロックの色。灰色は素材そのまま、色つきは進行度の色を素材に混ぜたもの */
   palFor(colorIndex) {
-    return colorIndex === -9 ? this.stonePal : this.litPal; // -9 は board.js の BLOCKER
+    return colorIndex === -9 ? this.greyPal : this.litPal; // -9 は board.js の BLOCKER
   }
 
   /**
@@ -1055,11 +1055,12 @@ export class Renderer {
    * 素材の地。指定された形に、色とテクスチャだけを敷く。
    * タイル 1 枚はおよそ 3 マスぶん。マスが小さくても、木目や石の粒が
    * 「そのブロックに対して」同じ割合で見える。
-   * 木と金属は筋を長辺に沿わせる ―― 板の取り方が変われば、別の板に見える。
    */
   bakeSurface(ctx, box, skin, alpha) {
     const { pal, mat, cols, rows, variant, colored } = skin;
-    const along = (mat.key === 'wood' || mat.key === 'metal') && rows > cols;
+    // 筋のある素材は長辺に沿わせる（板の取り方が変われば別の板に見える）。
+    // いまそういう素材は無いが、経路は残しておく ―― 素材ごとに分岐を足さないため
+    const along = Boolean(mat.grainAlongLongSide) && rows > cols;
     // タイルは**素材そのものの色**で焼く。進行度で焼き直すと、色が 1 段動くたびに
     // 数十ミリ秒止まる。色は下の「色相を被せる」ひと塗りで付ける
     const tile = scaledTile(mat, texturePaletteFor(mat, colored), this.cell * 3 * this.dpr, along);
@@ -1108,19 +1109,6 @@ export class Renderer {
     ctx.clip(path);
 
     this.bakeSurface(ctx, box, skin, alpha);
-
-    // 帯状の映り込み（金属だけ）。研磨の筋と直交する向きに置く
-    if (mat.banded) {
-      const g = ctx.createLinearGradient(0, box.y0, 0, box.y1);
-      // 帯は 3 本まで。以前は 5 本入れていたが、板ではなく波板に見えた
-      g.addColorStop(0, 'rgba(255,255,255,0.3)');
-      g.addColorStop(0.18, 'rgba(255,255,255,0.02)');
-      g.addColorStop(0.44, 'rgba(0,0,0,0.16)');
-      g.addColorStop(0.62, 'rgba(255,255,255,0.18)');
-      g.addColorStop(1, 'rgba(0,0,0,0.14)');
-      ctx.fillStyle = g;
-      ctx.fillRect(box.x0, box.y0, box.w, box.h);
-    }
 
     // 斜めの明暗。光の来ている側が明るい
     const s = mat.sheen;

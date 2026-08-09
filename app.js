@@ -2180,8 +2180,12 @@ function luma(hex) {
 // ブロックの素材。
 //
 // 盤面のブロックは「色のついた板」ではなく、**その素材で削り出した塊**に見せる。
-// 石は欠けた粗い面、木は繊維の走った木目、金属はヘアラインと帯状の反射、
-// クリスタルはエメラルドカットの面取り、紙は繊維の浮いたマット、布は織り目。
+// いま持っているのは 2 つだけ ―― 何も乗せないプレーンと、
+// エメラルドカットのクリスタル。
+//
+// 昔はここに石・木・金属・紙・布も並んでいたが、どれも「それらしく見える」まで
+// 詰め切れないまま数だけ増えていたので、畳んだ。素材は好みで選ぶ飾りで、
+// 中途半端なものが 7 つ並ぶより、仕上がったものが 2 つ並ぶほうがいい。
 //
 // 画像は 1 枚も使っていない。すべて実行時に手続き的に描いている ――
 // 素材ごとに「高さの場」を作り、その**傾きから陰影を計算する**（バンプマッピング）。
@@ -2345,175 +2349,6 @@ function makeCanvas(w, h) {
 // ---------------------------------------------------------------- 素材ごとの表面
 
 /**
- * 石 ―― 磨いた御影石。
- *
- * 最初は「割り肌」（ridge を効かせた fBm で稜線を立てたもの）にしていたが、
- * 1 マスが 40px そこそこまで小さくなると、稜線がブロックの輪郭と同じ細かさになり、
- * 形が模様に埋もれて読めなくなった ―― 皺くちゃの箔にしか見えなかった。
- *
- * 磨いた石は**ほとんど平ら**で、石らしさは凹凸ではなく**粒**が持っている。
- * 明るい長石と暗い黒雲母を閾値で切って散らし、面そのものは撫でるだけにする。
- * 情報量が減ったぶん、形と色が先に目に入るようになる。
- */
-function stoneTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const grit = makeNoise(makeRng(seed ^ 0x9e3779b9));
-  const base = hexRgb(pal.mid);
-  const high = hexRgb(pal.top);
-  const low = hexRgb(pal.deep);
-
-  // 面は撫でるだけ。ここに細かい起伏を足すと、光の向きに沿って明暗が伸び、
-  // 粒ではなく**虫の這った跡**のような筋になる（実際そう見えた）
-  const height = (u, v) => fbm2(g, u, v, 2, 2, 2, 0.5);
-  const color = (u, v) => {
-    // 大きな斑（同じ石でも場所によって色が振れる）
-    const mottle = fbm2(grit, u, v, 3, 3, 2, 0.5) - 0.5;
-    // 粒は閾値で切る。滑らかに混ぜると靄になり、切ると**粒**として残る
-    const pale = clip((noiseAt(grit, u, v, 48, 48, 3, 5) - 0.6) * 2.6, 0, 1);
-    const dark = clip((noiseAt(g, u, v, 40, 40, 9, 13) - 0.64) * 2.8, 0, 1);
-    let c = [0, 1, 2].map((i) => mix(base[i], mottle > 0 ? high[i] : low[i], Math.abs(mottle) * 0.3));
-    c = [0, 1, 2].map((i) => mix(c[i], high[i], pale * 0.72));
-    return [0, 1, 2].map((i) => mix(c[i], low[i], dark * 0.55));
-  };
-  return bumpTile(height, color, { relief: 0.12, ambient: 1 });
-}
-
-/**
- * 木 ―― 削り出した板。
- * 年輪は「中心からの距離をノイズで歪めて、その小数部を取る」だけで出る。
- * 歪めないと同心円の模様になってしまうので、歪みの量が木らしさそのものになる。
- * 導管（細い縦筋）を別に重ねて、繊維の向きを出す。
- */
-function woodTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const fib = makeNoise(makeRng(seed ^ 0x85ebca6b));
-  const light = hexRgb(pal.top);
-  const mid = hexRgb(pal.mid);
-  const dark = hexRgb(pal.deep);
-
-  // 板は横長に取る。木目は u 方向（横）へ流し、縦向きのブロックには
-  // タイルごと 90° 回して貼る（render.js 側）。板の取り方が変われば別の木に見える
-  const height = (u, v) => {
-    // 年輪を v 方向にだけ数え、u に沿ってノイズで歪める。
-    // 折り返しは三角波で作る ―― 小数部（のこぎり波）のままだと 1 周ごとに
-    // 段差ができ、木目ではなく等高線のような硬い輪郭になる（実際そう見えた）。
-    // 年輪の本数を**偶数**にしてあるのも継ぎ目のため。三角波の周期は 2 なので、
-    // 奇数だとタイルの上端と下端で山と谷が入れ替わってしまう
-    // 本数は少ないほど板に見える。22 本だと 1 マスに何本も入り、木目ではなく
-    // バーコードになった ―― 3 マスぶんのタイルに 4 周（＝山 4 本）で足りる
-    // 歪みは**木目を横切る向きにはほとんど掛けない**（fy=1）。両方向に掛けると
-    // 年輪が渦を巻き、木ではなく大理石か流れる液体に見える（実際そう見えた）
-    const warp = fbm2(g, u, v, 3, 1, 3, 0.5);
-    const t = v * 12 + warp * 1.5;
-    const tri = Math.abs((t % 2) - 1);
-    // 指数を上げると谷が広く山が細くなる。年輪は「広い春材に細い濃い線」
-    const ring = Math.pow(tri, 1.7);
-    // 導管。木目に沿って走る細い筋（u にはほぼ変化せず、v に細かく振る）
-    const pore = noiseAt(fib, u, v, 2, 48) * 0.24;
-    return clip(ring * 0.78 + pore, 0, 1);
-  };
-  const color = (u, v, h) => {
-    const t = clip(h * 1.15 - 0.05, 0, 1);
-    const c = [0, 1, 2].map((i) => mix(dark[i], light[i], t));
-    // 濃い筋（晩材）をところどころ強く出す
-    const streak = noiseAt(fib, u, v, 2, 18, 5, 9);
-    const k = streak > 0.72 ? (streak - 0.72) * 1.4 : 0;
-    return [0, 1, 2].map((i) => mix(c[i], mid[i] * 0.8, clip(k, 0, 0.36)));
-  };
-  return bumpTile(height, color, { relief: 0.22, ambient: 0.98 });
-}
-
-/**
- * 金属 ―― ヘアライン仕上げのステンレス。
- * 研磨の筋は「片方向にだけ引き伸ばしたノイズ」。縦にはほとんど変化させず、
- * 横に細かく散らすと、あの一方向の擦り傷になる。
- * 帯状の映り込みはテクスチャではなく、render.js 側の鏡面グラデーションで出す
- * （ブロックの大きさに合わせて帯の位置が動かないと、板に見えない）。
- */
-function metalTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const base = hexRgb(pal.mid);
-
-  const height = (u, v) => {
-    // u 方向はほとんど変えず、v 方向にだけ細かく振る = 横へ伸びた筋。
-    // v の本数を上げすぎると 1 画素より細かくなり、筋ではなく砂嵐になる ――
-    // タイル 256px なら 110 本で周期およそ 2px。ヘアラインはこのあたりが限度
-    const fine = noiseAt(g, u, v, 3, 110);
-    const mid = noiseAt(g, u, v, 4, 32, 11, 5);
-    const broad = fbm2(g, u, v, 2, 9, 2, 0.5);
-    return clip(fine * 0.5 + mid * 0.3 + broad * 0.2, 0, 1);
-  };
-  const color = (u, v, h) => {
-    // 金属は色数を持たない。明暗だけで見せる
-    const k = (h - 0.5) * 0.16;
-    return [0, 1, 2].map((i) => clip(base[i] * (1 + k), 0, 255));
-  };
-  return bumpTile(height, color, { relief: 0.26, ambient: 1 });
-}
-
-/**
- * 紙 ―― 圧した厚紙。
- * 繊維は「短い線分がランダムな向きに絡んだ場」。細かいノイズを 2 枚、
- * 別の縮尺で重ねると、目で追えない細かさの繊維に見える。
- */
-function paperTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const f = makeNoise(makeRng(seed ^ 0xc2b2ae35));
-  const base = hexRgb(pal.mid);
-  const dark = hexRgb(pal.deep);
-
-  const height = (u, v) => {
-    // 紙は「ほとんど平ら」が正解。粗さを上げると石膏や漆喰になってしまう
-    // 88 本まで細かくすると 1 画素より細かい砂嵐になり、紙ではなく漆喰に見えた
-    const fiber = noiseAt(f, u, v, 44, 44);
-    const laid = noiseAt(f, u, v, 3, 40, 9, 3) * 0.5;  // 簀の目。ごく淡い横筋
-    const felt = fbm2(g, u, v, 4, 4, 3, 0.6);
-    const wave = fbm2(g, u, v, 2, 2, 2, 0.5) * 0.5;    // 紙のうねり
-    return clip(fiber * 0.13 + laid * 0.12 + felt * 0.32 + wave, 0, 1);
-  };
-  const color = (u, v, h) => {
-    const t = clip((h - 0.5) * 0.6 + 0.5, 0, 1);
-    return [0, 1, 2].map((i) => mix(dark[i], base[i], 0.62 + t * 0.38));
-  };
-  return bumpTile(height, color, { relief: 0.1, ambient: 0.99 });
-}
-
-/**
- * 布 ―― 平織り。
- * 縦糸と横糸が交互に上へ出る。市松に位相をずらした 2 本の正弦波を、
- * 市松の位置で選び分けると、糸が交差して見える。
- */
-function fabricTexture(pal, seed) {
-  const g = makeNoise(makeRng(seed));
-  const base = hexRgb(pal.mid);
-  const dark = hexRgb(pal.deep);
-  const light = hexRgb(pal.top);
-  const threads = 24; // タイルあたりの糸の本数
-
-  const height = (u, v) => {
-    const fx = u * threads;
-    const fy = v * threads;
-    const cx = Math.floor(fx);
-    const cy = Math.floor(fy);
-    // 市松で「いま上に出ている糸」を切り替える
-    const warpUp = (cx + cy) % 2 === 0;
-    const along = warpUp ? fy - cy : fx - cx;   // 糸に沿う向き
-    const across = warpUp ? fx - cx : fy - cy;  // 糸を横切る向き
-    // 横切る向きに丸みを付けると、糸が円柱に見える
-    const round = Math.sin(across * Math.PI);
-    const twist = 0.85 + 0.15 * Math.sin(along * Math.PI * 2);
-    const fuzz = noiseAt(g, u, v, 54, 54) * 0.16;
-    return clip(round * twist * 0.84 + fuzz, 0, 1);
-  };
-  const color = (u, v, h) => {
-    const t = clip(h * 1.1, 0, 1);
-    const c = [0, 1, 2].map((i) => mix(dark[i], base[i], 0.4 + t * 0.6));
-    return [0, 1, 2].map((i) => mix(c[i], light[i], clip((h - 0.7) * 1.6, 0, 0.5)));
-  };
-  return bumpTile(height, color, { relief: 0.3, ambient: 0.95 });
-}
-
-/**
  * クリスタル ―― 磨いたガラスの卓面。
  * 面取りは幾何（render.js の 8 面）で作るので、ここは卓面のごく淡い曇りだけ。
  * texture を濃くすると、透明感が濁って「すりガラス」になってしまう。
@@ -2574,87 +2409,6 @@ const DEFS = [
     texture: null,
   },
   {
-    key: 'stone',
-    name: '石',
-    note: '磨いた御影石',
-    depth: 0.115,      // 側面の厚み
-    bevel: 0.12,       // 面取りの幅
-    radius: 0.14,      // 角の丸み
-    gap: 0.062,        // ブロック同士のすき間（＝黒い目地の太さ）
-    gloss: 0.12,       // 鏡面の強さ（石はほとんど光らない）
-    sheen: 0.2,        // 天面の明暗の付き方
-    /*
-     * 色つきブロックは進行度の色を**はっきり**まとう。
-     * ここを弱くすると「灰色がかった石が2種類ある」だけの盤面になり、
-     * どれが動かせる色つきなのかが一瞬で読めない（実際そうなっていた）。
-     */
-    tint: 0.54,
-    shadow: 0.5,       // 接地影の濃さ
-    grain: 0.5,        // 表面の模様の出し方。粗すぎると形が読めなくなる
-    facets: 8,
-    bevelStyle: 'soft',   // 縁は丸い。面では割らない
-    bevelAlpha: 0.85,
-    colors: {
-      // 灰色は暗い玄武岩、色つきは明るい花崗岩。**明るさが先に目に入り**、
-      // そのあとで色が付いてくる ―― この順でないと小さいマスで見分けが付かない
-      grey: { top: '#a6a29b', mid: '#807c76', deep: '#4f4c47', side: '#5d5a55' },
-      lit: { top: '#eae5dc', mid: '#c9c3b8', deep: '#8a8479', side: '#999287' },
-    },
-    // 盤面はブロックより**はっきり暗い**。明るい石が暗い受け皿に載っている、
-    // という関係が、ブロックの輪郭をいちばん強く立たせる
-    tray: { frame: '#4c4842', floor: '#38352f', well: '#292722' },
-    texture: stoneTexture,
-  },
-  {
-    key: 'wood',
-    name: '木',
-    note: 'ウォールナットと楓',
-    depth: 0.1,
-    bevel: 0.075,
-    radius: 0.2,
-    gap: 0.058,
-    gloss: 0.26,
-    sheen: 0.24,
-    // 木を真っ青にすると木に見えなくなる。灰色との差は「樹種の差」＝明暗が持ち、
-    // 色相はそこへ乗せるだけ。それでも 0.18 では色が見えなかったので上げる
-    tint: 0.3,
-    shadow: 0.44,
-    grain: 0.62,
-    facets: 8,
-    bevelStyle: 'soft',
-    bevelAlpha: 0.9,
-    colors: {
-      grey: { top: '#9c6b42', mid: '#7d5330', deep: '#4a2d19', side: '#583620' },
-      lit: { top: '#f8e3bb', mid: '#e4c895', deep: '#a2814d', side: '#b0905e' },
-    },
-    tray: { frame: '#3a2819', floor: '#281b10', well: '#1d140b' },
-    texture: woodTexture,
-  },
-  {
-    key: 'metal',
-    name: '金属',
-    note: 'ヘアラインの金属',
-    depth: 0.095,
-    bevel: 0.1,
-    radius: 0.16,
-    gap: 0.058,
-    gloss: 1,
-    sheen: 0.42,
-    tint: 0.6,
-    shadow: 0.56,
-    grain: 0.55,
-    facets: 8,
-    bevelStyle: 'facet',  // 留め継ぎの面取り。金属はここが命
-    bevelAlpha: 1,
-    banded: true,      // 帯状の映り込みを重ねる（金属だけ）
-    colors: {
-      grey: { top: '#b9bec3', mid: '#878d93', deep: '#3b4046', side: '#4a4f55' },
-      lit: { top: '#eef4fa', mid: '#c2ccd6', deep: '#697682', side: '#7a8794' },
-    },
-    tray: { frame: '#33363a', floor: '#1d1f22', well: '#121315' },
-    texture: metalTexture,
-  },
-  {
     key: 'crystal',
     name: 'クリスタル',
     note: 'エメラルドカット',
@@ -2682,55 +2436,6 @@ const DEFS = [
     // 透けるものは、暗い受け皿の上でしか透けて見えない
     tray: { frame: '#3e4650', floor: '#2b323b', well: '#1d232a' },
     texture: crystalTexture,
-  },
-  {
-    key: 'paper',
-    name: '紙',
-    note: '板紙と白いカード',
-    depth: 0.078,
-    bevel: 0.07,
-    radius: 0.14,
-    gap: 0.06,
-    gloss: 0.06,
-    sheen: 0.14,
-    tint: 0.56,
-    shadow: 0.38,
-    grain: 0.45,
-    facets: 8,
-    bevelStyle: 'soft',
-    bevelAlpha: 0.8,
-    colors: {
-      // 灰色は板紙（クラフト）、色つきは白いカード。紙どうしなので、
-      // 色相ではなく**紙の種類**で差を付けないと見分けが付かない
-      grey: { top: '#bdb19b', mid: '#9c9179', deep: '#675e4a', side: '#756c56' },
-      lit: { top: '#fffdf6', mid: '#f7f0e1', deep: '#c6bba1', side: '#d6cbb1' },
-    },
-    tray: { frame: '#4a4336', floor: '#373127', well: '#2b261e' },
-    texture: paperTexture,
-  },
-  {
-    key: 'fabric',
-    name: '布',
-    note: '平織りのリネン',
-    depth: 0.085,
-    bevel: 0.1,
-    radius: 0.24,
-    gap: 0.064,
-    gloss: 0.05,
-    sheen: 0.16,
-    tint: 0.64,
-    shadow: 0.4,
-    grain: 0.6,
-    facets: 8,
-    bevelStyle: 'soft',
-    bevelAlpha: 0.75,
-    colors: {
-      // 灰色は染めた麻、色つきは晒した麻。織り目は同じで、糸の色だけが違う
-      grey: { top: '#968d7e', mid: '#756d5f', deep: '#48423a', side: '#554f44' },
-      lit: { top: '#f2ecdd', mid: '#ded7c4', deep: '#9c947f', side: '#aba38d' },
-    },
-    tray: { frame: '#464036', floor: '#332f28', well: '#272420' },
-    texture: fabricTexture,
   },
 ];
 
@@ -2926,14 +2631,14 @@ function scaledTile(mat, pal, size, turn = false) {
 /**
  * 面取りの 1 面の明るさ。法線 (nx, ny) が光のほうを向くほど明るい。
  *
- * 金属だけ返り方を変えてある ―― 磨いた金属は拡散光をほとんど返さず、
+ * 磨いたものだけ返り方を変えてある ―― 鏡のような面は拡散光をほとんど返さず、
  * 光源の**鏡像**を返す。だから上の面が明るいだけでなく、下の面も
  * （周りの明るい床を映して）明るくなる。この 2 つ目の山が無いと、
  * どれだけ磨いても「灰色のプラスチック」にしか見えない。
  */
 function facetShade(mat, nx, ny) {
   const d = nx * LIGHT.x + ny * LIGHT.y;
-  if (mat.key === 'metal' || mat.key === 'crystal') {
+  if (mat.key === 'crystal') {
     const direct = Math.max(0, d);
     const bounce = Math.max(0, -d); // 下から返ってくる環境光
     // 面ごとの差を大きく取る。差が小さいと、磨いた面ではなく
@@ -3326,7 +3031,7 @@ class Renderer {
     if (this._tintAt === q) return;
     this._tintAt = q;
     this.tint = progressColor(q);
-    this.stonePal = paletteFor(this.material, false, null);
+    this.greyPal = paletteFor(this.material, false, null);
     this.litPal = paletteFor(this.material, true, this.tint.base);
     this.trayPal = trayPaletteFor(this.material, this.tint.base);
   }
@@ -3345,7 +3050,7 @@ class Renderer {
 
   /** ブロックの色。灰色は素材そのまま、色つきは進行度の色を素材に混ぜたもの */
   palFor(colorIndex) {
-    return colorIndex === -9 ? this.stonePal : this.litPal; // -9 は board.js の BLOCKER
+    return colorIndex === -9 ? this.greyPal : this.litPal; // -9 は board.js の BLOCKER
   }
 
   /**
@@ -4016,11 +3721,12 @@ class Renderer {
    * 素材の地。指定された形に、色とテクスチャだけを敷く。
    * タイル 1 枚はおよそ 3 マスぶん。マスが小さくても、木目や石の粒が
    * 「そのブロックに対して」同じ割合で見える。
-   * 木と金属は筋を長辺に沿わせる ―― 板の取り方が変われば、別の板に見える。
    */
   bakeSurface(ctx, box, skin, alpha) {
     const { pal, mat, cols, rows, variant, colored } = skin;
-    const along = (mat.key === 'wood' || mat.key === 'metal') && rows > cols;
+    // 筋のある素材は長辺に沿わせる（板の取り方が変われば別の板に見える）。
+    // いまそういう素材は無いが、経路は残しておく ―― 素材ごとに分岐を足さないため
+    const along = Boolean(mat.grainAlongLongSide) && rows > cols;
     // タイルは**素材そのものの色**で焼く。進行度で焼き直すと、色が 1 段動くたびに
     // 数十ミリ秒止まる。色は下の「色相を被せる」ひと塗りで付ける
     const tile = scaledTile(mat, texturePaletteFor(mat, colored), this.cell * 3 * this.dpr, along);
@@ -4069,19 +3775,6 @@ class Renderer {
     ctx.clip(path);
 
     this.bakeSurface(ctx, box, skin, alpha);
-
-    // 帯状の映り込み（金属だけ）。研磨の筋と直交する向きに置く
-    if (mat.banded) {
-      const g = ctx.createLinearGradient(0, box.y0, 0, box.y1);
-      // 帯は 3 本まで。以前は 5 本入れていたが、板ではなく波板に見えた
-      g.addColorStop(0, 'rgba(255,255,255,0.3)');
-      g.addColorStop(0.18, 'rgba(255,255,255,0.02)');
-      g.addColorStop(0.44, 'rgba(0,0,0,0.16)');
-      g.addColorStop(0.62, 'rgba(255,255,255,0.18)');
-      g.addColorStop(1, 'rgba(0,0,0,0.14)');
-      ctx.fillStyle = g;
-      ctx.fillRect(box.x0, box.y0, box.w, box.h);
-    }
 
     // 斜めの明暗。光の来ている側が明るい
     const s = mat.sheen;

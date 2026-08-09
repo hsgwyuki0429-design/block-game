@@ -854,7 +854,8 @@ svg .fill { fill: currentColor; stroke: none; }
 
 .material-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* 素材は 2 つ。3 列のままだと右端に空きマスが 1 つ残って、選べる何かがあるように見える */
+  grid-template-columns: repeat(2, 1fr);
   gap: 8px;
   margin-bottom: 20px;
 }

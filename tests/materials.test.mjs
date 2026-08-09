@@ -23,7 +23,7 @@ import { progressColor } from '../src/render.js';
 const HEX = /^#[0-9a-f]{6}$/;
 
 test('素材は一覧と引き当てが噛み合っている', () => {
-  assert.ok(MATERIAL_KEYS.length >= 7);
+  assert.ok(MATERIAL_KEYS.length >= 2);
   assert.ok(MATERIAL_KEYS.includes(DEFAULT_MATERIAL));
   assert.equal(materialList().length, MATERIAL_KEYS.length);
   for (const m of materialList()) {
@@ -105,7 +105,7 @@ test('平らな素材は進行度の色をそのまま着る（素材の明る�
 
 test('平らな素材だけ、盤面も進行度の色を追いかける', () => {
   const plain = materialFor('plain');
-  const stone = materialFor('stone');
+  const solid = materialFor('crystal');
   const a = trayPaletteFor(plain, progressColor(0).base);
   const b = trayPaletteFor(plain, progressColor(1).base);
   assert.notEqual(a.floor, b.floor, 'プレーンの盤面が進行度で動いていない');
@@ -113,8 +113,8 @@ test('平らな素材だけ、盤面も進行度の色を追いかける', () =>
   for (const p of [a, b]) assert.ok(luma(p.floor) > 200, `盤面が濃すぎる（${p.floor}）`);
   // それ以外の素材は据え置き（動かすと 1 手ごとにトレイを焼き直すことになる）
   assert.equal(
-    trayPaletteFor(stone, progressColor(0).base).floor,
-    trayPaletteFor(stone, progressColor(1).base).floor,
+    trayPaletteFor(solid, progressColor(0).base).floor,
+    trayPaletteFor(solid, progressColor(1).base).floor,
   );
 });
 
