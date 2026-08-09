@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeName, rankSort, rankOf, NAME_MAX } from '../src/ranking.js';
-import { progressColor, trayFor, auraFor } from '../src/render.js';
+import { progressColor, auraFor } from '../src/render.js';
 
 // ---------------------------------------------------------------- 名前
 
@@ -88,7 +88,6 @@ test('進行度の色は 0 から 1 まで途切れなく作れる', () => {
       assert.match(c[key], /^#[0-9a-f]{6}$/, `${key} が色になっていない (t=${i / 100})`);
     }
     assert.match(c.shadow, /^\d+,\d+,\d+$/);
-    assert.match(trayFor(i / 100).plate, /^#[0-9a-f]{6}$/);
     assert.match(auraFor(i / 100), /^rgba\(\d+,\d+,\d+,[\d.]+\)$/);
   }
 });
@@ -107,16 +106,4 @@ test('進行度の色は連続している（1手で色が飛ばない）', () =
 test('範囲外の進行度は両端に丸める', () => {
   assert.equal(progressColor(-5).base, progressColor(0).base);
   assert.equal(progressColor(9).base, progressColor(1).base);
-});
-
-test('盤面の面はブロックよりずっと淡い（ブロックが埋もれない）', () => {
-  const lum = (hex) => {
-    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  };
-  for (let i = 0; i <= 10; i++) {
-    const t = i / 10;
-    assert.ok(lum(trayFor(t).plate) > lum(progressColor(t).base) + 50,
-      `t=${t} で面とブロックの明るさが近すぎる`);
-  }
 });
