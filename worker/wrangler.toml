@@ -1,0 +1,28 @@
+# SLIDE POP! の世界共通ランキング。
+#
+#   npm run rank:login    # 初回だけ（ブラウザで Cloudflare にログイン）
+#   npm run rank:deploy   # これだけ。器も表も勝手に出来る
+#
+# name は URL になる（https://<name>.<アカウントのサブドメイン>.workers.dev/）。
+# ここを変えると src/config.js の RANKING_ENDPOINT も直す必要がある ―― 揃えておくこと。
+name = "slidepop"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+workers_dev = true
+
+# ダッシュボードにログとエラーを残す。
+# 「保存されない」ときに、届いていないのか弾いているのかをここで見分ける。
+[observability]
+enabled = true
+
+# レベルごとに 1 つの器。作成コマンドも ID の貼り付けも要らず、
+# 下の migrations が deploy のときに勝手に用意する。
+[[durable_objects.bindings]]
+name = "RANK"
+class_name = "RankStore"
+
+# new_sqlite_classes = SQLite で保存する Durable Object。
+# 一度 deploy したらこの tag と行は消さないこと（消すと中の記録ごと作り直しになる）。
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RankStore"]

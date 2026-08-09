@@ -9,7 +9,10 @@
     "start": "node server.mjs",
     "test": "node tools/build.mjs --check && node tools/icons.mjs --check && node --test \"tests/**/*.test.mjs\"",
     "verify": "node tools/verify.mjs 80",
-    "icons": "node tools/icons.mjs"
+    "icons": "node tools/icons.mjs",
+    "rank:login": "npx --yes wrangler@4 login",
+    "rank:deploy": "npx --yes wrangler@4 deploy --config worker/wrangler.toml",
+    "rank:log": "npx --yes wrangler@4 tail --config worker/wrangler.toml"
   },
   "license": "MIT"
 }
