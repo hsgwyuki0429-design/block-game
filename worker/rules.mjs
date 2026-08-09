@@ -15,6 +15,8 @@ export const LEVEL_MAX = 1_000_000;
 export const MOVES_MAX = 100_000;
 /** 100 時間。これを超えるタイムは時計が壊れている */
 export const TIME_MAX = 360_000;
+/** 星は 1 レベルにつき 3 個。全レベルを ★★★ で埋めてもここが上限 */
+export const STARS_MAX = LEVEL_MAX * 3;
 
 /** 数値として読む。数と文字列だけを受け付け、範囲外は null */
 function readInt(raw, min, max) {
@@ -52,4 +54,31 @@ export function readEntry(body, now = Date.now()) {
 
   if (level == null || !name || moves == null || time == null || stars == null) return null;
   return { level, name, moves, time, stars, at: now };
+}
+
+/**
+ * どちらの表への出入りか。
+ * 'stars' と名指ししたときだけ星の表、それ以外はすべてレベル別 ――
+ * board を知らない古い版のクライアントが、そのまま今までどおり動く。
+ */
+export function readBoard(raw) {
+  return raw === 'stars' ? 'stars' : 'level';
+}
+
+/**
+ * 星の数の投稿 1 件を読む。
+ * cleared（クリアしたレベル数）は同数のときの並べ替えに使うので、星と一緒に必ず要る。
+ * 星が 1 レベルあたり 3 個を超えることはないので、クリア数の 3 倍を上限にする ――
+ * 「1 レベルだけクリアして星 500 個」のような投稿を先頭に居座らせない。
+ */
+export function readStarEntry(body, now = Date.now()) {
+  if (!body || typeof body !== 'object') return null;
+
+  const name = sanitizeName(body.name);
+  const stars = readInt(body.stars, 0, STARS_MAX);
+  const cleared = readInt(body.cleared, 0, LEVEL_MAX);
+
+  if (!name || stars == null || cleared == null) return null;
+  if (stars > cleared * 3) return null;
+  return { name, stars, cleared, at: now };
 }
