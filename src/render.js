@@ -17,6 +17,7 @@ import {
   LIGHT, materialFor, DEFAULT_MATERIAL, paletteFor, trayPaletteFor,
   scaledTile, facetColor, edgeColor, makeCanvas, texturePaletteFor,
 } from './materials.js';
+import { loadPhotos, photoFor, PHOTO_UNIT } from './photoArt.js';
 
 /** roundRect は Safari 16.4 未満に無い。無ければ自前で足す */
 function installRoundRect() {
@@ -319,6 +320,9 @@ export class Renderer {
     if (next === this.material) return;
     this.material = next;
     this.invalidateBakes();
+    // 写真を貼る素材（クリスタル）は、画像が復号できるまで無地で描くしかない。
+    // 読めたところで焼いてある絵を捨て、貼り直す
+    if (next.photo) loadPhotos(() => this.invalidateBakes());
   }
 
   invalidateBakes() {
@@ -620,8 +624,12 @@ export class Renderer {
      * プレーンは盤面の色も進行度を追いかけるので、焼いてしまうと色が 1 段動くたびに
      * 盤面ぶんのキャンバスを作り直すことになる ―― 大きな盤面で 1 手ごとに 55ms
      * 止まった。中身は角丸の塗り 2 枚しか無いので、毎フレーム直に描くほうがずっと軽い。
+     *
+     * 写真のクリスタルもこちらを使う（flatTray）。速さのためではなく見え方のため ――
+     * 写真は「白い台の上に置かれたガラス」で、暗い箱に嵌まっているのではない。
+     * 枠を立てて影を落とすと、ガラスが箱の底に沈んで透明感がまるごと消える。
      */
-    if (this.material.flat) {
+    if (this.material.flat || this.material.flatTray) {
       this.bakeFlatTray(this.ctx, board, this.trayPal, this.ox, this.oy, this.cell * this.size);
       return;
     }
@@ -788,13 +796,22 @@ export class Renderer {
     const gap = this.tileGap;
     const size = this.tileSize;
     const tr = this.tileRadius;
+    // 角の落とし方はブロックと揃える。空きマスは「ブロックが抜けた跡」なので、
+    // 丸と八角が混ざると盤面が 2 種類の形でできているように見える
+    const cut = this.material.chamfer ? this.material.chamfer * cell : 0;
     ctx.save();
     ctx.fillStyle = pal.well;
     ctx.beginPath();
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         if (board && board.at(x, y) !== -1) continue;
-        ctx.roundRect(x0 + x * cell + gap, y0 + y * cell + gap, size, size, tr);
+        const px = x0 + x * cell + gap;
+        const py = y0 + y * cell + gap;
+        if (cut) {
+          chamferRect(ctx, {
+            px, py, pw: size, ph: size, up: false, down: false, left: false, right: false,
+          }, cut);
+        } else ctx.roundRect(px, py, size, size, tr);
       }
     }
     ctx.fill();
@@ -974,6 +991,18 @@ export class Renderer {
       return { canvas: cv, pad, minX, minY, w, h };
     }
 
+    /*
+     * 写真を貼る素材（クリスタル）も、立体の経路は通らない ―― 面取りも艶も
+     * 帯も、**写真がすでに全部持っている**。上から足すと二重に光る。
+     * ここでやるのは「盤面に落ちる影」と「写真を形に合わせて貼ること」だけ。
+     */
+    if (mat.photo) {
+      const rim = this.boundaryOf(cells, rects, box, radius, chamfer);
+      this.bakeShadow(ctx, outer, rim, mat, cell, depth);
+      this.bakePhoto(ctx, outer, box, cols, rows, pal, colored);
+      return { canvas: cv, pad, minX, minY, w, h };
+    }
+
     // 卓面（面取りの内側）。角の落としも面取りのぶんだけ小さくなる
     const innerCut = chamfer ? Math.max(1, chamfer - bevel * 0.7) : Math.max(0.5, radius - bevel * 0.6);
     const innerRects = this.rectsFor(cells, ox, oy, gap + bevel, innerCut);
@@ -1011,6 +1040,76 @@ export class Renderer {
     this.bakeEdge(ctx, rim, innerRim, pal, mat, cell);
 
     return { canvas: cv, pad, minX, minY, w, h };
+  }
+
+  /**
+   * 写真を 1 個のブロックに貼る。
+   *
+   * ブロックは 1×1 から 8×3 まで何マスにもなるので、写真をそのまま引き伸ばすと
+   * 面取りまで一緒に伸びて、細長いブロックだけ縁が太くなる。そこで **9 分割**で
+   * 貼る ―― 四隅と四辺は伸ばさずそのまま、中央だけを伸ばす。
+   * エメラルドカットの面取りは「一定の幅の帯」なので、これでどの大きさでも
+   * 写真と同じ太さのまま収まる。全部のレベルに同じ 4 枚で足りるのはこのため。
+   *
+   * 色は貼ってから被せる。'color' は「色相と彩度は塗った色、明るさは下のまま」
+   * という混ぜ方なので、ガラスの陰影を潰さずに色だけが変わる ――
+   * 進行度の色（手数の目盛り）が、写真の上でもそのまま働く。
+   */
+  bakePhoto(ctx, outer, box, cols, rows, pal, colored) {
+    const mat = this.material;
+    const img = photoFor(cols, rows);
+    ctx.save();
+    ctx.clip(outer);
+    if (img) this.drawNineSlice(ctx, img, box, cols, rows);
+    else {
+      // まだ復号できていない。無地で置いておく（読めたら焼き直される）
+      ctx.fillStyle = pal.mid;
+      ctx.fillRect(box.x0, box.y0, box.w, box.h);
+    }
+    ctx.globalCompositeOperation = 'color';
+    // 色つきは進行度の色、灰色は写真がもともと帯びている青み。
+    // 濃さを 1 まで上げると、ガラスではなく**塗った板**に見える ――
+    // 少し透かすと、地の無彩色が残って「染めたガラス」になる
+    ctx.globalAlpha = colored ? mat.tint : 1;
+    ctx.fillStyle = colored ? this.tint.base : mat.photoTint;
+    ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+    ctx.restore();
+  }
+
+  /**
+   * 9 分割で貼る。
+   *
+   * 縁の太さは**マスに比例させる**（写真の側も貼る側も）。ブロックが何マスでも
+   * 1 マスあたりの見え方が変わらないので、盤面のなかで面取りの太さが揃う。
+   * 継ぎ目は destination 側を 0.5px 重ねて隠す ―― ぴったり突き合わせると、
+   * 拡大縮小の補間が切れる位置に髪の毛ほどの線が出る。
+   */
+  drawNineSlice(ctx, img, box, cols, rows) {
+    const sw = img.naturalWidth || img.width;
+    const sh = img.naturalHeight || img.height;
+    if (!sw || !sh) return;
+    // 縁の取り方。面取り（0.17）＋角の落とし（0.2）が収まるだけ内側まで
+    const K = 0.3;
+    const sb = Math.min(PHOTO_UNIT * K, sw / 2 - 1, sh / 2 - 1);
+    const db = Math.min(Math.min(box.w / cols, box.h / rows) * K, box.w / 2 - 0.5, box.h / 2 - 0.5);
+    const bleed = 0.5;
+    const sx = [0, sb, sw - sb, sw];
+    const sy = [0, sb, sh - sb, sh];
+    const dx = [box.x0, box.x0 + db, box.x1 - db, box.x1];
+    const dy = [box.y0, box.y0 + db, box.y1 - db, box.y1];
+    // 伸ばす面を先に、角を最後に。逆にすると、重ねた 0.5px が角に被さって
+    // 面取りの稜線が鈍る ―― いちばん形を持っているのが角なので、そこを上に置く
+    const order = [[1, 1], [1, 0], [1, 2], [0, 1], [2, 1], [0, 0], [2, 0], [0, 2], [2, 2]];
+    for (const [i, j] of order) {
+      const bx = i === 1 ? bleed : 0;
+      const by = j === 1 ? bleed : 0;
+      ctx.drawImage(
+        img,
+        sx[i], sy[j], sx[i + 1] - sx[i], sy[j + 1] - sy[j],
+        dx[i] - bx, dy[j] - by,
+        (dx[i + 1] - dx[i]) + bx * 2, (dy[j + 1] - dy[j]) + by * 2,
+      );
+    }
   }
 
   /**

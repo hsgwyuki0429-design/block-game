@@ -47,9 +47,10 @@ test('どの素材も、立体を組み立てるのに要る寸法をすべて�
       assert.ok(m[field] >= 0 && m[field] <= 2, `${key}.${field} が範囲外`);
     }
     assert.ok(['soft', 'facet'].includes(m.bevelStyle), `${key}.bevelStyle が不正`);
-    // 平らな素材（プレーン）だけは模様を持たない。持たないことが仕様なので、
-    // 「関数か null か」だけを見る ―― undefined（書き忘れ）はここで落ちる
-    if (m.flat) assert.equal(m.texture, null, `${key} は平らなのに模様を持っている`);
+    // 模様を持たないのは、平らな素材（プレーン）と写真を貼る素材（クリスタル）
+    // だけ。持たないことが仕様なので「関数か null か」を見る ――
+    // undefined（書き忘れ）はここで落ちる
+    if (m.flat || m.photo) assert.equal(m.texture, null, `${key} は模様を持たないはず`);
     else assert.equal(typeof m.texture, 'function', `${key} にテクスチャが無い`);
     for (const kind of ['grey', 'lit']) {
       for (const slot of ['top', 'mid', 'deep', 'side']) {
@@ -118,14 +119,19 @@ test('平らな素材だけ、盤面も進行度の色を追いかける', () =>
   );
 });
 
-test('立体の素材は、盤面がブロックよりはっきり暗い（輪郭が読める）', () => {
+test('立体の素材は、盤面とブロックの明るさがはっきり離れている（輪郭が読める）', () => {
   for (const key of MATERIAL_KEYS) {
     const m = materialFor(key);
     if (m.flat) continue;
     const tray = luma(m.tray.floor);
     for (const kind of ['grey', 'lit']) {
       const block = luma(m.colors[kind].mid);
-      assert.ok(block - tray > 40,
+      /*
+       * どちらが明るいかは問わない。削り出しの素材は「明るい塊を暗い受け皿に
+       * 載せる」が読みやすいが、写真のクリスタルはその逆 ―― 白い盤面に
+       * 透明なガラスが置いてある。要るのは差そのもので、向きではない。
+       */
+      assert.ok(Math.abs(block - tray) > 40,
         `${key}: ${kind} ブロック（${block.toFixed(0)}）と盤面（${tray.toFixed(0)}）の差が小さい`);
     }
   }
