@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeName, rankSort, rankOf, NAME_MAX } from '../src/ranking.js';
+import { sanitizeName, rankSort, rankOf, starSort, starRankOf, NAME_MAX } from '../src/ranking.js';
 import { progressColor, auraFor } from '../src/render.js';
 
 // ---------------------------------------------------------------- 名前
@@ -77,6 +77,60 @@ test('rankOf は1始まりの順位を返す。無ければ null', () => {
   ]);
   assert.equal(rankOf(list, { name: 'b', moves: 9 }), 2);
   assert.equal(rankOf(list, { name: 'z', moves: 9 }), null);
+});
+
+// ---------------------------------------------------------------- 星の数の表
+
+test('星の順位は多い順。同数ならクリア数の少ない人が上', () => {
+  const sorted = starSort([
+    { name: 'a', stars: 30, cleared: 30 },
+    { name: 'b', stars: 42, cleared: 20 },
+    { name: 'c', stars: 30, cleared: 12 },
+  ]);
+  assert.deepEqual(sorted.map((e) => e.name), ['b', 'c', 'a']);
+});
+
+test('星が同じでクリア数も同じなら、先に出した方が上', () => {
+  const sorted = starSort([
+    { name: 'あと', stars: 9, cleared: 5, at: 200 },
+    { name: 'さき', stars: 9, cleared: 5, at: 100 },
+  ]);
+  assert.deepEqual(sorted.map((e) => e.name), ['さき', 'あと']);
+});
+
+test('星の表も同じ名前は1行だけ。残るのはいちばん良いもの', () => {
+  const sorted = starSort([
+    { name: 'たろう', stars: 12, cleared: 9 },
+    { name: 'たろう', stars: 21, cleared: 11 },
+    { name: 'はなこ', stars: 15, cleared: 8 },
+  ]);
+  assert.equal(sorted.length, 2);
+  assert.deepEqual(sorted.map((e) => [e.name, e.stars]), [['たろう', 21], ['はなこ', 15]]);
+});
+
+test('星の表も壊れた行で落ちない（サーバーの応答は信用しない）', () => {
+  const sorted = starSort([
+    { name: 'ok', stars: 6, cleared: 3 },
+    { name: '', stars: 'abc', cleared: null },
+    { stars: -8, cleared: -2 },
+  ]);
+  assert.equal(sorted.length, 2, '名前が空の行はまとめて "???" 1件になる');
+  for (const e of sorted) {
+    assert.ok(Number.isFinite(e.stars) && e.stars >= 0);
+    assert.ok(Number.isFinite(e.cleared) && e.cleared >= 0);
+    assert.equal(typeof e.name, 'string');
+  }
+});
+
+test('starRankOf は名前で1始まりの順位を返す。無ければ null', () => {
+  const list = starSort([
+    { name: 'a', stars: 30, cleared: 10 },
+    { name: 'b', stars: 12, cleared: 6 },
+  ]);
+  assert.equal(starRankOf(list, 'b'), 2);
+  assert.equal(starRankOf(list, 'z'), null);
+  // 名前は投稿と同じ整えかたを通ってから照合する
+  assert.equal(starRankOf(list, '  a  '), 1);
 });
 
 // ---------------------------------------------------------------- 進行度の色

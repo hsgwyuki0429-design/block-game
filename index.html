@@ -27,7 +27,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SLIDE POP!">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="stylesheet" href="styles.css?v=4c7f77abd5">
+<link rel="stylesheet" href="styles.css?v=92d4071b7f">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
@@ -52,6 +52,7 @@
         <small id="btn-start-sub">レベル 1</small>
       </button>
       <button class="btn btn-plain" id="btn-open-levels" type="button">レベル一覧</button>
+      <button class="btn btn-plain" id="btn-home-rank" type="button">ランキング</button>
       <!-- インストールできる環境でだけ出す（すでに追加済みなら出さない） -->
       <button class="btn btn-plain btn-install" id="btn-install" type="button" hidden>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.8v10.4"/><path d="m8.2 10.4 3.8 3.8 3.8-3.8"/><path d="M4.8 16.2v2.2a1.8 1.8 0 0 0 1.8 1.8h10.8a1.8 1.8 0 0 0 1.8-1.8v-2.2"/></svg>
@@ -320,6 +321,25 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
     </button>
     <h2 id="rank-title">ランキング</h2>
+
+    <!-- 2つの表を切り替える。星の数は全レベルをまたいだ通算、レベル別はその盤面の手数 -->
+    <div class="rank-tabs" id="rank-tabs" role="tablist" aria-label="ランキングの種類">
+      <button class="rank-tab" type="button" role="tab" data-board="stars" id="tab-rank-stars">星の数</button>
+      <button class="rank-tab" type="button" role="tab" data-board="level" id="tab-rank-level">レベル別</button>
+    </div>
+
+    <!-- レベル別のときだけ出す、どのレベルを見るかの選択 -->
+    <div class="rank-pick" id="rank-pick" hidden>
+      <button class="pager" id="btn-rank-prev" type="button" aria-label="前のレベル">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+      </button>
+      <input class="rank-level" id="rank-level" type="number" min="1" step="1" value="1"
+             inputmode="numeric" enterkeyhint="go" aria-label="見たいレベル">
+      <button class="pager" id="btn-rank-next" type="button" aria-label="次のレベル">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 5.5 6.5 6.5-6.5 6.5"/></svg>
+      </button>
+    </div>
+
     <p class="rank-scope" id="rank-scope">&nbsp;</p>
 
     <div class="rank-list" id="rank-list"></div>
@@ -380,6 +400,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=4c7f77abd5"></script>
+<script defer src="app.js?v=92d4071b7f"></script>
 </body>
 </html>

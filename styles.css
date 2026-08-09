@@ -759,6 +759,66 @@ svg .fill { fill: currentColor; stroke: none; }
 
 /* ============================================================ ランキング */
 
+/* 表の切り替え。カプセル型のセグメント（設定シートの他の並びと同じ作り） */
+.rank-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  margin: -8px 0 14px;
+  border-radius: 999px;
+  background: var(--fill);
+}
+.rank-tab {
+  flex: 1 1 0;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--label-2);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  padding: 9px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.24s var(--ease), color 0.24s var(--ease);
+  -webkit-tap-highlight-color: transparent;
+}
+.rank-tab.on {
+  background: var(--glass-hi);
+  color: var(--label);
+  font-weight: 700;
+  box-shadow: var(--sh-card);
+}
+
+/* どのレベルの表を見るか。一覧のページ送りと同じ形にして、迷わせない */
+.rank-pick {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+.rank-level {
+  width: 108px;
+  text-align: center;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: var(--label);
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--fill);
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+/* 数字の増減矢印は消す。左右の丸ボタンと役目が重なる */
+.rank-level::-webkit-outer-spin-button,
+.rank-level::-webkit-inner-spin-button { appearance: none; -webkit-appearance: none; margin: 0; }
+
 .rank-scope {
   margin: -12px 0 14px;
   font-size: 13px;
@@ -828,6 +888,25 @@ svg .fill { fill: currentColor; stroke: none; }
 .rank-time {
   flex: none;
   min-width: 44px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-3);
+}
+
+/* 星の数の表。数字は星と同じ金色にして、レベル別の「手数」と一目で見分ける */
+.rank-stars {
+  flex: none;
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: var(--gold);
+}
+.rank-cleared {
+  flex: none;
+  min-width: 66px;
   text-align: right;
   font-size: 12px;
   font-weight: 600;
@@ -999,9 +1078,12 @@ svg .fill { fill: currentColor; stroke: none; }
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.28);
+  /* 指で引き下げているあいだ、暗幕も一緒に薄くなる（--sheet-shade は src/sheet.js が動かす） */
+  background: rgba(0, 0, 0, calc(0.28 * var(--sheet-shade, 1)));
   animation: fadeIn 0.26s var(--ease);
 }
+/* 畳み終わりに合わせて暗幕も消す。引いている最中は指に即応させたいので付けない */
+.sheet.closing { transition: background 0.24s var(--ease); }
 
 .sheet-card {
   position: relative;
@@ -1020,12 +1102,23 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 @keyframes sheetUp { from { transform: translateY(100%); } to { transform: none; } }
 
+/* 下へ払って閉じる（src/sheet.js）。
+   引いている最中は指に直結させ、離したときだけアニメーションを掛ける */
+.sheet-card.dragging { animation: none; will-change: transform; }
+.sheet-card.settling { transition: transform 0.42s var(--spring); }
+.sheet-card.dropping { transition: transform 0.24s var(--ease); }
+
 .grabber {
   width: 36px;
   height: 5px;
   border-radius: 99px;
   background: var(--fill-2);
-  margin: 0 auto 12px;
+  /* つまみは細いので、上下に見えない余白を足して掴みやすくする
+     （見えるのは content-box のぶんだけ。余白は指の当たり判定になる） */
+  box-sizing: content-box;
+  padding: 9px 0;
+  background-clip: content-box;
+  margin: -9px auto 3px;
 }
 
 .sheet-close {
