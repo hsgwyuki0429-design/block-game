@@ -208,15 +208,11 @@ if (process.argv.includes('--resume')) {
   for (const file of (await readdir(dir).catch(() => [])).filter((f) => f.endsWith('.jsonl'))) {
     for (const line of (await readFile(resolve(dir, file), 'utf8')).split('\n')) {
       if (!line.trim()) continue;
-      const par = JSON.parse(line).par;
-      have.set(par, (have.get(par) || 0) + 1);
-    }
-  }
-  for (const file of (await readdir(dir).catch(() => [])).filter((f) => f.endsWith('.jsonl'))) {
-    for (const line of (await readFile(resolve(dir, file), 'utf8')).split('\n')) {
-      if (!line.trim()) continue;
-      const sig = goalSignature(JSON.parse(line).code);
-      if (sig) knownGoals.add(sig);
+      const row = JSON.parse(line);
+      have.set(row.par, (have.get(row.par) || 0) + 1);
+      const sig = goalSignature(row.code);
+      if (!sig) continue;
+      knownGoals.add(sig);
     }
   }
   let left = 0;
