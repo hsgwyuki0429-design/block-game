@@ -7,7 +7,15 @@ const PREVIEW_THRESHOLD = 6;
 const COMMIT_THRESHOLD = 26;
 
 /**
- * @param {HTMLCanvasElement} canvas
+ * 盤面の操作を受ける。
+ *
+ * 受け皿はキャンバスとは限らない ―― iPhone では、キャンバスの上に敷いた
+ * 「触覚の膜」（透明なネイティブスイッチ）が受ける。指がその膜に直接触れることで
+ * 手ごたえが返るので、**膜がイベントを受け取ったままでなければならない**
+ * （詳しくは haptics.js）。位置はすべて clientX/Y で扱うので、受け皿が
+ * どちらでも当たり判定は変わらない。
+ *
+ * @param {Element} surface 操作を受ける要素（キャンバス、または触覚の膜）
  * @param {{
  *   canInteract: () => boolean,
  *   toCell: (x:number, y:number) => ({x:number,y:number}|null),
@@ -16,16 +24,20 @@ const COMMIT_THRESHOLD = 26;
  *   onPreview: (pieceId:number, dir:string|null) => void,
  *   onCommit: (pieceId:number, dir:string) => void,
  * }} handlers
+ * @returns {() => void} 付け替えるときに呼ぶ、取り外し
  */
-export function attachInput(canvas, handlers) {
+export function attachInput(surface, handlers) {
+  const canvas = surface;
   let drag = null;
+  const bound = [];
+  const on = (type, fn) => { canvas.addEventListener(type, fn); bound.push([type, fn]); };
 
   const dirOf = (dx, dy) => {
     if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
     return dy > 0 ? 'down' : 'up';
   };
 
-  canvas.addEventListener('pointerdown', (e) => {
+  on('pointerdown', (e) => {
     if (!handlers.canInteract()) return;
     const cell = handlers.toCell(e.clientX, e.clientY);
     const id = cell ? handlers.pieceAt(cell.x, cell.y) : null;
@@ -39,7 +51,7 @@ export function attachInput(canvas, handlers) {
     handlers.onTap(id);
   });
 
-  canvas.addEventListener('pointermove', (e) => {
+  on('pointermove', (e) => {
     if (!drag || drag.done) return;
     const dx = e.clientX - drag.x0;
     const dy = e.clientY - drag.y0;
@@ -72,8 +84,14 @@ export function attachInput(canvas, handlers) {
     drag = null;
   };
 
-  canvas.addEventListener('pointerup', end);
-  canvas.addEventListener('pointercancel', end);
-  canvas.addEventListener('pointerleave', end);
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  on('pointerup', end);
+  on('pointercancel', end);
+  on('pointerleave', end);
+  on('contextmenu', (e) => e.preventDefault());
+
+  return () => {
+    for (const [type, fn] of bound) canvas.removeEventListener(type, fn);
+    bound.length = 0;
+    drag = null;
+  };
 }
