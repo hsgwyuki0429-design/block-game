@@ -716,6 +716,9 @@ export class Game {
     // pointerdown で鳴らすと指の動きと音がずれない。ここが音の解錠地点でもある
     // （ホーム画面のボタンを押した時点で iOS の音が開く）。
     document.addEventListener('pointerdown', (e) => {
+      // 触覚は AudioContext を伴わないので、押した先が何であれ先に起こしておく
+      // （iOS はここで隠しスイッチを用意する。最初の 1 回だけ遅れるのを防ぐ）。
+      this.sound.armHaptics();
       const hit = e.target.closest && e.target.closest('button, .switch');
       if (!hit || hit.disabled) return;
       this.sound.unlock();
@@ -754,6 +757,8 @@ export class Game {
       if (el) {
         el.addEventListener('click', () => {
           this.updateSettingsName();
+          // 開くたびに見直す（ゲームパッドは後から繋がることがある）
+          this.updateHapticsNote();
           this.openModal(d.modalSettings);
         });
       }
@@ -833,8 +838,11 @@ export class Game {
         this.store.settings = this.settings;
         saveStore(this.store);
         if (key === 'sound' && el.checked) { this.sound.unlock(); this.sound.click(); }
+        // 入れた瞬間に一度震わせる。届く端末かどうかが、その場で手で分かる
+        if (key === 'haptics' && el.checked) { this.sound.armHaptics(); this.sound.vibrate([12, 40, 26]); }
       });
     }
+    this.updateHapticsNote();
 
     this.buildMaterialPicker();
 
@@ -1063,6 +1071,18 @@ export class Game {
     this.renderer.setMaterial(this.settings.material);
     this.sound.enabled = this.settings.sound;
     this.sound.haptics = this.settings.haptics;
+  }
+
+  /**
+   * バイブレーションの但し書きを、その端末の実際に合わせて書き換える。
+   * 「対応端末のみ」とだけ書いてあると、鳴らないときに設定を疑い続けることになる。
+   */
+  updateHapticsNote() {
+    const note = this.dom.optHapticsNote;
+    if (!note) return;
+    note.textContent = this.sound.hapticsSupported
+      ? '動かした手ごたえを指に返す'
+      : 'この端末には振動する部品がありません';
   }
 
   /**
