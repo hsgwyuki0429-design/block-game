@@ -18,9 +18,7 @@
 // ここが持つのは「表面」だけ。立体の組み立ては render.js の経路が受け持ち、
 // デザインはその経路に寸法と色を**マスの一辺に対する比**で渡す。
 
-import {
-  hexRgb, rgbHex, rgbHsl, hslRgb, shade, tintTowards,
-} from './color.js';
+import { shade, tintTowards } from './color.js';
 
 // ---------------------------------------------------------------- デザインの定義
 
@@ -52,13 +50,10 @@ const DEFS = [
     shadow: 0,
     /** 進行度の色を混ぜず、そのまま使う（元の見た目がそうだった） */
     rawTint: true,
-    /** 盤面も進行度の色を、ほとんど白まで薄めて追いかける */
-    trayTint: true,
     colors: {
       grey: { top: '#c4c4cb', mid: '#9a9aa2', deep: '#5f5f68', side: '#6e6e78' },
       lit: { top: '#7f97e6', mid: '#3e47cc', deep: '#2a2f8c', side: '#333a9f' },
     },
-    tray: { frame: '#dde2f0', floor: '#dde2f0', well: '#eef1f8' },
   },
   {
     key: 'crystal',
@@ -111,20 +106,6 @@ const DEFS = [
       grey: { top: '#e2e4ea', mid: '#b3b6be', deep: '#70747c', side: '#8c9099' },
       lit: { top: '#d8f2ff', mid: '#6ec8ee', deep: '#175f85', side: '#3d95c4' },
     },
-    /*
-     * 受け皿は、枠を立てずに平らに敷く。
-     * 写真は「白い台の上に置かれたガラス」で、暗い箱に嵌まっているのではない ――
-     * 枠と落ち影を付けると、ガラスが箱の底に沈んで透明感がまるごと消える。
-     *
-     * 色は**青みを持たない、白めの灰色ひと色**。ガラスは無色なので、台が青いと
-     * その青がガラスに映って見え、進行度の色（手数の目盛り）と喧嘩する。
-     *
-     * 空きマスも塗り分けない（well が floor と同じなら描かない）。
-     * 通路は「ガラスが載っていないところ」として読む ―― ガラスは縁が白く光って
-     * いて台とはっきり違うので、空きマスに印を足さなくても輪郭で分かる。
-     * 印を足すと、白い台の上にもう 1 種類の四角が並んで盤面が騒がしくなる。
-     */
-    tray: { frame: '#ebebeb', floor: '#ebebeb', well: '#ebebeb' },
   },
 ];
 
@@ -192,22 +173,3 @@ export function paletteFor(mat, isColored, tintHex) {
   };
 }
 
-/**
- * 盤面（トレイ）の色。
- *
- * クリスタルでは**進行度で動かさない。** 写真のガラスは白い台の上に置かれて
- * いるのが正しい見え方で、台まで色づくとガラスが染まって見える。
- */
-export function trayPaletteFor(mat, tintHex) {
-  /*
-   * 例外はプレーンだけ。焼くものが「角丸の塗り 2 枚」しか無いので、
-   * 色が 1 段動くたびに描き直しても目に見えるほどの間は空かない ――
-   * そのぶん、盤面まで含めて温度が変わる元の見え方が戻ってくる。
-   */
-  if (mat.trayTint && tintHex) {
-    const [h] = rgbHsl(hexRgb(tintHex));
-    const plate = rgbHex(hslRgb(h, 30, 89));
-    return { frame: plate, floor: plate, well: rgbHex(hslRgb(h, 34, 95)), key: `${mat.key}|tray|${tintHex}` };
-  }
-  return { ...mat.tray, key: `${mat.key}|tray` };
-}

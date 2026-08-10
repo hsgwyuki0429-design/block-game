@@ -2274,13 +2274,10 @@ const DEFS = [
     shadow: 0,
     /** 進行度の色を混ぜず、そのまま使う（元の見た目がそうだった） */
     rawTint: true,
-    /** 盤面も進行度の色を、ほとんど白まで薄めて追いかける */
-    trayTint: true,
     colors: {
       grey: { top: '#c4c4cb', mid: '#9a9aa2', deep: '#5f5f68', side: '#6e6e78' },
       lit: { top: '#7f97e6', mid: '#3e47cc', deep: '#2a2f8c', side: '#333a9f' },
     },
-    tray: { frame: '#dde2f0', floor: '#dde2f0', well: '#eef1f8' },
   },
   {
     key: 'crystal',
@@ -2333,20 +2330,6 @@ const DEFS = [
       grey: { top: '#e2e4ea', mid: '#b3b6be', deep: '#70747c', side: '#8c9099' },
       lit: { top: '#d8f2ff', mid: '#6ec8ee', deep: '#175f85', side: '#3d95c4' },
     },
-    /*
-     * 受け皿は、枠を立てずに平らに敷く。
-     * 写真は「白い台の上に置かれたガラス」で、暗い箱に嵌まっているのではない ――
-     * 枠と落ち影を付けると、ガラスが箱の底に沈んで透明感がまるごと消える。
-     *
-     * 色は**青みを持たない、白めの灰色ひと色**。ガラスは無色なので、台が青いと
-     * その青がガラスに映って見え、進行度の色（手数の目盛り）と喧嘩する。
-     *
-     * 空きマスも塗り分けない（well が floor と同じなら描かない）。
-     * 通路は「ガラスが載っていないところ」として読む ―― ガラスは縁が白く光って
-     * いて台とはっきり違うので、空きマスに印を足さなくても輪郭で分かる。
-     * 印を足すと、白い台の上にもう 1 種類の四角が並んで盤面が騒がしくなる。
-     */
-    tray: { frame: '#ebebeb', floor: '#ebebeb', well: '#ebebeb' },
   },
 ];
 
@@ -2412,26 +2395,6 @@ function paletteFor(mat, isColored, tintHex) {
     side: tintTowards(src.side, tintHex, k),
     key: `${mat.key}|${tintHex}`,
   };
-}
-
-/**
- * 盤面（トレイ）の色。
- *
- * クリスタルでは**進行度で動かさない。** 写真のガラスは白い台の上に置かれて
- * いるのが正しい見え方で、台まで色づくとガラスが染まって見える。
- */
-function trayPaletteFor(mat, tintHex) {
-  /*
-   * 例外はプレーンだけ。焼くものが「角丸の塗り 2 枚」しか無いので、
-   * 色が 1 段動くたびに描き直しても目に見えるほどの間は空かない ――
-   * そのぶん、盤面まで含めて温度が変わる元の見え方が戻ってくる。
-   */
-  if (mat.trayTint && tintHex) {
-    const [h] = rgbHsl(hexRgb(tintHex));
-    const plate = rgbHex(hslRgb(h, 30, 89));
-    return { frame: plate, floor: plate, well: rgbHex(hslRgb(h, 34, 95)), key: `${mat.key}|tray|${tintHex}` };
-  }
-  return { ...mat.tray, key: `${mat.key}|tray` };
 }
 
 // ===== src/photoArt.js =====
@@ -2893,7 +2856,6 @@ class Renderer {
     this.tint = progressColor(q);
     this.stonePal = paletteFor(this.material, false, null);
     this.litPal = paletteFor(this.material, true, this.tint.base);
-    this.trayPal = trayPaletteFor(this.material, this.tint.base);
   }
 
   /**
@@ -3141,7 +3103,20 @@ class Renderer {
     ctx.save();
     ctx.translate(sx, sy);
 
-    this.drawTray(view.board);
+    /*
+     * 受け皿は描かない。
+     *
+     * 昔はここに「盤面」という面を敷いていた ―― 枠を立て、床を落とし、空きマスを
+     * 一段深い窪みにして、ブロックが箱に収まっているように見せていた。だが
+     * **その面は、遊ぶのに何ひとつ足していなかった**。どこがマスかはブロックの
+     * 並びで分かるし、通路は「ブロックが載っていないところ」として読める。
+     * 面が 1 枚増えたぶん、背景・受け皿・ブロックと明るさの段が 3 つになり、
+     * ブロックの輪郭がいちばん強い境目でなくなっていた。
+     *
+     * いまはキャンバスを透かして、そのまま背景（.game-aura）を見せている。
+     * 盤面のあたりは背景と**まったく同じ色**で、境目は 1 本も無い ――
+     * 画面にある明るさの段は「背景」と「ブロック」の 2 つだけになる。
+     */
     this.drawPieces(view);
     if (view.selected != null && !view.ghost && !view.anim) {
       this.drawMoveHints(view.board, view.selected);
@@ -3154,86 +3129,6 @@ class Renderer {
     this.drawParticles(dt);
     this.drawStamps(dt);
 
-    ctx.restore();
-  }
-
-  /**
-   * 盤面（トレイ）。
-   *
-   * ブロックと同じ寸法・同じすき間の淡いマスを敷き詰めただけの面で、影も枠も無い。
-   * 上半分だけを 1px の白い線でなぞる ―― ガラス板の縁が光を拾ったときの 1 本で、
-   * これだけで面が「浮いている」ように見える。
-   *
-   * **焼かずに毎フレーム直に描く。** プレーンは盤面の色も進行度を追いかけるので、
-   * 焼くと色が 1 段動くたびに盤面ぶんのキャンバスを作り直すことになり、
-   * 大きな盤面で 1 手ごとに 55ms 止まった。中身は角丸の塗り 2 枚しか無い。
-   *
-   * 枠を立てて影を落とす受け皿も持っていたが、写真のクリスタルはそれでは
-   * 成り立たない ―― ガラスが暗い箱の底に沈んで、透明感がまるごと消える。
-   * 写真は「白い台の上に置かれたガラス」で、いま残っている 2 つのデザインは
-   * どちらもこの平らな台に載っている。
-   */
-  drawTray(board) {
-    const ctx = this.ctx;
-    const pal = this.trayPal;
-    const x0 = this.ox;
-    const y0 = this.oy;
-    const w = this.cell * this.size;
-    const n = this.size;
-    const cell = this.cell;
-    const pad = Math.max(2, cell * 0.06);
-    const radius = Math.max(6, cell * 0.24);
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
-    ctx.fillStyle = pal.floor;
-    ctx.fill();
-    ctx.clip();
-    /*
-     * 縁の光は上半分だけ。**短い矩形をなぞるのではなく、消えていく線でなぞる** ――
-     * 短い矩形だと下辺がそのまま残り、盤面の真ん中に横線が 1 本走る（走っていた）。
-     */
-    const rim = ctx.createLinearGradient(0, y0 - pad, 0, y0 - pad + (w + pad * 2) * 0.55);
-    rim.addColorStop(0, 'rgba(255,255,255,.85)');
-    rim.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.strokeStyle = rim;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(x0 - pad + 0.5, y0 - pad + 0.5, w + pad * 2 - 1, w + pad * 2 - 1, radius);
-    ctx.stroke();
-    ctx.restore();
-
-    /*
-     * 空きマス。
-     *
-     * **盤面と同じ色なら、そもそも描かない。** クリスタルは台をひと色にして
-     * あるので、ここで四角を敷くと「もう 1 種類のブロック」が並んでいるように
-     * 見えてしまう。通路は、ガラスが載っていないところとして読めばいい。
-     */
-    if (pal.well === pal.floor) return;
-    const gap = this.tileGap;
-    const size = this.tileSize;
-    const tr = this.tileRadius;
-    // 角の落とし方はブロックと揃える。空きマスは「ブロックが抜けた跡」なので、
-    // 丸と八角が混ざると盤面が 2 種類の形でできているように見える
-    const cut = this.chamferFor(size, size, 1, 1);
-    ctx.save();
-    ctx.fillStyle = pal.well;
-    ctx.beginPath();
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        if (board && board.at(x, y) !== -1) continue;
-        const px = x0 + x * cell + gap;
-        const py = y0 + y * cell + gap;
-        if (cut) {
-          chamferRect(ctx, {
-            px, py, pw: size, ph: size, up: false, down: false, left: false, right: false,
-          }, cut);
-        } else ctx.roundRect(px, py, size, size, tr);
-      }
-    }
-    ctx.fill();
     ctx.restore();
   }
 
@@ -5515,8 +5410,8 @@ class Game {
     this.bestStep = 0;
     this.bestGap = Infinity;
     this.progress = 0;
-    /** 背景の光にいま塗ってある進行度（毎フレーム塗り直さないための控え） */
-    this.paintedRise = NaN; // 背景に最後に書き込んだ水位
+    /** 背景にいま書き込んである「水位と色」（毎フレーム塗り直さないための控え） */
+    this.paintedAura = '';
     /** 直前に動かしたブロック。スタンプを貼る場所になる */
     this.lastMovedId = null;
 
@@ -7058,14 +6953,22 @@ class Game {
      * 動いているのは水位（auraRise）なので、満ちきるまでは毎フレーム入れ直す ――
      * 満ちきったあとは何も変わらないので触らない。
      */
-    const rise = this.renderer.auraRise();
-    if (rise !== this.paintedRise) {
-      this.paintedRise = rise;
+    const rise = this.renderer.auraRise().toFixed(1);
+    const tint = this.renderer.auraColor(0.26);
+    const prev = this.renderer.auraPrevColor(0.26);
+    /*
+     * 見張るのは**水位と色の両方**。
+     * 水位だけを見ていると、レベルを跨いだときのように満ちきったまま色だけが
+     * 変わる場合に一度も書き込まれず、前のレベルの色が残る（残っていた）。
+     */
+    const painted = `${rise}|${tint}|${prev}`;
+    if (painted !== this.paintedAura) {
+      this.paintedAura = painted;
       try {
         const style = document.documentElement.style;
-        style.setProperty('--game-tint', this.renderer.auraColor(0.26));
-        style.setProperty('--game-prev', this.renderer.auraPrevColor(0.26));
-        style.setProperty('--game-rise', `${rise.toFixed(1)}%`);
+        style.setProperty('--game-tint', tint);
+        style.setProperty('--game-prev', prev);
+        style.setProperty('--game-rise', `${rise}%`);
       } catch { /* 触れない環境では背景が白いだけ */ }
     }
 

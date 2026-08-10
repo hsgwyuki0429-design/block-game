@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MATERIAL_KEYS, DEFAULT_MATERIAL, materialFor, materialList,
-  paletteFor, trayPaletteFor,
+  paletteFor,
 } from '../src/materials.js';
 import { luma, hexRgb } from '../src/color.js';
 import { progressColor } from '../src/render.js';
@@ -56,9 +56,23 @@ test('どのデザインも、描くのに要る寸法をすべて持ってい�
         assert.match(m.colors[kind][slot], HEX, `${key}.${kind}.${slot} が色でない`);
       }
     }
-    for (const slot of ['frame', 'floor', 'well']) {
-      assert.match(m.tray[slot], HEX, `${key}.tray.${slot} が色でない`);
-    }
+  }
+});
+
+/*
+ * 受け皿（盤面という 1 枚の面）は廃した。
+ *
+ * 昔は枠を立て、床を落とし、空きマスを窪みにしていたが、その面は遊ぶのに
+ * 何ひとつ足していなかった ―― どこがマスかはブロックの並びで分かるし、通路は
+ * 「ブロックが載っていないところ」として読める。面が 1 枚あるぶん、背景・受け皿・
+ * ブロックと明るさの段が 3 つになり、ブロックの輪郭がいちばん強い境目でなくなる。
+ * いまはキャンバスを透かして、盤面のあたりも背景とまったく同じ色にしてある。
+ */
+test('どのデザインも受け皿を持たない（盤面という面そのものを廃した）', () => {
+  for (const key of MATERIAL_KEYS) {
+    const m = materialFor(key);
+    assert.equal(m.tray, undefined, `${key} に受け皿の色が残っている`);
+    assert.equal(m.trayTint, undefined, `${key} に受け皿の色づけが残っている`);
   }
 });
 
@@ -104,39 +118,3 @@ test('平らなデザインは進行度の色をそのまま着る（明るさ�
   }
 });
 
-test('平らなデザインだけ、盤面も進行度の色を追いかける', () => {
-  const plain = materialFor('plain');
-  const crystal = materialFor('crystal');
-  const a = trayPaletteFor(plain, progressColor(0).base);
-  const b = trayPaletteFor(plain, progressColor(1).base);
-  assert.notEqual(a.floor, b.floor, 'プレーンの盤面が進行度で動いていない');
-  // 盤面は「ほとんど白」でなければならない。濃いと色つきブロックと紛れる
-  for (const p of [a, b]) assert.ok(luma(p.floor) > 200, `盤面が濃すぎる（${p.floor}）`);
-  /*
-   * 写真のクリスタルは据え置き。白い台の上に置かれたガラス、という関係が
-   * 写真そのものなので、台まで色づくとガラスが染まって見える。
-   */
-  assert.equal(
-    trayPaletteFor(crystal, progressColor(0).base).floor,
-    trayPaletteFor(crystal, progressColor(1).base).floor,
-  );
-  assert.equal(trayPaletteFor(crystal).key, 'crystal|tray');
-});
-
-test('盤面とブロックの明るさがはっきり離れている（輪郭が読める）', () => {
-  for (const key of MATERIAL_KEYS) {
-    const m = materialFor(key);
-    if (m.flat) continue; // プレーンの盤面は進行度で動くので、ここでは測らない
-    const tray = luma(m.tray.floor);
-    for (const kind of ['grey', 'lit']) {
-      const block = luma(m.colors[kind].mid);
-      /*
-       * どちらが明るいかは問わない。写真のクリスタルは白い盤面に透明なガラスが
-       * 置いてある関係で、削り出しの素材とは明暗が逆向きになる。
-       * 要るのは差そのもので、向きではない。
-       */
-      assert.ok(Math.abs(block - tray) > 40,
-        `${key}: ${kind} ブロック（${block.toFixed(0)}）と盤面（${tray.toFixed(0)}）の差が小さい`);
-    }
-  }
-});

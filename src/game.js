@@ -164,8 +164,8 @@ export class Game {
     this.bestStep = 0;
     this.bestGap = Infinity;
     this.progress = 0;
-    /** 背景の光にいま塗ってある進行度（毎フレーム塗り直さないための控え） */
-    this.paintedRise = NaN; // 背景に最後に書き込んだ水位
+    /** 背景にいま書き込んである「水位と色」（毎フレーム塗り直さないための控え） */
+    this.paintedAura = '';
     /** 直前に動かしたブロック。スタンプを貼る場所になる */
     this.lastMovedId = null;
 
@@ -1707,14 +1707,22 @@ export class Game {
      * 動いているのは水位（auraRise）なので、満ちきるまでは毎フレーム入れ直す ――
      * 満ちきったあとは何も変わらないので触らない。
      */
-    const rise = this.renderer.auraRise();
-    if (rise !== this.paintedRise) {
-      this.paintedRise = rise;
+    const rise = this.renderer.auraRise().toFixed(1);
+    const tint = this.renderer.auraColor(0.26);
+    const prev = this.renderer.auraPrevColor(0.26);
+    /*
+     * 見張るのは**水位と色の両方**。
+     * 水位だけを見ていると、レベルを跨いだときのように満ちきったまま色だけが
+     * 変わる場合に一度も書き込まれず、前のレベルの色が残る（残っていた）。
+     */
+    const painted = `${rise}|${tint}|${prev}`;
+    if (painted !== this.paintedAura) {
+      this.paintedAura = painted;
       try {
         const style = document.documentElement.style;
-        style.setProperty('--game-tint', this.renderer.auraColor(0.26));
-        style.setProperty('--game-prev', this.renderer.auraPrevColor(0.26));
-        style.setProperty('--game-rise', `${rise.toFixed(1)}%`);
+        style.setProperty('--game-tint', tint);
+        style.setProperty('--game-prev', prev);
+        style.setProperty('--game-rise', `${rise}%`);
       } catch { /* 触れない環境では背景が白いだけ */ }
     }
 

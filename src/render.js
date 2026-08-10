@@ -11,7 +11,7 @@
 
 import { DIRS, DIR_KEYS } from './shapes.js';
 import { mix, shade, hexRgb, rgba, tintTowards } from './color.js';
-import { materialFor, DEFAULT_MATERIAL, paletteFor, trayPaletteFor } from './materials.js';
+import { materialFor, DEFAULT_MATERIAL, paletteFor } from './materials.js';
 import { loadPhotos, photoFor, PHOTO_UNIT } from './photoArt.js';
 
 /** オフスクリーンのキャンバス。OffscreenCanvas が無い環境でも動くようにする */
@@ -372,7 +372,6 @@ export class Renderer {
     this.tint = progressColor(q);
     this.stonePal = paletteFor(this.material, false, null);
     this.litPal = paletteFor(this.material, true, this.tint.base);
-    this.trayPal = trayPaletteFor(this.material, this.tint.base);
   }
 
   /**
@@ -620,7 +619,20 @@ export class Renderer {
     ctx.save();
     ctx.translate(sx, sy);
 
-    this.drawTray(view.board);
+    /*
+     * 受け皿は描かない。
+     *
+     * 昔はここに「盤面」という面を敷いていた ―― 枠を立て、床を落とし、空きマスを
+     * 一段深い窪みにして、ブロックが箱に収まっているように見せていた。だが
+     * **その面は、遊ぶのに何ひとつ足していなかった**。どこがマスかはブロックの
+     * 並びで分かるし、通路は「ブロックが載っていないところ」として読める。
+     * 面が 1 枚増えたぶん、背景・受け皿・ブロックと明るさの段が 3 つになり、
+     * ブロックの輪郭がいちばん強い境目でなくなっていた。
+     *
+     * いまはキャンバスを透かして、そのまま背景（.game-aura）を見せている。
+     * 盤面のあたりは背景と**まったく同じ色**で、境目は 1 本も無い ――
+     * 画面にある明るさの段は「背景」と「ブロック」の 2 つだけになる。
+     */
     this.drawPieces(view);
     if (view.selected != null && !view.ghost && !view.anim) {
       this.drawMoveHints(view.board, view.selected);
@@ -633,86 +645,6 @@ export class Renderer {
     this.drawParticles(dt);
     this.drawStamps(dt);
 
-    ctx.restore();
-  }
-
-  /**
-   * 盤面（トレイ）。
-   *
-   * ブロックと同じ寸法・同じすき間の淡いマスを敷き詰めただけの面で、影も枠も無い。
-   * 上半分だけを 1px の白い線でなぞる ―― ガラス板の縁が光を拾ったときの 1 本で、
-   * これだけで面が「浮いている」ように見える。
-   *
-   * **焼かずに毎フレーム直に描く。** プレーンは盤面の色も進行度を追いかけるので、
-   * 焼くと色が 1 段動くたびに盤面ぶんのキャンバスを作り直すことになり、
-   * 大きな盤面で 1 手ごとに 55ms 止まった。中身は角丸の塗り 2 枚しか無い。
-   *
-   * 枠を立てて影を落とす受け皿も持っていたが、写真のクリスタルはそれでは
-   * 成り立たない ―― ガラスが暗い箱の底に沈んで、透明感がまるごと消える。
-   * 写真は「白い台の上に置かれたガラス」で、いま残っている 2 つのデザインは
-   * どちらもこの平らな台に載っている。
-   */
-  drawTray(board) {
-    const ctx = this.ctx;
-    const pal = this.trayPal;
-    const x0 = this.ox;
-    const y0 = this.oy;
-    const w = this.cell * this.size;
-    const n = this.size;
-    const cell = this.cell;
-    const pad = Math.max(2, cell * 0.06);
-    const radius = Math.max(6, cell * 0.24);
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(x0 - pad, y0 - pad, w + pad * 2, w + pad * 2, radius);
-    ctx.fillStyle = pal.floor;
-    ctx.fill();
-    ctx.clip();
-    /*
-     * 縁の光は上半分だけ。**短い矩形をなぞるのではなく、消えていく線でなぞる** ――
-     * 短い矩形だと下辺がそのまま残り、盤面の真ん中に横線が 1 本走る（走っていた）。
-     */
-    const rim = ctx.createLinearGradient(0, y0 - pad, 0, y0 - pad + (w + pad * 2) * 0.55);
-    rim.addColorStop(0, 'rgba(255,255,255,.85)');
-    rim.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.strokeStyle = rim;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(x0 - pad + 0.5, y0 - pad + 0.5, w + pad * 2 - 1, w + pad * 2 - 1, radius);
-    ctx.stroke();
-    ctx.restore();
-
-    /*
-     * 空きマス。
-     *
-     * **盤面と同じ色なら、そもそも描かない。** クリスタルは台をひと色にして
-     * あるので、ここで四角を敷くと「もう 1 種類のブロック」が並んでいるように
-     * 見えてしまう。通路は、ガラスが載っていないところとして読めばいい。
-     */
-    if (pal.well === pal.floor) return;
-    const gap = this.tileGap;
-    const size = this.tileSize;
-    const tr = this.tileRadius;
-    // 角の落とし方はブロックと揃える。空きマスは「ブロックが抜けた跡」なので、
-    // 丸と八角が混ざると盤面が 2 種類の形でできているように見える
-    const cut = this.chamferFor(size, size, 1, 1);
-    ctx.save();
-    ctx.fillStyle = pal.well;
-    ctx.beginPath();
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        if (board && board.at(x, y) !== -1) continue;
-        const px = x0 + x * cell + gap;
-        const py = y0 + y * cell + gap;
-        if (cut) {
-          chamferRect(ctx, {
-            px, py, pw: size, ph: size, up: false, down: false, left: false, right: false,
-          }, cut);
-        } else ctx.roundRect(px, py, size, size, tr);
-      }
-    }
-    ctx.fill();
     ctx.restore();
   }
 
