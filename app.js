@@ -4006,13 +4006,12 @@ function attachInput(canvas, handlers) {
 //   ① Vibration API   navigator.vibrate。Android の Chrome / Firefox / Samsung など。
 //                     [振動, 休み, 振動, ...] のパターンをそのまま渡せる唯一の道。
 //
-//   ② iOS の隠しスイッチ
-//                     iOS には navigator.vibrate が無い（Safari も、ホーム画面に
-//                     追加した PWA も）。ただし iOS 17.4 以降の WebKit は
-//                     <input type="checkbox" switch> を切り替えるとシステムの
-//                     触覚を返す。画面外に置いた 1 枚のスイッチをその発生源として
-//                     借りる。強さと長さは選べないので、パターンは
-//                     「叩く回数と間隔」に翻訳する（toTaps）。
+//   ② ボタンの触覚（iOS）
+//                     iOS には navigator.vibrate が無く、iOS 26.5 以降は script から
+//                     触覚を起こす道も塞がれている。実機で確かめた結論は 1 つ ――
+//                     **指が直接スイッチに触れている操作だけが鳴る。**
+//                     なのでボタンの中に透明なスイッチを 1 枚敷き、指がそれを
+//                     踏むことで鳴らす。詳しくは createTapVeil() のコメント。
 //
 //   ③ ゲームパッド    PC にコントローラが繋がっているとき。vibrationActuator に
 //                     dual-rumble を流す。手元にモーターがあるならそこで鳴らす。
@@ -4026,11 +4025,8 @@ function attachInput(canvas, handlers) {
  */
 const MIN_PULSE_MS = 12;
 
-/** iOS のスイッチを連打するときの最短間隔。これより詰めると 1 回に潰れる */
-const TAP_GAP_MS = 34;
-
-/** 1 パターンで叩く上限。長い振動を刻みすぎると「連打」に化ける */
-const MAX_TAPS = 6;
+/** ボタンに敷く膜に付ける class。位置決めは styles.css の側に置いてある */
+const VEIL_CLASS = 'haptic-tap';
 
 /** 数値 1 つでも配列でも受け取り、[振動, 休み, 振動, ...] の ms 配列にそろえる */
 function toSegments(pattern) {
@@ -4049,28 +4045,6 @@ function withMinPulse(segments) {
   return segments.map((ms, i) => (i % 2 === 0 && ms > 0 ? Math.max(ms, MIN_PULSE_MS) : ms));
 }
 
-/**
- * パターンを「叩く時刻（ms）」の列に変換する。
- *
- * iOS のスイッチは長さを選べない一撃しか出せないので、長い振動は等間隔の
- * 連打で代える。land() の [8, 24, 44]（前触れ → 間 → 重い本体）なら
- * 「1 発 → 間 → 2 発」になり、耳から入る形と崩れない。
- */
-function toTaps(segments) {
-  const taps = [];
-  let t = 0;
-  for (let i = 0; i < segments.length; i++) {
-    const ms = segments[i];
-    if (i % 2 === 1) { t += ms; continue; } // 休み
-    if (ms <= 0) continue;
-    taps.push(t);
-    // 長い振動は等間隔で刻んで「続いている」ことを伝える
-    for (let at = TAP_GAP_MS; at + TAP_GAP_MS * 0.5 <= ms; at += TAP_GAP_MS) taps.push(t + at);
-    t += ms;
-  }
-  return taps.slice(0, MAX_TAPS);
-}
-
 class Haptics {
   /**
    * @param {{navigator?: object, document?: object, setTimeout?: Function,
@@ -4085,7 +4059,6 @@ class Haptics {
     this.clearTimer = env.clearTimeout || ((id) => clearTimeout(id));
 
     this.enabled = true;
-    this.switchEl = null;   // iOS の隠しスイッチ（arm() で作る）
     this.timers = [];       // 予約済みの叩き
     this.watching = false;  // 画面を離れたときの後始末を仕掛けたか
   }
@@ -4124,25 +4097,25 @@ class Haptics {
 
   /** この端末で震えられるか。設定画面の但し書きに使う */
   get supported() {
-    return this.hasVibrationApi || this.hasSwitchHaptics || this.gamepads().length > 0;
+    return this.mode !== 'none';
   }
 
-  /** 使っている手段の名前（'vibration' / 'ios-switch' / 'gamepad' / 'none'） */
-  get backend() {
+  /**
+   * どの道で震わせるか。
+   * 'vibration'（鳴らしたい瞬間に鳴らせる）／'ios-taps'（ボタンを押した指にだけ返せる）
+   * ／'gamepad'／'none'
+   */
+  get mode() {
     if (this.hasVibrationApi) return 'vibration';
-    if (this.hasSwitchHaptics) return 'ios-switch';
+    if (this.hasSwitchHaptics) return 'ios-taps';
     if (this.gamepads().length > 0) return 'gamepad';
     return 'none';
   }
 
   // ------------------------------------------------------------ 準備
 
-  /**
-   * 最初のユーザー操作で呼ぶ。iOS のスイッチをこの時点で作っておく
-   * （最初の 1 回だけ生成が挟まると、その振動が一拍遅れて指とずれる）。
-   */
+  /** 最初のユーザー操作で呼ぶ */
   arm() {
-    this.ensureSwitch();
     this.watchVisibility();
   }
 
@@ -4158,38 +4131,63 @@ class Haptics {
     });
   }
 
+  // ------------------------------------------------- ボタンの触覚（iOS）
+
+  /** この端末は「指に踏ませる」側か（＝ script からは鳴らせないが、指になら鳴らせる） */
+  needsTapVeil() {
+    return this.enabled && !this.hasVibrationApi && this.hasSwitchHaptics;
+  }
+
   /**
-   * iOS の触覚を借りるための隠しスイッチ。
+   * ボタンの中に敷く、透明な触覚の膜を 1 枚こしらえる。
    *
-   * display:none で隠すと描画されず触覚も返らないことがあるので、
-   * 「描画はされるが見えず触れもしない」置き方にする。
+   * 中身は**本物の** <input type="checkbox" switch>。iOS 26.5 以降、触覚が鳴るのは
+   * 「指が直接スイッチに触れたとき」だけなので、ボタンの面をこれで覆って、
+   * 押した指自身に鳴らしてもらう。
+   *
+   * ボタンを壊さないために、置き方には理由がある:
+   *
+   *   ・**ボタンの子**として入れる。膜をタップしても click はボタンまで
+   *     バブリングするので、ボタンの動作はそのまま生きる（転送は要らない）。
+   *   ・inset: 0 の絶対配置。ボタン側は position: relative になるだけで、
+   *     並びも大きさも変わらない。
+   *   ・:active はボタン側にも掛かる（CSS の :active は祖先にも一致する）ので、
+   *     押した見た目も失われない。
+   *   ・disabled のボタンでは CSS で pointer-events を切る。押せないボタンが
+   *     手ごたえだけ返すことのないように。
+   *
+   * **盤面には敷かない。** 以前これを盤面に敷いたところ、実機の WebKit では
+   * スイッチ自身がタッチを掴んでしまい、ブロックを動かせなくなった。
+   * ドラッグを伴う面には決して置かないこと。
+   *
+   * CSS で appearance を潰してもいけない。ネイティブのスイッチでなくなった
+   * 時点で触覚も消える（透明なので見た目は変わらず、気付けない）。
+   *
+   * @returns {Element|null}
    */
-  ensureSwitch() {
-    if (this.switchEl || !this.hasSwitchHaptics) return this.switchEl;
-    const doc = this.doc;
-    if (!doc || !doc.body || typeof doc.createElement !== 'function') return null;
+  createTapVeil() {
+    if (!this.doc || typeof this.doc.createElement !== 'function') return null;
     try {
-      const label = doc.createElement('label');
-      label.setAttribute('aria-hidden', 'true');
-      label.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;'
-        + 'opacity:0;pointer-events:none;z-index:-1;overflow:hidden;';
-      const input = doc.createElement('input');
-      input.type = 'checkbox';
-      input.setAttribute('switch', '');
-      input.tabIndex = -1;
-      label.appendChild(input);
-      doc.body.appendChild(label);
-      this.switchEl = label;
+      const el = this.doc.createElement('input');
+      el.type = 'checkbox';
+      el.setAttribute('switch', '');
+      el.className = VEIL_CLASS;
+      el.tabIndex = -1;
+      el.setAttribute('aria-hidden', 'true');
+      return el;
     } catch {
-      this.switchEl = null;
+      return null;
     }
-    return this.switchEl;
   }
 
   // ------------------------------------------------------------ 鳴らす
 
   /**
    * 振動する。
+   *
+   * iOS では**何もしない** ―― script から鳴らす道が閉じているため。
+   * その端末では createTapVeil() で敷いた膜が、ボタンを押した指から鳴らす。
+   *
    * @param {number|number[]} pattern ms、または [振動, 休み, 振動, ...]
    * @returns {boolean} どれかの手段に届いたか
    */
@@ -4205,31 +4203,9 @@ class Haptics {
       try {
         fired = this.nav.vibrate(withMinPulse(segments)) !== false;
       } catch { /* 端末が拒んだら黙って次へ */ }
-    } else if (this.playTaps(segments)) {
-      fired = true;
     }
     if (this.playGamepad(segments)) fired = true;
     return fired;
-  }
-
-  /** iOS：隠しスイッチを予定どおりに叩く */
-  playTaps(segments) {
-    const label = this.ensureSwitch();
-    if (!label) return false;
-    const taps = toTaps(segments);
-    if (!taps.length) return false;
-    for (const at of taps) {
-      if (at <= 0) this.tap();
-      else this.timers.push(this.setTimer(() => this.tap(), at));
-    }
-    return true;
-  }
-
-  /** スイッチを 1 回切り替える。切り替わること自体が触覚の合図になる */
-  tap() {
-    const label = this.switchEl;
-    if (!label) return;
-    try { label.click(); } catch { /* 失敗しても遊びは止めない */ }
   }
 
   /**
@@ -4359,6 +4335,15 @@ class Sound {
 
   /** この端末に震える部品があるか（設定画面の但し書きに使う） */
   get hapticsSupported() { return this.hap.supported; }
+
+  /** どの道で震わせるか（'vibration' / 'ios-taps' / 'gamepad' / 'none'） */
+  get hapticsMode() { return this.hap.mode; }
+
+  /** iPhone のように「ボタンを押した指にだけ返せる」端末か */
+  needsHapticTaps() { return this.hap.needsTapVeil(); }
+
+  /** ボタンの中に敷く触覚の膜を 1 枚作る（詳しくは haptics.js） */
+  createHapticTapVeil() { return this.hap.createTapVeil(); }
 
   /**
    * サウンドの入切。切ったら「画面収録用の無音ループ」も止める
@@ -5359,6 +5344,17 @@ const DEFAULT_SETTINGS = {
 
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
+
+/**
+ * 触覚の膜を敷くボタン（iPhone だけ）。
+ *
+ * **盤面（#board）は入っていない。** ドラッグを伴う面にネイティブのスイッチを
+ * 置くと、実機の WebKit ではスイッチ自身がタッチを掴み、ブロックが動かせなくなる。
+ * 押すだけのボタンに限る。
+ */
+const HAPTIC_TAP_TARGETS = '.dock-item, .dock-circle, .circle-btn, .btn, .pager, .link-btn';
+const HAPTIC_TAP_CLASS = 'haptic-tap';
+const HAPTIC_HOST_CLASS = 'has-haptic-tap';
 
 /** レベル一覧・ホームに出す、遊ぶ前のプレビュー文 */
 function levelPreview(level) {
@@ -6382,6 +6378,39 @@ class Game {
     this.renderer.setMaterial(this.settings.material);
     this.sound.enabled = this.settings.sound;
     this.sound.haptics = this.settings.haptics;
+    this.mountHapticTaps();
+    this.updateHapticsNote();
+  }
+
+  /**
+   * iPhone のボタンに、触覚の膜を敷く／外す。
+   *
+   * iOS は script から触覚を出せないので、押した指自身に鳴らしてもらうしかない
+   * （詳しくは haptics.js）。膜はボタンの**子**として入れるので、タップした
+   * click はボタンまでバブリングし、ボタンの動作はそのまま生きる。
+   *
+   * **盤面には敷かない。** ドラッグを伴う面にネイティブのスイッチを置くと、
+   * 実機の WebKit ではスイッチ自身がタッチを掴み、ブロックが動かせなくなる。
+   */
+  mountHapticTaps() {
+    const doc = typeof document !== 'undefined' ? document : null;
+    if (!doc) return;
+    const want = this.settings.haptics && this.sound.needsHapticTaps();
+
+    for (const el of doc.querySelectorAll(`.${HAPTIC_TAP_CLASS}`)) el.remove();
+    if (!want) {
+      for (const b of doc.querySelectorAll(`.${HAPTIC_HOST_CLASS}`)) {
+        b.classList.remove(HAPTIC_HOST_CLASS);
+      }
+      return;
+    }
+
+    for (const button of doc.querySelectorAll(HAPTIC_TAP_TARGETS)) {
+      const veil = this.sound.createHapticTapVeil();
+      if (!veil) return;
+      button.classList.add(HAPTIC_HOST_CLASS);
+      button.appendChild(veil);
+    }
   }
 
   /**
@@ -6391,9 +6420,15 @@ class Game {
   updateHapticsNote() {
     const note = this.dom.optHapticsNote;
     if (!note) return;
-    note.textContent = this.sound.hapticsSupported
-      ? '動かした手ごたえを指に返す'
-      : 'この端末には振動する部品がありません';
+    const NOTES = {
+      vibration: '動かした手ごたえを指に返す',
+      // iPhone は指がスイッチに直接触れたときしか鳴らせない。できないことを
+      // 「対応端末のみ」と濁さずに書く（詳しくは haptics.js）
+      'ios-taps': 'iPhone ではボタンを押したときだけ',
+      gamepad: 'つないだコントローラを震わせる',
+      none: 'この端末には振動する部品がありません',
+    };
+    note.textContent = NOTES[this.sound.hapticsMode] || NOTES.none;
   }
 
   /**

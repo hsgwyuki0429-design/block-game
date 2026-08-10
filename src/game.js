@@ -49,6 +49,17 @@ const DEFAULT_SETTINGS = {
 /** レベル一覧の1ページに並べる数 */
 const PAGE_SIZE = 30;
 
+/**
+ * 触覚の膜を敷くボタン（iPhone だけ）。
+ *
+ * **盤面（#board）は入っていない。** ドラッグを伴う面にネイティブのスイッチを
+ * 置くと、実機の WebKit ではスイッチ自身がタッチを掴み、ブロックが動かせなくなる。
+ * 押すだけのボタンに限る。
+ */
+const HAPTIC_TAP_TARGETS = '.dock-item, .dock-circle, .circle-btn, .btn, .pager, .link-btn';
+const HAPTIC_TAP_CLASS = 'haptic-tap';
+const HAPTIC_HOST_CLASS = 'has-haptic-tap';
+
 /** レベル一覧・ホームに出す、遊ぶ前のプレビュー文 */
 export function levelPreview(level) {
   return levelSummary(levelConfig(level));
@@ -1071,6 +1082,39 @@ export class Game {
     this.renderer.setMaterial(this.settings.material);
     this.sound.enabled = this.settings.sound;
     this.sound.haptics = this.settings.haptics;
+    this.mountHapticTaps();
+    this.updateHapticsNote();
+  }
+
+  /**
+   * iPhone のボタンに、触覚の膜を敷く／外す。
+   *
+   * iOS は script から触覚を出せないので、押した指自身に鳴らしてもらうしかない
+   * （詳しくは haptics.js）。膜はボタンの**子**として入れるので、タップした
+   * click はボタンまでバブリングし、ボタンの動作はそのまま生きる。
+   *
+   * **盤面には敷かない。** ドラッグを伴う面にネイティブのスイッチを置くと、
+   * 実機の WebKit ではスイッチ自身がタッチを掴み、ブロックが動かせなくなる。
+   */
+  mountHapticTaps() {
+    const doc = typeof document !== 'undefined' ? document : null;
+    if (!doc) return;
+    const want = this.settings.haptics && this.sound.needsHapticTaps();
+
+    for (const el of doc.querySelectorAll(`.${HAPTIC_TAP_CLASS}`)) el.remove();
+    if (!want) {
+      for (const b of doc.querySelectorAll(`.${HAPTIC_HOST_CLASS}`)) {
+        b.classList.remove(HAPTIC_HOST_CLASS);
+      }
+      return;
+    }
+
+    for (const button of doc.querySelectorAll(HAPTIC_TAP_TARGETS)) {
+      const veil = this.sound.createHapticTapVeil();
+      if (!veil) return;
+      button.classList.add(HAPTIC_HOST_CLASS);
+      button.appendChild(veil);
+    }
   }
 
   /**
@@ -1080,9 +1124,15 @@ export class Game {
   updateHapticsNote() {
     const note = this.dom.optHapticsNote;
     if (!note) return;
-    note.textContent = this.sound.hapticsSupported
-      ? '動かした手ごたえを指に返す'
-      : 'この端末には振動する部品がありません';
+    const NOTES = {
+      vibration: '動かした手ごたえを指に返す',
+      // iPhone は指がスイッチに直接触れたときしか鳴らせない。できないことを
+      // 「対応端末のみ」と濁さずに書く（詳しくは haptics.js）
+      'ios-taps': 'iPhone ではボタンを押したときだけ',
+      gamepad: 'つないだコントローラを震わせる',
+      none: 'この端末には振動する部品がありません',
+    };
+    note.textContent = NOTES[this.sound.hapticsMode] || NOTES.none;
   }
 
   /**
