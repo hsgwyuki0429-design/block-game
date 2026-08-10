@@ -620,7 +620,7 @@ export class Renderer {
     ctx.translate(sx, sy);
 
     /*
-     * 受け皿は描かない。
+     * 受け皿は描かない。**残っているのは、いちばん外側の縁取り 1 本だけ。**
      *
      * 昔はここに「盤面」という面を敷いていた ―― 枠を立て、床を落とし、空きマスを
      * 一段深い窪みにして、ブロックが箱に収まっているように見せていた。だが
@@ -630,9 +630,10 @@ export class Renderer {
      * ブロックの輪郭がいちばん強い境目でなくなっていた。
      *
      * いまはキャンバスを透かして、そのまま背景（.game-aura）を見せている。
-     * 盤面のあたりは背景と**まったく同じ色**で、境目は 1 本も無い ――
-     * 画面にある明るさの段は「背景」と「ブロック」の 2 つだけになる。
+     * 盤面のあたりは背景と**まったく同じ色**で、面としての境目は無い ――
+     * 画面にある明るさの段は「背景」と「ブロック」の 2 つだけ。
      */
+    this.drawBoardEdge();
     this.drawPieces(view);
     if (view.selected != null && !view.ghost && !view.anim) {
       this.drawMoveHints(view.board, view.selected);
@@ -645,6 +646,48 @@ export class Renderer {
     this.drawParticles(dt);
     this.drawStamps(dt);
 
+    ctx.restore();
+  }
+
+  /**
+   * 盤面のいちばん外側の縁取り。
+   *
+   * 面は敷かない ―― 線 1 本だけ。「ここまでが盤面」という境界は、遊ぶ人が
+   * 最初に知りたいことなので残してある。けれど面まで敷くと、背景・盤面・ブロックと
+   * 明るさの段が 3 つになり、ブロックの輪郭がいちばん強い境目でなくなる。
+   * 線だけなら、境界を示しながら段は 2 つのままでいられる。
+   *
+   * **柔らかく見せるために、太くて薄い線と細くて濃い線を重ねる。**
+   * 1 本だけだと硬い枠に見え、消しかけの箱がそこにあるように読める。
+   * 太いほうが外へにじんで境目をぼかし、細いほうが位置を決める。
+   * 角は大きめに丸めてある ―― 直角は「箱の角」に見えてしまう。
+   */
+  drawBoardEdge() {
+    const ctx = this.ctx;
+    const cell = this.cell;
+    if (!cell) return;
+    const w = cell * this.size;
+    // ブロックの外周からわずかに離す。触れていると縁取りではなく枠に見える
+    const pad = Math.max(3, cell * 0.1);
+    const radius = Math.max(10, cell * 0.34);
+    const x = this.ox - pad;
+    const y = this.oy - pad;
+    const side = w + pad * 2;
+
+    ctx.save();
+    ctx.lineJoin = 'round';
+    // にじみ。太く、薄く
+    ctx.strokeStyle = 'rgba(255,255,255,0.32)';
+    ctx.lineWidth = Math.max(4, cell * 0.11);
+    ctx.beginPath();
+    ctx.roundRect(x, y, side, side, radius);
+    ctx.stroke();
+    // 芯。細く、はっきり
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = Math.max(1.5, cell * 0.03);
+    ctx.beginPath();
+    ctx.roundRect(x, y, side, side, radius);
+    ctx.stroke();
     ctx.restore();
   }
 
