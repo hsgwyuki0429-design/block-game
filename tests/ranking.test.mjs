@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeName, rankSort, rankOf, starSort, starRankOf, NAME_MAX } from '../src/ranking.js';
-import { progressColor, auraFor } from '../src/render.js';
+import { progressColor, auraFor, Renderer } from '../src/render.js';
 
 // ---------------------------------------------------------------- 名前
 
@@ -160,4 +160,59 @@ test('進行度の色は連続している（1手で色が飛ばない）', () =
 test('範囲外の進行度は両端に丸める', () => {
   assert.equal(progressColor(-5).base, progressColor(0).base);
   assert.equal(progressColor(9).base, progressColor(1).base);
+});
+
+// ---------------------------------------------------------------- 背景の色の渡り方
+
+/*
+ * 背景は画面いっぱいの1色で、色が変わるときだけ**下から満ちる**。
+ * ここが壊れると、1手ごとに画面全体が点滅する（それが嫌で作り直した）ので、
+ * 「すぐには変わらない」「必ず満ちきる」「レベルを跨いだら引きずらない」を押さえる。
+ */
+
+/** 画面を持たない環境でも Renderer は作れる（canvas は使わない範囲だけ触る） */
+function headlessRenderer() {
+  const r = Object.create(Renderer.prototype);
+  r.progress = 0;
+  r.progressTarget = 0;
+  r._tintAt = -1;
+  r.auraFrom = 0;
+  r.auraTo = 0;
+  r.auraWave = 1;
+  r.steps = 4;
+  r.material = { rawTint: true, tint: 1, colors: { lit: { mid: '#3e47cc' } } };
+  r.refreshTint();
+  return r;
+}
+
+test('色が1段動くと、背景は下端からやり直す（画面全体が同時に変わらない）', () => {
+  const r = headlessRenderer();
+  assert.equal(r.auraWave, 1, '最初は満ちきっている');
+  r.progress = 0.5;
+  r.refreshTint();
+  assert.equal(r.auraWave, 0, '新しい色が下端から始まっていない');
+  assert.equal(r.auraFrom, 0, '前の色を覚えていない');
+  assert.equal(r.auraTo, 0.5);
+  // 満ちきる前は、上（前の色）と下（新しい色）で別の色が出ている
+  assert.notEqual(r.auraColor(0.26), r.auraPrevColor(0.26));
+});
+
+test('水位は画面の外から外へ動く（満ちきったあと上端に前の色が残らない）', () => {
+  const r = headlessRenderer();
+  r.progress = 1;
+  r.refreshTint();
+  assert.ok(r.auraRise() < 0, `満ち始めは画面の下の外（いま ${r.auraRise()}）`);
+  r.auraWave = 1;
+  assert.ok(r.auraRise() > 100, `満ちきったら画面の上の外（いま ${r.auraRise()}）`);
+});
+
+test('レベルを跨いだら背景は引きずらない（immediate なら満ちきった状態から）', () => {
+  const r = headlessRenderer();
+  r.progress = 0.5;
+  r.refreshTint();
+  assert.equal(r.auraWave, 0);
+  r.setProgress(0, true);
+  r.refreshTint();
+  assert.equal(r.auraWave, 1, 'レベルを跨いだのに前の色が残っている');
+  assert.equal(r.auraColor(0.26), r.auraPrevColor(0.26));
 });

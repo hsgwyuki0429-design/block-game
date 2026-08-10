@@ -165,7 +165,7 @@ export class Game {
     this.bestGap = Infinity;
     this.progress = 0;
     /** 背景の光にいま塗ってある進行度（毎フレーム塗り直さないための控え） */
-    this.paintedProgress = -1;
+    this.paintedRise = NaN; // 背景に最後に書き込んだ水位
     /** 直前に動かしたブロック。スタンプを貼る場所になる */
     this.lastMovedId = null;
 
@@ -1702,16 +1702,19 @@ export class Game {
       invalid: this.invalid,
     }, dt);
 
-    // 背景は盤面の色と同じ速さで動かす。別々に動くと2つの色がすれ違って濁る。
-    // 進行度は毎フレーム少しずつしか動かないので、動いたときだけ CSS を触る
-    if (Math.abs(this.renderer.progress - this.paintedProgress) > 0.0015) {
-      this.paintedProgress = this.renderer.progress;
+    /*
+     * 背景。色が 1 段動くと、新しい色が画面の下端から上へ満ちていく。
+     * 動いているのは水位（auraRise）なので、満ちきるまでは毎フレーム入れ直す ――
+     * 満ちきったあとは何も変わらないので触らない。
+     */
+    const rise = this.renderer.auraRise();
+    if (rise !== this.paintedRise) {
+      this.paintedRise = rise;
       try {
         const style = document.documentElement.style;
-        // 下に溜まるぶんだけ濃く。上は透けたまま伸びていく
-        style.setProperty('--game-tint', this.renderer.auraColor(0.24));
-        style.setProperty('--game-deep', this.renderer.auraColor(0.44));
-        style.setProperty('--game-rise', `${this.renderer.auraRise().toFixed(1)}%`);
+        style.setProperty('--game-tint', this.renderer.auraColor(0.26));
+        style.setProperty('--game-prev', this.renderer.auraPrevColor(0.26));
+        style.setProperty('--game-rise', `${rise.toFixed(1)}%`);
       } catch { /* 触れない環境では背景が白いだけ */ }
     }
 
