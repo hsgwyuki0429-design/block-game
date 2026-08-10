@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PHOTO_UNIT, PHOTO_CHAMFER, photoFor, photosReady } from '../src/photoArt.js';
+import { PHOTO_UNIT, PHOTO_CHAMFER, PHOTO_GAP, photoFor, photosReady } from '../src/photoArt.js';
 import { materialFor } from '../src/materials.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -67,6 +67,11 @@ test('クリスタルは写真を貼るデザインとして組んである', ()
     `角の落とし ${m.chamfer} が写真の実測 ${PHOTO_CHAMFER} より深い`);
   assert.ok(m.chamfer >= PHOTO_CHAMFER * 0.8,
     `角の落とし ${m.chamfer} が写真の実測 ${PHOTO_CHAMFER} より浅すぎる`);
+  /*
+   * 目地は、切り出しに使った内寄せとぴったり一致していなければならない。
+   * ずれると、巻き込んだ影がブロックの内側へ入り込むか、縁が目地へはみ出す。
+   */
+  assert.equal(m.gap, PHOTO_GAP, `目地 ${m.gap} が切り出しの ${PHOTO_GAP} と違う`);
   assert.match(m.photoTint, /^#[0-9a-f]{6}$/, '灰色ブロックに被せる色が無い');
   // 平らな塗りの経路とは排他。両方立つと、写真の上にベタ塗りが乗る
   assert.ok(!m.flat, '写真を貼るのに平らな塗りにもなっている');
