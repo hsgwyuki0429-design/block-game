@@ -293,14 +293,26 @@ function boardGrid(boxes) {
  *
  * **辺ごとに画素から測ってはいけない。** 切り取り範囲を示す赤い線は目地とほぼ
  * 同じ太さで、しかも目地の中に引かれる ―― 赤を避けて縁を探すと、必ず赤 1 本ぶん
- * 内側に着地し、ガラスのいちばん外側の光をまるごと削ってしまう
- * （盤面が「縁の無いのっぺりした板」になった）。
+ * 内側に着地し、ガラスのいちばん外側の光をまるごと削ってしまう。
  *
  * 目地はデザインの定数なので、赤い線の入っていないスクリーンショットから
  * 1 度だけ測って、ここに置いてある ―― ブロックの外周どうしが 15px、
  * 1 マスが 182px（実測）。その半分が片側の目地。
  */
-const GAP = 15 / 182 / 2;
+const SEAM = 15 / 182 / 2;
+
+/**
+ * 縁からさらに外へ取る量（マスの一辺に対する割合）。
+ *
+ * ガラスの縁でぴたりと切ると、白い台の上では**ブロックの輪郭が消える** ――
+ * 明るい縁と明るい台が地続きになってしまう。写真のブロックは自分の影を
+ * 細く連れているので、それを 2px ほど巻き込んでおくと、台の上でも
+ * 1 個ずつがはっきり分かれて見える。
+ */
+const EXTRA = 0.012;
+
+/** 切り出しの内寄せ＝貼るときの目地。materials.js の gap と必ず一致させる */
+const GAP = SEAM - EXTRA;
 
 /**
  * 縁に目地が残っていたら削る。
@@ -364,17 +376,37 @@ function harvest(file) {
   if (boxes.length < 2) throw new Error(`${basename(file)}: 赤い長方形が見つからない`);
   const { at, fx, fy } = boardGrid(boxes);
 
-  const insetX = Math.round(fx.step * GAP);
-  const insetY = Math.round(fy.step * GAP);
+  const seamX = Math.round(fx.step * SEAM);
+  const seamY = Math.round(fy.step * SEAM);
+  const outX = Math.round(fx.step * EXTRA);
+  const outY = Math.round(fy.step * EXTRA);
 
   return at.map((p) => {
     const rect = {
-      x0: Math.round(fx.base + p.c0 * fx.step) + insetX,
-      x1: Math.round(fx.base + p.c1 * fx.step) - insetX,
-      y0: Math.round(fy.base + p.r0 * fy.step) + insetY,
-      y1: Math.round(fy.base + p.r1 * fy.step) - insetY,
+      x0: Math.round(fx.base + p.c0 * fx.step) + seamX,
+      x1: Math.round(fx.base + p.c1 * fx.step) - seamX,
+      y0: Math.round(fy.base + p.r0 * fy.step) + seamY,
+      y1: Math.round(fy.base + p.r1 * fy.step) - seamY,
     };
+    // まずガラスの縁へ寄せ直し、そこから影のぶんだけ外へ広げる。
+    // 赤い注釈線は目地の中に引かれているので、**それに触れない範囲まで**しか
+    // 広げられない ―― 1px ずつ試して、赤に当たったらそこで止める
     trimSeam(img, red, rect);
+    const clean = (side) => {
+      const [a0, a1] = side === 'top' || side === 'bottom'
+        ? [rect.x0, rect.x1] : [rect.y0, rect.y1];
+      for (let a = a0; a <= a1; a++) {
+        const x = side === 'left' ? rect.x0 : side === 'right' ? rect.x1 : a;
+        const y = side === 'top' ? rect.y0 : side === 'bottom' ? rect.y1 : a;
+        if (x < 0 || y < 0 || x >= img.width) return false;
+        if (red[y * img.width + x]) return false;
+      }
+      return true;
+    };
+    for (let n = 0; n < outX; n++) { rect.x0--; if (!clean('left')) { rect.x0++; break; } }
+    for (let n = 0; n < outX; n++) { rect.x1++; if (!clean('right')) { rect.x1--; break; } }
+    for (let n = 0; n < outY; n++) { rect.y0--; if (!clean('top')) { rect.y0++; break; } }
+    for (let n = 0; n < outY; n++) { rect.y1++; if (!clean('bottom')) { rect.y1--; break; } }
     // 注釈の赤が縁に残っていたら、消えるまで削る（隣の枠線を巻き込むことがある）
     const onEdge = (side) => {
       const [a0, a1] = side === 'top' || side === 'bottom'
@@ -428,7 +460,7 @@ function harvest(file) {
  */
 function fillCorners(im, unit) {
   const { width: w, height: h, data } = im;
-  const limit = unit * 0.4;
+  const limit = unit * 0.28;
   const outside = new Uint8Array(w * h);
   const stack = [];
   let cut = 0;
@@ -591,6 +623,10 @@ function bake() {
   return `${HEAD}\nexport const PHOTO_UNIT = ${UNIT};\n\n`
     + `/**\n * 写真の角の落とし（1 マスぶんの短辺に対する割合）。切り抜きをこれより\n`
     + ` * 深くすると、角の切子をガラスごと削ってしまう。\n */\nexport const PHOTO_CHAMFER = ${cut};\n\n`
+    + `/**\n * 切り出しの内寄せ（マスの一辺に対する割合）。**貼るときの目地と\n`
+    + ` * 一致していなければならない** ―― ずれると、巻き込んだ影がブロックの\n`
+    + ` * 内側に入り込むか、逆に縁が目地へはみ出す。\n */\n`
+    + `export const PHOTO_GAP = ${GAP.toFixed(4)};\n\n`
     + `/** 写真 1 枚ぶん。cols/rows はもとのブロックが何マスだったか */\n`
     + `const PHOTOS = [\n${list}\n];\n${TAIL}`;
 }
