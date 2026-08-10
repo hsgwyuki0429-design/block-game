@@ -20,8 +20,12 @@
 //                   祝う音ではないので、消去音より下の音域に置いて重ならせない。
 //
 // ハプティクスは音と同じ関数の中で鳴らす。指と耳がずれない。
+// どの端末で震わせるかは haptics.js に任せてある（iOS には navigator.vibrate が
+// 無いので、そこだけ別の道を通る）。
 //
 // iOS は最初のタップまで音を出せないので、unlock() を最初のポインタ操作で呼ぶ。
+
+import { Haptics } from './haptics.js';
 
 /** 音程の階段（ペンタトニック：外れた感じにならず、上がり続けても心地よい） */
 const LADDER = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28, 31];
@@ -63,9 +67,17 @@ export class Sound {
     this.master = null;
     this.noise = null;
     this._enabled = true;
-    this.haptics = true;
+    this.hap = new Haptics();
     this.keepAlive = null;
   }
+
+  /** 触覚の入切。呼ぶ側は今までどおり sound.haptics だけを見ればよい */
+  get haptics() { return this.hap.enabled; }
+
+  set haptics(v) { this.hap.enabled = !!v; }
+
+  /** この端末に震える部品があるか（設定画面の但し書きに使う） */
+  get hapticsSupported() { return this.hap.supported; }
 
   /**
    * サウンドの入切。切ったら「画面収録用の無音ループ」も止める
@@ -80,8 +92,17 @@ export class Sound {
     else this.keepAlive.pause();
   }
 
+  /**
+   * 触覚だけを起こす。音と違って AudioContext が要らないので、
+   * サウンドを切っている人や、まだボタンに触れていない人にも先に効かせる。
+   */
+  armHaptics() {
+    this.hap.arm();
+  }
+
   /** 最初のユーザー操作で呼ぶ。以降いつでも鳴らせるようになる */
   unlock() {
+    this.hap.arm();
     if (this.ctx) {
       if (this.ctx.state === 'suspended') this.ctx.resume();
       if (this.keepAlive && this._enabled && this.keepAlive.paused) {
@@ -431,9 +452,6 @@ export class Sound {
   }
 
   vibrate(pattern) {
-    if (!this.haptics) return;
-    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      try { navigator.vibrate(pattern); } catch { /* 非対応端末は黙って無視 */ }
-    }
+    this.hap.play(pattern);
   }
 }
