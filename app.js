@@ -3926,7 +3926,15 @@ const PREVIEW_THRESHOLD = 6;
 const COMMIT_THRESHOLD = 26;
 
 /**
- * @param {HTMLCanvasElement} canvas
+ * 盤面の操作を受ける。
+ *
+ * 受け皿はキャンバスとは限らない ―― iPhone では、キャンバスの上に敷いた
+ * 「触覚の膜」（透明なネイティブスイッチ）が受ける。指がその膜に直接触れることで
+ * 手ごたえが返るので、**膜がイベントを受け取ったままでなければならない**
+ * （詳しくは haptics.js）。位置はすべて clientX/Y で扱うので、受け皿が
+ * どちらでも当たり判定は変わらない。
+ *
+ * @param {Element} surface 操作を受ける要素（キャンバス、または触覚の膜）
  * @param {{
  *   canInteract: () => boolean,
  *   toCell: (x:number, y:number) => ({x:number,y:number}|null),
@@ -3935,16 +3943,20 @@ const COMMIT_THRESHOLD = 26;
  *   onPreview: (pieceId:number, dir:string|null) => void,
  *   onCommit: (pieceId:number, dir:string) => void,
  * }} handlers
+ * @returns {() => void} 付け替えるときに呼ぶ、取り外し
  */
-function attachInput(canvas, handlers) {
+function attachInput(surface, handlers) {
+  const canvas = surface;
   let drag = null;
+  const bound = [];
+  const on = (type, fn) => { canvas.addEventListener(type, fn); bound.push([type, fn]); };
 
   const dirOf = (dx, dy) => {
     if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
     return dy > 0 ? 'down' : 'up';
   };
 
-  canvas.addEventListener('pointerdown', (e) => {
+  on('pointerdown', (e) => {
     if (!handlers.canInteract()) return;
     const cell = handlers.toCell(e.clientX, e.clientY);
     const id = cell ? handlers.pieceAt(cell.x, cell.y) : null;
@@ -3958,7 +3970,7 @@ function attachInput(canvas, handlers) {
     handlers.onTap(id);
   });
 
-  canvas.addEventListener('pointermove', (e) => {
+  on('pointermove', (e) => {
     if (!drag || drag.done) return;
     const dx = e.clientX - drag.x0;
     const dy = e.clientY - drag.y0;
@@ -3991,34 +4003,66 @@ function attachInput(canvas, handlers) {
     drag = null;
   };
 
-  canvas.addEventListener('pointerup', end);
-  canvas.addEventListener('pointercancel', end);
-  canvas.addEventListener('pointerleave', end);
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  on('pointerup', end);
+  on('pointercancel', end);
+  on('pointerleave', end);
+  on('contextmenu', (e) => e.preventDefault());
+
+  return () => {
+    for (const [type, fn] of bound) canvas.removeEventListener(type, fn);
+    bound.length = 0;
+    drag = null;
+  };
 }
 
 // ===== src/haptics.js =====
 // 触覚（バイブレーション）。
 //
-// 「震える端末では必ず震える」ことを目標にした層。鳴らす側（audio.js）からは
-// play(pattern) しか見えず、その端末に届く手段の選択はここに閉じてある。
+// 端末ごとに震わせる手段がまったく違うので、ここにまとめてある。
 //
 //   ① Vibration API   navigator.vibrate。Android の Chrome / Firefox / Samsung など。
 //                     [振動, 休み, 振動, ...] のパターンをそのまま渡せる唯一の道。
+//                     鳴らしたい瞬間に鳴らせるので、音と同じ形に揃えられる。
 //
-//   ② iOS の隠しスイッチ
-//                     iOS には navigator.vibrate が無い（Safari も、ホーム画面に
-//                     追加した PWA も）。ただし iOS 17.4 以降の WebKit は
-//                     <input type="checkbox" switch> を切り替えるとシステムの
-//                     触覚を返す。画面外に置いた 1 枚のスイッチをその発生源として
-//                     借りる。強さと長さは選べないので、パターンは
-//                     「叩く回数と間隔」に翻訳する（toTaps）。
+//   ② 触覚の膜（iOS） 下の「iPhone では、鳴らすのではなく敷く」を参照。
 //
 //   ③ ゲームパッド    PC にコントローラが繋がっているとき。vibrationActuator に
 //                     dual-rumble を流す。手元にモーターがあるならそこで鳴らす。
 //
 // ①〜③ のどれも持たない端末（多くのデスクトップ）は、震える部品が本当に無い
-// ので何もしない。supported を見れば設定画面でそう伝えられる。
+// ので何もしない。
+//
+// ---------------------------------------------------------------------------
+// iPhone では、鳴らすのではなく「敷く」
+//
+// iOS には navigator.vibrate が無い（Safari も、ホーム画面に追加した PWA も）。
+// 代わりに、iOS 17.4 以降の WebKit は <input type="checkbox" switch> が
+// 切り替わるとシステムの触覚を返す。長らく「画面外の隠しスイッチを script から
+// 叩く」形で借りられていたが、**iOS 26.5 で Apple がこれを塞いだ**。
+//
+// iPhone（Safari 26.6）で実測した結果:
+//
+//   ○ 見えるスイッチを指で切り替える
+//   ○ ボタンに重ねた透明スイッチを指でタップ
+//   ○ 透明スイッチの上を指でなぞる
+//   × script から label.click()
+//   × 指で押している最中（pointerdown の中）に script でトグル
+//   × 指で踏んだ直後に script で連打
+//
+// 読み取れることは 1 つ ―― **指が直接スイッチに触れている操作だけが鳴る。**
+// script から起こした変化は、ユーザー操作の最中であっても鳴らない。
+//
+// なので iOS では発想を裏返す。「鳴らしたい瞬間に鳴らす」のではなく、
+// **触ってほしい場所に、本物のスイッチを透明にして敷いておく。**
+// 指が盤面に触れてブロックを滑らせれば、その指自身がスイッチを動かし、
+// システムが手ごたえを返す。こちらは一度敷くだけで、あとは何もしない。
+//
+// 引き換えに、iOS では次のことができない:
+//   ・強さや長さを選べない（システムが決めた一撃だけ）
+//   ・指が触れていない瞬間には鳴らせない（消えた・クリアした、など）
+// これは抜け道の限界ではなく、Apple が意図して閉じた結果なので、
+// 迂回しようとせず、できることの側で最善を尽くす。
+// ---------------------------------------------------------------------------
 
 /**
  * Android の実機では 5ms 前後の振動は指に届かない（モーターが立ち上がる前に
@@ -4026,11 +4070,8 @@ function attachInput(canvas, handlers) {
  */
 const MIN_PULSE_MS = 12;
 
-/** iOS のスイッチを連打するときの最短間隔。これより詰めると 1 回に潰れる */
-const TAP_GAP_MS = 34;
-
-/** 1 パターンで叩く上限。長い振動を刻みすぎると「連打」に化ける */
-const MAX_TAPS = 6;
+/** 触覚の膜に付ける class。位置決めは styles.css の側に置いてある */
+const VEIL_CLASS = 'haptic-veil';
 
 /** 数値 1 つでも配列でも受け取り、[振動, 休み, 振動, ...] の ms 配列にそろえる */
 function toSegments(pattern) {
@@ -4049,28 +4090,6 @@ function withMinPulse(segments) {
   return segments.map((ms, i) => (i % 2 === 0 && ms > 0 ? Math.max(ms, MIN_PULSE_MS) : ms));
 }
 
-/**
- * パターンを「叩く時刻（ms）」の列に変換する。
- *
- * iOS のスイッチは長さを選べない一撃しか出せないので、長い振動は等間隔の
- * 連打で代える。land() の [8, 24, 44]（前触れ → 間 → 重い本体）なら
- * 「1 発 → 間 → 2 発」になり、耳から入る形と崩れない。
- */
-function toTaps(segments) {
-  const taps = [];
-  let t = 0;
-  for (let i = 0; i < segments.length; i++) {
-    const ms = segments[i];
-    if (i % 2 === 1) { t += ms; continue; } // 休み
-    if (ms <= 0) continue;
-    taps.push(t);
-    // 長い振動は等間隔で刻んで「続いている」ことを伝える
-    for (let at = TAP_GAP_MS; at + TAP_GAP_MS * 0.5 <= ms; at += TAP_GAP_MS) taps.push(t + at);
-    t += ms;
-  }
-  return taps.slice(0, MAX_TAPS);
-}
-
 class Haptics {
   /**
    * @param {{navigator?: object, document?: object, setTimeout?: Function,
@@ -4085,8 +4104,7 @@ class Haptics {
     this.clearTimer = env.clearTimeout || ((id) => clearTimeout(id));
 
     this.enabled = true;
-    this.switchEl = null;   // iOS の隠しスイッチ（arm() で作る）
-    this.timers = [];       // 予約済みの叩き
+    this.timers = [];       // ゲームパッドの区間ごとの予約
     this.watching = false;  // 画面を離れたときの後始末を仕掛けたか
   }
 
@@ -4098,8 +4116,11 @@ class Haptics {
   }
 
   /**
-   * iOS のスイッチ触覚が使えるか。
+   * スイッチの触覚が使えるか（＝ iOS か）。
    * `switch` は WebKit が IDL 属性として持つので、実装の有無をそのまま聞ける。
+   *
+   * 注意: これが真でも「script から鳴らせる」わけではない。iOS 26.5 以降で
+   * 鳴るのは指が直接触れたときだけなので、判断材料としてだけ使う。
    */
   get hasSwitchHaptics() {
     if (!this.doc || typeof this.doc.createElement !== 'function') return false;
@@ -4122,32 +4143,32 @@ class Haptics {
     );
   }
 
-  /** この端末で震えられるか。設定画面の但し書きに使う */
-  get supported() {
-    return this.hasVibrationApi || this.hasSwitchHaptics || this.gamepads().length > 0;
-  }
-
-  /** 使っている手段の名前（'vibration' / 'ios-switch' / 'gamepad' / 'none'） */
-  get backend() {
+  /**
+   * どの道で震わせるか。
+   * 'vibration'（鳴らしたい瞬間に鳴らせる）／'ios-veil'（膜を敷いて指に鳴らしてもらう）
+   * ／'gamepad'／'none'
+   */
+  get mode() {
     if (this.hasVibrationApi) return 'vibration';
-    if (this.hasSwitchHaptics) return 'ios-switch';
+    if (this.hasSwitchHaptics) return 'ios-veil';
     if (this.gamepads().length > 0) return 'gamepad';
     return 'none';
   }
 
+  /** この端末で震えられるか。設定画面の但し書きに使う */
+  get supported() {
+    return this.mode !== 'none';
+  }
+
   // ------------------------------------------------------------ 準備
 
-  /**
-   * 最初のユーザー操作で呼ぶ。iOS のスイッチをこの時点で作っておく
-   * （最初の 1 回だけ生成が挟まると、その振動が一拍遅れて指とずれる）。
-   */
+  /** 最初のユーザー操作で呼ぶ */
   arm() {
-    this.ensureSwitch();
     this.watchVisibility();
   }
 
   /**
-   * 画面を離れたら、予約してある叩きを捨てる。
+   * 画面を離れたら、予約してある振動を捨てる。
    * 戻ってきた指と関係のない振動が後から来ると、ただの誤作動に感じられる。
    */
   watchVisibility() {
@@ -4158,38 +4179,45 @@ class Haptics {
     });
   }
 
+  // ------------------------------------------------------------ 触覚の膜（iOS）
+
+  /** この端末は「膜を敷く」側か（＝ script からは鳴らせないが、指になら鳴らせる） */
+  needsVeil() {
+    return this.enabled && !this.hasVibrationApi && this.hasSwitchHaptics;
+  }
+
   /**
-   * iOS の触覚を借りるための隠しスイッチ。
+   * 触覚の膜を 1 枚こしらえる。**本物の** <input type="checkbox" switch> で、
+   * 透明にして操作面に敷く。指がこれに直接触れることでシステムが手ごたえを返す。
    *
-   * display:none で隠すと描画されず触覚も返らないことがあるので、
-   * 「描画はされるが見えず触れもしない」置き方にする。
+   * CSS で appearance を潰してはいけない。ネイティブのスイッチでなくなった
+   * 時点で触覚も消える（見た目は同じなので気付きにくい）。
+   *
+   * @returns {Element|null}
    */
-  ensureSwitch() {
-    if (this.switchEl || !this.hasSwitchHaptics) return this.switchEl;
-    const doc = this.doc;
-    if (!doc || !doc.body || typeof doc.createElement !== 'function') return null;
+  createVeil() {
+    if (!this.doc || typeof this.doc.createElement !== 'function') return null;
     try {
-      const label = doc.createElement('label');
-      label.setAttribute('aria-hidden', 'true');
-      label.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;'
-        + 'opacity:0;pointer-events:none;z-index:-1;overflow:hidden;';
-      const input = doc.createElement('input');
-      input.type = 'checkbox';
-      input.setAttribute('switch', '');
-      input.tabIndex = -1;
-      label.appendChild(input);
-      doc.body.appendChild(label);
-      this.switchEl = label;
+      const el = this.doc.createElement('input');
+      el.type = 'checkbox';
+      el.setAttribute('switch', '');
+      el.className = VEIL_CLASS;
+      el.tabIndex = -1;
+      el.setAttribute('aria-hidden', 'true');
+      return el;
     } catch {
-      this.switchEl = null;
+      return null;
     }
-    return this.switchEl;
   }
 
   // ------------------------------------------------------------ 鳴らす
 
   /**
    * 振動する。
+   *
+   * iOS では**何もしない** ―― script から鳴らす道が閉じているため。
+   * その端末では createVeil() で敷いた膜が、指の操作そのものから鳴らす。
+   *
    * @param {number|number[]} pattern ms、または [振動, 休み, 振動, ...]
    * @returns {boolean} どれかの手段に届いたか
    */
@@ -4205,31 +4233,9 @@ class Haptics {
       try {
         fired = this.nav.vibrate(withMinPulse(segments)) !== false;
       } catch { /* 端末が拒んだら黙って次へ */ }
-    } else if (this.playTaps(segments)) {
-      fired = true;
     }
     if (this.playGamepad(segments)) fired = true;
     return fired;
-  }
-
-  /** iOS：隠しスイッチを予定どおりに叩く */
-  playTaps(segments) {
-    const label = this.ensureSwitch();
-    if (!label) return false;
-    const taps = toTaps(segments);
-    if (!taps.length) return false;
-    for (const at of taps) {
-      if (at <= 0) this.tap();
-      else this.timers.push(this.setTimer(() => this.tap(), at));
-    }
-    return true;
-  }
-
-  /** スイッチを 1 回切り替える。切り替わること自体が触覚の合図になる */
-  tap() {
-    const label = this.switchEl;
-    if (!label) return;
-    try { label.click(); } catch { /* 失敗しても遊びは止めない */ }
   }
 
   /**
@@ -4265,7 +4271,7 @@ class Haptics {
     return fired;
   }
 
-  /** 予約済みの叩きを取り消す */
+  /** 予約済みの振動を取り消す */
   cancelTimers() {
     for (const id of this.timers) this.clearTimer(id);
     this.timers.length = 0;
@@ -4359,6 +4365,15 @@ class Sound {
 
   /** この端末に震える部品があるか（設定画面の但し書きに使う） */
   get hapticsSupported() { return this.hap.supported; }
+
+  /** どの道で震わせるか（'vibration' / 'ios-veil' / 'gamepad' / 'none'） */
+  get hapticsMode() { return this.hap.mode; }
+
+  /** iPhone のように「膜を敷いて指に鳴らしてもらう」端末か */
+  needsHapticVeil() { return this.hap.needsVeil(); }
+
+  /** 操作面に敷く触覚の膜を 1 枚作る（詳しくは haptics.js） */
+  createHapticVeil() { return this.hap.createVeil(); }
 
   /**
    * サウンドの入切。切ったら「画面収録用の無音ループ」も止める
@@ -5956,22 +5971,7 @@ class Game {
   // ------------------------------------------------------------ 入力
 
   bindInput() {
-    attachInput(this.dom.canvas, {
-      canInteract: () => this.canInteract(),
-      toCell: (x, y) => this.renderer.toCell(x, y),
-      pieceAt: (x, y) => {
-        const id = this.board.at(x, y);
-        return id >= 0 ? id : null;
-      },
-      onTap: (id) => {
-        this.sound.unlock();
-        this.selected = id;
-        this.ghost = null;
-        if (id != null) this.sound.tap();
-      },
-      onPreview: (id, dir) => this.setGhost(id, dir),
-      onCommit: (id, dir) => this.tryMove(id, dir),
-    });
+    this.mountInput();
 
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement) return;
@@ -5997,6 +5997,52 @@ class Game {
         if (!this.anyModalOpen()) this.showHome();
         this.closeModals();
       }
+    });
+  }
+
+  /**
+   * 盤面の操作をどこで受けるかを決めて、繋ぎ直す。
+   *
+   * ふつうはキャンバスで受ける。iPhone だけは、キャンバスの上に敷いた
+   * 「触覚の膜」（透明なネイティブスイッチ）で受ける ―― iOS は script から
+   * 触覚を出せないので、**指がその膜に直接触れること自体**を手ごたえにする
+   * （詳しくは haptics.js）。膜がイベントを受け取ったままでないと鳴らないので、
+   * 入力もキャンバスではなく膜に付ける。
+   *
+   * バイブレーションを切ったら膜は外す。触覚のためだけに敷いているものが
+   * 残っていると、操作の経路だけが変わって得るものが無い。
+   */
+  mountInput() {
+    const canvas = this.dom.canvas;
+    const wrap = canvas.parentElement;
+    if (this.detachInput) { this.detachInput(); this.detachInput = null; }
+    if (this.hapticVeil) { this.hapticVeil.remove(); this.hapticVeil = null; }
+
+    let surface = canvas;
+    if (wrap && this.settings.haptics && this.sound.needsHapticVeil()) {
+      const veil = this.sound.createHapticVeil();
+      if (veil) {
+        wrap.appendChild(veil);
+        this.hapticVeil = veil;
+        surface = veil;
+      }
+    }
+
+    this.detachInput = attachInput(surface, {
+      canInteract: () => this.canInteract(),
+      toCell: (x, y) => this.renderer.toCell(x, y),
+      pieceAt: (x, y) => {
+        const id = this.board.at(x, y);
+        return id >= 0 ? id : null;
+      },
+      onTap: (id) => {
+        this.sound.unlock();
+        this.selected = id;
+        this.ghost = null;
+        if (id != null) this.sound.tap();
+      },
+      onPreview: (id, dir) => this.setGhost(id, dir),
+      onCommit: (id, dir) => this.tryMove(id, dir),
     });
   }
 
@@ -6382,6 +6428,9 @@ class Game {
     this.renderer.setMaterial(this.settings.material);
     this.sound.enabled = this.settings.sound;
     this.sound.haptics = this.settings.haptics;
+    // 触覚の膜を敷くか外すかが変わる。まだ入力を繋いでいない起動時は飛ばす
+    if (this.detachInput) this.mountInput();
+    this.updateHapticsNote();
   }
 
   /**
@@ -6391,9 +6440,15 @@ class Game {
   updateHapticsNote() {
     const note = this.dom.optHapticsNote;
     if (!note) return;
-    note.textContent = this.sound.hapticsSupported
-      ? '動かした手ごたえを指に返す'
-      : 'この端末には振動する部品がありません';
+    const NOTES = {
+      vibration: '動かした手ごたえを指に返す',
+      // iPhone は指が盤面に触れている操作でしか鳴らせない。できないことを
+      // 「対応端末のみ」と濁さずに書く（詳しくは haptics.js）
+      'ios-veil': 'iPhone ではブロックを操作したときだけ',
+      gamepad: 'つないだコントローラを震わせる',
+      none: 'この端末には振動する部品がありません',
+    };
+    note.textContent = NOTES[this.sound.hapticsMode] || NOTES.none;
   }
 
   /**
