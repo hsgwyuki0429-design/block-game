@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="robots" content="noindex">
+<title>触覚の実機検証 ― SLIDE POP!</title>
+<!--
+  iPhone で「何なら震えるか」を 1 つずつ確かめるためのページ。
+
+  iOS には navigator.vibrate が無く、代わりに <input type="checkbox" switch> を
+  切り替えるとシステムの触覚が返る、という抜け道が使われてきた。
+  ただし iOS 26.5 で「script から切り替えたときは鳴らさない」と塞がれている。
+
+  どこまでが生きているのかは実機でしか分からないので、手法ごとに 1 枚ずつ札を
+  並べて、指で確かめてもらう。CSS で appearance を潰すと**ネイティブのスイッチで
+  なくなり触覚も消える**ので、スイッチには一切スタイルを当てていない。
+-->
+<style>
+  :root {
+    --ink: #1a1c22; --muted: #6b7180; --line: #dfe3ec;
+    --card: #fff; --bg: #eef1f8; --accent: #3f8ede;
+    --ok: #2e8b57; --ng: #c0392b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px 14px 64px;
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    color: var(--ink); background: var(--bg);
+    -webkit-text-size-adjust: 100%;
+  }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  .lead { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+
+  .diag {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 12px 14px; margin-bottom: 20px; font-size: 13px;
+  }
+  .diag h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+  .diag dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+  .diag dt { color: var(--muted); }
+  .diag dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  .card h3 { font-size: 15px; margin: 0 0 2px; }
+  .card p { font-size: 13px; color: var(--muted); margin: 0 0 12px; }
+  .card .todo { color: var(--accent); font-weight: 600; }
+
+  /* 触覚を試す的（まと）。ネイティブのスイッチを隠して重ねるので、
+     受け皿の側に position: relative が要る */
+  .target {
+    position: relative; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 60px; border-radius: 12px;
+    background: linear-gradient(#fbfcff, #eef1f8);
+    border: 1px solid var(--line);
+    font-weight: 600; color: var(--ink);
+    user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .target.tall { min-height: 120px; }
+
+  /* 見えないネイティブスイッチ。appearance は絶対に触らない */
+  .veil {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; margin: 0;
+    opacity: 0;
+  }
+
+  button.plain {
+    -webkit-appearance: none; appearance: none;
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    border-radius: 10px; padding: 12px 16px; font: inherit; font-weight: 600;
+    width: 100%;
+  }
+
+  .verdict { display: flex; gap: 8px; margin-top: 10px; }
+  .verdict button {
+    -webkit-appearance: none; appearance: none;
+    flex: 1; border-radius: 10px; padding: 9px; font: inherit; font-size: 14px;
+    border: 1px solid var(--line); background: #fff; color: var(--muted);
+  }
+  .verdict button[aria-pressed="true"].yes { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .verdict button[aria-pressed="true"].no  { background: var(--ng); border-color: var(--ng); color: #fff; }
+
+  .summary { margin-top: 24px; }
+  textarea {
+    width: 100%; min-height: 190px; border-radius: 12px; border: 1px solid var(--line);
+    padding: 12px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--card); color: var(--ink); resize: vertical;
+  }
+</style>
+</head>
+<body>
+
+<h1>触覚の実機検証</h1>
+<p class="lead">
+  上から順に、書いてあるとおりに触って「震えたか」を答えてください。
+  最後に出る文章をそのまま送ってもらえれば、どの手法が生きているか確定できます。
+</p>
+
+<div class="diag">
+  <h2>この端末の状態</h2>
+  <dl id="diag"></dl>
+</div>
+
+<!-- ① 対照実験。これが震えないなら OS 側で触覚が切られている -->
+<div class="card" data-test="visible-switch">
+  <h3>① ふつうのスイッチ（対照）</h3>
+  <p><span class="todo">このスイッチを指で切り替えてください。</span>
+    見えているネイティブのスイッチです。<b>これが震えないなら</b>、
+    iOS の「設定 → サウンドと触覚 → システムの触覚」が切れています。</p>
+  <label style="display:flex;align-items:center;gap:12px;">
+    <span>切り替える</span>
+    <input type="checkbox" switch>
+  </label>
+  <div class="verdict"></div>
+</div>
+
+<!-- ② project-fathom の手法。ボタンに透明なスイッチを重ねて指で直接踏ませる -->
+<div class="card" data-test="veiled-tap">
+  <h3>② ボタンに重ねた透明スイッチ（タップ）</h3>
+  <p><span class="todo">この板を 1 回タップしてください。</span>
+    見た目はただの板ですが、上に透明なネイティブスイッチが乗っています。
+    指が直接スイッチを踏むので、iOS 26.5 以降でも生きているはずの手法です。</p>
+  <div class="target">
+    タップ
+    <input type="checkbox" switch class="veil" aria-label="触覚の的">
+  </div>
+  <div class="verdict"></div>
+</div>
+
+<!-- ③ ドラッグで鳴るか。このゲームの滑走・着地に効くかどうかの分かれ目 -->
+<div class="card" data-test="veiled-drag">
+  <h3>③ 透明スイッチの上をなぞる（ドラッグ）</h3>
+  <p><span class="todo">この広い板の上を、指を離さず左右になぞってください。</span>
+    タップではなくドラッグでも震えるかを見ます。ここが生きていれば、
+    ブロックを滑らせている最中にも手ごたえを返せます。</p>
+  <div class="target tall">
+    左右になぞる
+    <input type="checkbox" switch class="veil" aria-label="触覚の的">
+  </div>
+  <div class="verdict"></div>
+</div>
+
+<!-- ④ いま実装している手法。26.5 で塞がれたはず -->
+<div class="card" data-test="script-label">
+  <h3>④ script から label.click()（いまの実装）</h3>
+  <p><span class="todo">このボタンを押してください。</span>
+    画面外の隠しスイッチを script から叩きます。
+    <b>iOS 26.5 で塞がれた</b>とされている手法です。ここが × なら原因が確定します。</p>
+  <button class="plain" id="run-script-label">script で叩く</button>
+  <div class="verdict"></div>
+</div>
+
+<!-- ⑤ 指で触っている最中に script でトグルする（信頼された操作の最中なら通るか） -->
+<div class="card" data-test="script-in-gesture">
+  <h3>⑤ 指で押している最中に script でトグル</h3>
+  <p><span class="todo">この板を 1 回タップしてください。</span>
+    指が触れた瞬間（pointerdown の中）に、script が別の隠しスイッチを切り替えます。
+    「ユーザー操作の最中なら通る」かどうかを見ます。</p>
+  <div class="target" id="in-gesture">タップ</div>
+  <div class="verdict"></div>
+</div>
+
+<!-- ⑥ 指で踏んだ透明スイッチの直後に、script で連打できるか -->
+<div class="card" data-test="tap-then-script">
+  <h3>⑥ 指で踏んだ直後に script で連打</h3>
+  <p><span class="todo">この板を 1 回タップしてください。</span>
+    指でスイッチを踏ませたうえで、その直後に script が 3 回追い打ちします。
+    <b>1 回だけ震えたか、3〜4 回震えたか</b>を答えてください
+    （連打できるなら、強弱のあるパターンが作れます）。</p>
+  <div class="target">
+    タップ
+    <input type="checkbox" switch class="veil" id="tap-then-script-veil" aria-label="触覚の的">
+  </div>
+  <div class="verdict" data-yes="3〜4回 震えた" data-no="1回だけ / 震えない"></div>
+</div>
+
+<div class="summary">
+  <h3 style="font-size:15px;margin:0 0 8px;">結果（これをそのまま送ってください）</h3>
+  <textarea id="out" readonly></textarea>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------- 診断
+
+  const nav = navigator;
+  const ua = nav.userAgent;
+  const osMatch = ua.match(/OS (\d+[_.]\d+(?:[_.]\d+)?)/);
+  const standalone = !!(window.navigator.standalone
+    || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+
+  const facts = {
+    'iOS の版': osMatch ? osMatch[1].replace(/_/g, '.') : '不明',
+    'ホーム画面から': standalone ? 'はい（standalone）' : 'いいえ（Safari のタブ）',
+    'navigator.vibrate': typeof nav.vibrate === 'function' ? 'ある' : 'ない',
+    'switch 属性': ('switch' in document.createElement('input')) ? 'ある' : 'ない',
+    '画面の幅': window.innerWidth + 'px',
+    'UA': ua,
+  };
+
+  const dl = document.getElementById('diag');
+  for (const [k, v] of Object.entries(facts)) {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+
+  // ---------------------------------------------------------------- 隠しスイッチ
+
+  /** 画面外に置く、script から叩くためのスイッチ（④⑤で使う） */
+  function hiddenSwitch() {
+    const label = document.createElement('label');
+    label.setAttribute('aria-hidden', 'true');
+    label.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;'
+      + 'opacity:0;pointer-events:none;z-index:-1;overflow:hidden;';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.setAttribute('switch', '');
+    input.tabIndex = -1;
+    label.appendChild(input);
+    document.body.appendChild(label);
+    return { label, input };
+  }
+
+  const scriptSwitch = hiddenSwitch();
+  const gestureSwitch = hiddenSwitch();
+
+  // ④ script から label を叩く（いまの実装と同じ）
+  document.getElementById('run-script-label').addEventListener('click', () => {
+    scriptSwitch.label.click();
+  });
+
+  // ⑤ 指が触れた瞬間、その handler の中で叩く
+  document.getElementById('in-gesture').addEventListener('pointerdown', () => {
+    gestureSwitch.label.click();
+  });
+
+  // ⑥ 指で踏んだ直後に、script で 3 回追い打ちする
+  const veil6 = document.getElementById('tap-then-script-veil');
+  veil6.addEventListener('change', () => {
+    let n = 0;
+    const beat = setInterval(() => {
+      veil6.click();
+      if (++n >= 3) clearInterval(beat);
+    }, 60);
+  });
+
+  // ---------------------------------------------------------------- 回答
+
+  const results = {};
+
+  document.querySelectorAll('.card').forEach((card) => {
+    const key = card.dataset.test;
+    const box = card.querySelector('.verdict');
+    const yes = document.createElement('button');
+    const no = document.createElement('button');
+    yes.className = 'yes'; no.className = 'no';
+    yes.type = 'button'; no.type = 'button';
+    yes.textContent = box.dataset.yes || '震えた';
+    no.textContent = box.dataset.no || '震えない';
+    yes.setAttribute('aria-pressed', 'false');
+    no.setAttribute('aria-pressed', 'false');
+
+    const pick = (v) => {
+      results[key] = v;
+      yes.setAttribute('aria-pressed', String(v === 'yes'));
+      no.setAttribute('aria-pressed', String(v === 'no'));
+      render();
+    };
+    yes.addEventListener('click', () => pick('yes'));
+    no.addEventListener('click', () => pick('no'));
+    box.append(yes, no);
+  });
+
+  const LABELS = {
+    'visible-switch': '① ふつうのスイッチ（対照）',
+    'veiled-tap': '② 透明スイッチをタップ',
+    'veiled-drag': '③ 透明スイッチをなぞる',
+    'script-label': '④ script から label.click()',
+    'script-in-gesture': '⑤ 指で押している最中に script',
+    'tap-then-script': '⑥ 指で踏んだ直後に script で連打',
+  };
+
+  const out = document.getElementById('out');
+  function render() {
+    const lines = ['# 触覚の実機検証'];
+    for (const [k, v] of Object.entries(facts)) lines.push(`${k}: ${v}`);
+    lines.push('');
+    for (const [key, label] of Object.entries(LABELS)) {
+      const r = results[key];
+      lines.push(`${label}: ${r === 'yes' ? '○ 震えた' : r === 'no' ? '× 震えない' : '― 未回答'}`);
+    }
+    out.value = lines.join('\n');
+  }
+  render();
+})();
+</script>
+</body>
+</html>

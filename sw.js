@@ -14,7 +14,7 @@
 // インストール時は index.html を読んで、そこに書かれているハッシュ付きの
 // アセットも一緒に先読みしておく。ビルド側に一覧を持たせずに済む。
 
-const CACHE = 'slidepop-v1';
+const CACHE = 'slidepop-v2';
 
 /** 版に関係なく必要なもの */
 const SHELL = [
@@ -60,6 +60,18 @@ self.addEventListener('activate', (e) => {
   })());
 });
 
+/**
+ * そのナビゲーションはアプリ本体か？
+ *
+ * 以前は「ナビゲーションなら何でも index.html として保存」していた。同じ場所に
+ * 置いた別のページ（触覚の検証ページなど）を一度開くと、その中身が
+ * index.html として焼き付き、**オフラインで起動したときにゲームではなく
+ * そのページが出る**。配ったページに巻き込まれない形にしておく。
+ */
+function isAppShell(url) {
+  return url.pathname.endsWith('/') || url.pathname.endsWith('/index.html');
+}
+
 /** ネットワークを待つ。遅すぎるときはキャッシュに切り替える */
 function withTimeout(promise, ms) {
   return new Promise((resolve, reject) => {
@@ -77,13 +89,18 @@ self.addEventListener('fetch', (e) => {
 
   // ページ本体: ネットワーク優先
   if (req.mode === 'navigate') {
+    const appShell = isAppShell(url);
     e.respondWith((async () => {
       try {
         const res = await withTimeout(fetch(req), 3000);
-        const cache = await caches.open(CACHE);
-        cache.put('./index.html', res.clone());
+        // 焼き直すのはアプリ本体のときだけ（別のページを index.html にしない）
+        if (appShell && res && res.ok) {
+          const cache = await caches.open(CACHE);
+          cache.put('./index.html', res.clone());
+        }
         return res;
       } catch {
+        if (!appShell) return Response.error(); // 別のページはオフラインなら諦める
         return (await caches.match('./index.html'))
           || (await caches.match('./'))
           || Response.error();
