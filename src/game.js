@@ -645,7 +645,22 @@ export class Game {
   // ------------------------------------------------------------ 入力
 
   bindInput() {
-    this.mountInput();
+    attachInput(this.dom.canvas, {
+      canInteract: () => this.canInteract(),
+      toCell: (x, y) => this.renderer.toCell(x, y),
+      pieceAt: (x, y) => {
+        const id = this.board.at(x, y);
+        return id >= 0 ? id : null;
+      },
+      onTap: (id) => {
+        this.sound.unlock();
+        this.selected = id;
+        this.ghost = null;
+        if (id != null) this.sound.tap();
+      },
+      onPreview: (id, dir) => this.setGhost(id, dir),
+      onCommit: (id, dir) => this.tryMove(id, dir),
+    });
 
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement) return;
@@ -671,52 +686,6 @@ export class Game {
         if (!this.anyModalOpen()) this.showHome();
         this.closeModals();
       }
-    });
-  }
-
-  /**
-   * 盤面の操作をどこで受けるかを決めて、繋ぎ直す。
-   *
-   * ふつうはキャンバスで受ける。iPhone だけは、キャンバスの上に敷いた
-   * 「触覚の膜」（透明なネイティブスイッチ）で受ける ―― iOS は script から
-   * 触覚を出せないので、**指がその膜に直接触れること自体**を手ごたえにする
-   * （詳しくは haptics.js）。膜がイベントを受け取ったままでないと鳴らないので、
-   * 入力もキャンバスではなく膜に付ける。
-   *
-   * バイブレーションを切ったら膜は外す。触覚のためだけに敷いているものが
-   * 残っていると、操作の経路だけが変わって得るものが無い。
-   */
-  mountInput() {
-    const canvas = this.dom.canvas;
-    const wrap = canvas.parentElement;
-    if (this.detachInput) { this.detachInput(); this.detachInput = null; }
-    if (this.hapticVeil) { this.hapticVeil.remove(); this.hapticVeil = null; }
-
-    let surface = canvas;
-    if (wrap && this.settings.haptics && this.sound.needsHapticVeil()) {
-      const veil = this.sound.createHapticVeil();
-      if (veil) {
-        wrap.appendChild(veil);
-        this.hapticVeil = veil;
-        surface = veil;
-      }
-    }
-
-    this.detachInput = attachInput(surface, {
-      canInteract: () => this.canInteract(),
-      toCell: (x, y) => this.renderer.toCell(x, y),
-      pieceAt: (x, y) => {
-        const id = this.board.at(x, y);
-        return id >= 0 ? id : null;
-      },
-      onTap: (id) => {
-        this.sound.unlock();
-        this.selected = id;
-        this.ghost = null;
-        if (id != null) this.sound.tap();
-      },
-      onPreview: (id, dir) => this.setGhost(id, dir),
-      onCommit: (id, dir) => this.tryMove(id, dir),
     });
   }
 
@@ -1102,9 +1071,6 @@ export class Game {
     this.renderer.setMaterial(this.settings.material);
     this.sound.enabled = this.settings.sound;
     this.sound.haptics = this.settings.haptics;
-    // 触覚の膜を敷くか外すかが変わる。まだ入力を繋いでいない起動時は飛ばす
-    if (this.detachInput) this.mountInput();
-    this.updateHapticsNote();
   }
 
   /**
@@ -1114,15 +1080,9 @@ export class Game {
   updateHapticsNote() {
     const note = this.dom.optHapticsNote;
     if (!note) return;
-    const NOTES = {
-      vibration: '動かした手ごたえを指に返す',
-      // iPhone は指が盤面に触れている操作でしか鳴らせない。できないことを
-      // 「対応端末のみ」と濁さずに書く（詳しくは haptics.js）
-      'ios-veil': 'iPhone ではブロックを操作したときだけ',
-      gamepad: 'つないだコントローラを震わせる',
-      none: 'この端末には振動する部品がありません',
-    };
-    note.textContent = NOTES[this.sound.hapticsMode] || NOTES.none;
+    note.textContent = this.sound.hapticsSupported
+      ? '動かした手ごたえを指に返す'
+      : 'この端末には振動する部品がありません';
   }
 
   /**
