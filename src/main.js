@@ -66,6 +66,7 @@ const dom = {
   modalInstall: $('modal-install'),
   optSound: $('opt-sound'),
   optHaptics: $('opt-haptics'),
+  optHapticsNote: $('opt-haptics-note'),
   optSymbols: $('opt-symbols'),
   optGhost: $('opt-ghost'),
   optCalm: $('opt-calm'),
