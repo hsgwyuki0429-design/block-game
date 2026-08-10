@@ -634,6 +634,46 @@ svg .fill { fill: currentColor; stroke: none; }
 .dock-circle:active { transform: scale(0.9); }
 .dock-circle svg { width: 24px; height: 24px; }
 
+/*
+ * 触覚の膜（iPhone のボタンにだけ敷く）。
+ *
+ * 中身は**本物の** <input type="checkbox" switch>。iOS には navigator.vibrate が
+ * 無く、iOS 26.5 以降は script から触覚を起こす道も塞がれている。鳴らせるのは
+ * 「指が直接スイッチに触れたとき」だけなので、ボタンの面をこれで覆って、
+ * 押した指自身に鳴らしてもらう（詳しくは src/haptics.js）。
+ *
+ * ボタンの**子**として入れるので、タップした click はボタンまでバブリングし、
+ * ボタンの動作はそのまま生きる。:active も祖先のボタンに掛かるので、押した
+ * 見た目も変わらない。
+ *
+ * appearance を潰してはいけない。**ネイティブのスイッチでなくなった時点で
+ * 触覚も消える** ―― 透明なので見た目は何も変わらず、気付けない。
+ *
+ * 盤面には決して敷かない。ドラッグを伴う面に置くと、実機の WebKit では
+ * スイッチ自身がタッチを掴み、ブロックが動かせなくなる。
+ */
+.has-haptic-tap { position: relative; }
+
+.haptic-tap {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /*
+   * 幅と高さは必ず明示する。inset: 0 だけでは、input のような置換要素は
+   * **本来の小ささのまま左上に居座る**（width: auto が固有サイズに解決され、
+   * right/bottom は無視される）。透明なので気付けないまま、指がスイッチを
+   * 外して「鳴らない」ことになる。
+   */
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  border-radius: inherit;
+}
+
+/* 押せないボタンが手ごたえだけ返すことのないように */
+.has-haptic-tap:disabled .haptic-tap { pointer-events: none; }
+
 /* ============================================================ 盤面上のオーバーレイ */
 
 .overlay {

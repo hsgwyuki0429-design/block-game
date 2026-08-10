@@ -114,6 +114,31 @@
 
 <div id="stages"></div>
 
+<!-- 本番と同じ形：<button> の中に透明スイッチを入れる -->
+<div class="card" data-test="in-button">
+  <h3>⑫ ボタンの「中」に入れた透明スイッチ（本番と同じ形）</h3>
+  <p><span class="todo">この 2 つのボタンを 1 回ずつ押してください。</span>
+    左は本番と同じで、<b>&lt;button&gt; の中</b>に透明スイッチを入れてあります。
+    右は比べるための、<b>&lt;div&gt; の中</b>に入れたもの。
+    <b>どちらも押した回数が数えられます</b>（＝ボタンの動作は生きています）。
+    知りたいのは「左でも震えるか」です。</p>
+  <div style="display:flex;gap:10px;">
+    <button class="plain" id="in-button" style="position:relative;overflow:hidden;">
+      button の中
+      <input type="checkbox" switch class="veil" aria-label="触覚の的">
+    </button>
+    <div class="target" id="in-div" style="flex:1;min-height:0;">
+      div の中
+      <input type="checkbox" switch class="veil" aria-label="触覚の的">
+    </div>
+  </div>
+  <div class="meter">
+    <span>button 押せた <b data-k="btn">0</b></span>
+    <span>div 押せた <b data-k="div">0</b></span>
+  </div>
+  <div class="verdict" data-yes="button の中でも震えた" data-no="button の中では震えない"></div>
+</div>
+
 <div class="card" data-test="vertical">
   <h3>⑪ 縦にも鳴るか</h3>
   <p><span class="todo">上の 4 枚のうち「震えた」ものを 1 枚選び、今度は指を<b>上下</b>に滑らせてください。</span>
@@ -216,6 +241,7 @@
   const NUM = { A: '⑦', B: '⑧', C: '⑨', D: '⑩' };
   const results = {};
   const counts = {};
+  const extra = {};
 
   const host = document.getElementById('stages');
 
@@ -309,6 +335,21 @@
     box.append(yes, no);
   });
 
+  // ⑫ ボタンの中／div の中。押せていること自体も数える
+  {
+    const card = document.querySelector('.card[data-test="in-button"]');
+    const nBtn = card.querySelector('[data-k="btn"]');
+    const nDiv = card.querySelector('[data-k="div"]');
+    let cb = 0; let cd = 0;
+    document.getElementById('in-button').addEventListener('click', () => {
+      nBtn.textContent = ++cb; render();
+    });
+    document.getElementById('in-div').addEventListener('click', () => {
+      nDiv.textContent = ++cd; render();
+    });
+    extra.btn = () => [cb, cd];
+  }
+
   const out = document.getElementById('out');
   function render() {
     const lines = ['# 触覚の実機検証（第2段）'];
@@ -321,8 +362,12 @@
       lines.push(`${NUM[v.key]} ${v.key}（pd:${v.pd ? 'あり' : 'なし'} / pc:${v.pc ? 'あり' : 'なし'}）`
         + `: ${mark}｜スイッチ ${c.change} 回・掴み ${c.grab}・滑走 ${c.commit}`);
     });
-    const vert = results.vertical;
+    const inBtn = results['in-button'];
+    const c = extra.btn ? extra.btn() : [0, 0];
     lines.push('');
+    lines.push(`⑫ button の中の透明スイッチ: ${inBtn === 'yes' ? '○ 震えた' : inBtn === 'no' ? '× 震えない' : '― 未回答'}`
+      + `｜button 押せた ${c[0]}・div 押せた ${c[1]}`);
+    const vert = results.vertical;
     lines.push(`⑪ 縦にも鳴るか: ${vert === 'yes' ? '○ 縦でも震えた' : vert === 'no' ? '× 縦は震えない' : '― 未回答'}`);
     out.value = lines.join('\n');
   }

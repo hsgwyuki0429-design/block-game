@@ -79,6 +79,15 @@ export class Sound {
   /** この端末に震える部品があるか（設定画面の但し書きに使う） */
   get hapticsSupported() { return this.hap.supported; }
 
+  /** どの道で震わせるか（'vibration' / 'ios-taps' / 'gamepad' / 'none'） */
+  get hapticsMode() { return this.hap.mode; }
+
+  /** iPhone のように「ボタンを押した指にだけ返せる」端末か */
+  needsHapticTaps() { return this.hap.needsTapVeil(); }
+
+  /** ボタンの中に敷く触覚の膜を 1 枚作る（詳しくは haptics.js） */
+  createHapticTapVeil() { return this.hap.createTapVeil(); }
+
   /**
    * サウンドの入切。切ったら「画面収録用の無音ループ」も止める
    * （鳴らさないのに音声セッションを占有しない）。

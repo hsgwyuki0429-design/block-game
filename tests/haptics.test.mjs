@@ -69,7 +69,7 @@ test('Android：navigator.vibrate にパターンをそのまま渡す', () => {
     navigator: { vibrate: (p) => { calls.push(p); return true; } },
     document: plainDom(),
   });
-  assert.equal(hap.backend, 'vibration');
+  assert.equal(hap.mode, 'vibration');
   assert.equal(hap.supported, true);
   assert.equal(hap.play([20, 30, 40]), true);
   assert.deepEqual(calls, [[20, 30, 40]]);
@@ -97,63 +97,48 @@ test('数値ひとつでも配列として渡る', () => {
   assert.deepEqual(calls[0], [30]);
 });
 
-test('iOS：navigator.vibrate が無くても隠しスイッチで震える', () => {
-  const doc = fakeDom();
-  const clock = fakeClock();
-  const hap = new Haptics({
-    navigator: {}, document: doc, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
-  });
-
-  assert.equal(hap.backend, 'ios-switch');
-  assert.equal(hap.supported, true);
-
-  assert.equal(hap.play(10), true);
-  assert.equal(doc.appended.length, 1, 'スイッチは 1 枚だけ作る');
-  assert.equal(doc.appended[0].children[0].attrs.switch, '', 'switch 属性が要る');
-  assert.equal(doc.clicks.length, 1, '先頭の一撃はその場で鳴らす');
-
-  clock.runAll();
-  assert.equal(doc.clicks.length, 1, '短い振動は 1 回で終わる');
+test('iOS：navigator.vibrate が無ければ「指に踏ませる」側に回る', () => {
+  const hap = new Haptics({ navigator: {}, document: fakeDom() });
+  assert.equal(hap.mode, 'ios-taps');
+  assert.equal(hap.supported, true, '震えられないわけではない（指が触れれば鳴る）');
+  assert.equal(hap.needsTapVeil(), true);
 });
 
-test('iOS：休みを挟んだパターンは、間を空けた連打に翻訳される', () => {
-  const doc = fakeDom();
-  const clock = fakeClock();
-  const hap = new Haptics({
-    navigator: {}, document: doc, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
-  });
-
-  // land() と同じ形：短い前触れ → 間 → 長く重い本体
-  hap.play([8, 24, 68]);
-  assert.equal(doc.clicks.length, 1, '最初の一撃だけ即時');
-  const times = clock.jobs.map((j) => j.ms);
-  assert.deepEqual(times, [32, 66], '本体は頭と、途中でもう一度');
-
-  clock.runAll();
-  assert.equal(doc.clicks.length, 3);
+test('iOS：膜は本物のネイティブスイッチである', () => {
+  const hap = new Haptics({ navigator: {}, document: fakeDom() });
+  const veil = hap.createTapVeil();
+  assert.equal(veil.tag, 'input');
+  assert.equal(veil.type, 'checkbox');
+  assert.equal(veil.attrs.switch, '', 'switch 属性が無いとただのチェックボックス');
+  assert.equal(veil.className, 'haptic-tap');
+  assert.equal(veil.tabIndex, -1);
+  assert.equal(veil.attrs['aria-hidden'], 'true');
 });
 
-test('iOS：長すぎるパターンでも叩く回数には上限がある', () => {
+test('iOS：script からは鳴らそうとしない（26.5 で塞がれた道は叩かない）', () => {
   const doc = fakeDom();
   const clock = fakeClock();
   const hap = new Haptics({
     navigator: {}, document: doc, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
   });
-  hap.play([1000]);
-  clock.runAll();
-  assert.equal(doc.clicks.length, 6);
+  assert.equal(hap.play([8, 24, 44]), false, '届く先が無いことを正直に返す');
+  assert.equal(clock.jobs.length, 0, '鳴らないものを予約しない');
+  assert.equal(doc.clicks.length, 0, 'スイッチを script から叩かない');
 });
 
-test('新しいパターンは、前のパターンの予約を打ち切る', () => {
-  const doc = fakeDom();
-  const clock = fakeClock();
+test('バイブレーションを切ったら膜は要らない', () => {
+  const hap = new Haptics({ navigator: {}, document: fakeDom() });
+  assert.equal(hap.needsTapVeil(), true);
+  hap.enabled = false;
+  assert.equal(hap.needsTapVeil(), false);
+});
+
+test('Android では膜を敷かない（鳴らしたい瞬間に鳴らせるので要らない）', () => {
   const hap = new Haptics({
-    navigator: {}, document: doc, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    navigator: { vibrate: () => true }, document: fakeDom(),
   });
-  hap.play([10, 500, 10]);
-  assert.equal(clock.jobs.length, 1);
-  hap.play([10]);
-  assert.equal(clock.jobs.length, 0, '古い予約は消えている');
+  assert.equal(hap.mode, 'vibration');
+  assert.equal(hap.needsTapVeil(), false);
 });
 
 test('切ってあるときは何もしない', () => {
@@ -180,7 +165,7 @@ test('ゲームパッドが繋がっていれば、そこでも鳴らす', () =>
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
   });
-  assert.equal(hap.backend, 'gamepad');
+  assert.equal(hap.mode, 'gamepad');
   assert.equal(hap.play([40, 30, 40]), true);
   clock.runAll();
   assert.equal(effects.length, 2);
@@ -191,23 +176,28 @@ test('ゲームパッドが繋がっていれば、そこでも鳴らす', () =>
 test('震える部品が何も無い端末では、静かに何もしない', () => {
   const hap = new Haptics({ navigator: {}, document: plainDom() });
   assert.equal(hap.supported, false);
-  assert.equal(hap.backend, 'none');
+  assert.equal(hap.mode, 'none');
   assert.equal(hap.play([10, 20, 10]), false);
 });
 
 test('navigator も document も無い場所で壊れない（テストや SSR）', () => {
   const hap = new Haptics({ navigator: null, document: null });
   assert.equal(hap.supported, false);
+  assert.equal(hap.createTapVeil(), null);
   assert.doesNotThrow(() => hap.play(10));
   assert.doesNotThrow(() => hap.arm());
   assert.doesNotThrow(() => hap.stop());
 });
 
-test('画面を離れたら、予約してある叩きは捨てる', () => {
-  const doc = fakeDom();
+test('画面を離れたら、予約してある振動は捨てる', () => {
+  const doc = plainDom();
   const clock = fakeClock();
+  const pad = { connected: true, vibrationActuator: { playEffect: () => {} } };
   const hap = new Haptics({
-    navigator: {}, document: doc, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    navigator: { getGamepads: () => [pad] },
+    document: doc,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
   });
   hap.arm();
   hap.play([10, 300, 10]);
@@ -215,11 +205,7 @@ test('画面を離れたら、予約してある叩きは捨てる', () => {
 
   doc.hidden = true;
   doc.emit('visibilitychange');
-  assert.equal(clock.jobs.length, 0);
-
-  const before = doc.clicks.length;
-  clock.runAll();
-  assert.equal(doc.clicks.length, before, '戻ってきてから後追いで鳴ったりしない');
+  assert.equal(clock.jobs.length, 0, '戻ってきてから後追いで鳴ったりしない');
 });
 
 test('stop() は予約を消し、鳴っている振動も止める', () => {
