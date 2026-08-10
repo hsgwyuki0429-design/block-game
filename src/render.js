@@ -622,7 +622,14 @@ export class Renderer {
     ctx.stroke();
     ctx.restore();
 
-    // 空きマスだけ、ほんの少し明るく抜く（通路がそのまま読めればいい）
+    /*
+     * 空きマス。
+     *
+     * **盤面と同じ色なら、そもそも描かない。** クリスタルは台をひと色にして
+     * あるので、ここで四角を敷くと「もう 1 種類のブロック」が並んでいるように
+     * 見えてしまう。通路は、ガラスが載っていないところとして読めばいい。
+     */
+    if (pal.well === pal.floor) return;
     const gap = this.tileGap;
     const size = this.tileSize;
     const tr = this.tileRadius;
