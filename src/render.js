@@ -266,6 +266,12 @@ export class Renderer {
 
     /** ブロックのデザイン。設定で切り替わる */
     this.material = materialFor(DEFAULT_MATERIAL);
+    /*
+     * 既定が写真のデザインなら、ここで読み込みを始める。
+     * setMaterial は「今と違うとき」しか動かないので、既定のまま遊ぶ人には
+     * 呼ばれない ―― 任せきりにすると、設定を触るまで写真が貼られないままになる。
+     */
+    if (this.material.photo) loadPhotos(() => this.invalidateBakes());
     /**
      * 焼き上げたブロックの絵。
      * 鍵は「デザイン × 形 × 色 × マスの大きさ」。同じ鍵なら 1 枚を全員で使う。

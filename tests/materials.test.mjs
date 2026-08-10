@@ -88,11 +88,12 @@ test('色つきブロックは、どの進行度でも灰色ブロックと見�
   }
 });
 
-test('既定のデザインは、いちばん読みやすい平らなもの', () => {
+test('既定は写真のクリスタル。読みやすいプレーンへはいつでも戻せる', () => {
   const m = materialFor(DEFAULT_MATERIAL);
-  assert.ok(m.flat, '既定のデザインが平らでない');
-  assert.equal(m.depth, 0);
-  assert.equal(m.shadow, 0);
+  assert.ok(m.photo, '既定のデザインが写真のものでない');
+  // 逃げ道が消えていないこと。プレーンは「速く読む」ための道具として要る
+  assert.ok(MATERIAL_KEYS.includes('plain'), 'プレーンが選べなくなっている');
+  assert.ok(materialFor('plain').flat, 'プレーンが平らでない');
 });
 
 test('平らなデザインは進行度の色をそのまま着る（明るさに引き戻さない）', () => {
