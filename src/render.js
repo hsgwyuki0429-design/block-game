@@ -403,6 +403,17 @@ export class Renderer {
   get tileRadius() { return Math.max(1.5, this.cell * (this.material.radius || 0.12)); }
   /** ブロックの厚み（側面の見える高さ） */
   get depth() { return Math.max(1.5, this.cell * this.material.depth); }
+
+  /**
+   * 角の落とし（px）。
+   * **1 マスぶんの短辺**に掛ける ―― 写真の角は「1 マスあたり何画素」で決まって
+   * いるので、マスの一辺に掛けると 2 マスのブロックだけ切り口が深くなる。
+   */
+  chamferFor(w, h, cols, rows) {
+    const cut = this.material.chamfer;
+    if (!cut) return 0;
+    return cut * Math.min(w / cols, h / rows);
+  }
   /** 画面座標 -> 盤面セル */
   toCell(clientX, clientY) {
     const rect = this.canvas.getBoundingClientRect();
@@ -617,7 +628,7 @@ export class Renderer {
     const tr = this.tileRadius;
     // 角の落とし方はブロックと揃える。空きマスは「ブロックが抜けた跡」なので、
     // 丸と八角が混ざると盤面が 2 種類の形でできているように見える
-    const cut = this.material.chamfer ? this.material.chamfer * cell : 0;
+    const cut = this.chamferFor(size, size, 1, 1);
     ctx.save();
     ctx.fillStyle = pal.well;
     ctx.beginPath();
@@ -744,11 +755,11 @@ export class Renderer {
 
     const ox = pad - minX * cell;
     const oy = pad - minY * cell;
-    const chamfer = mat.chamfer ? mat.chamfer * cell : 0;
     const radius = this.tileRadius;
     const rects = this.rectsFor(cells, ox, oy, this.tileGap, radius);
-    const outer = this.pathOf(rects, chamfer);
     const box = this.bboxOf(rects);
+    const chamfer = this.chamferFor(box.w, box.h, cols, rows);
+    const outer = this.pathOf(rects, chamfer);
 
     /*
      * プレーンはここで終わり。
@@ -1017,8 +1028,9 @@ export class Renderer {
 
     const c = this.colorOf(piece.color);
     const mat = this.material;
+    const { cols, rows } = this.cellBounds(piece.cells);
     const outline = this.boundaryOf(
-      piece.cells, rects, box, this.tileRadius, mat.chamfer ? mat.chamfer * cell : 0,
+      piece.cells, rects, box, this.tileRadius, this.chamferFor(box.w, box.h, cols, rows),
     );
 
     if (mode === 'outline') {

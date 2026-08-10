@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PHOTO_UNIT, photoFor, photosReady } from '../src/photoArt.js';
+import { PHOTO_UNIT, PHOTO_CHAMFER, photoFor, photosReady } from '../src/photoArt.js';
 import { materialFor } from '../src/materials.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -57,8 +57,16 @@ test('写真は app.js に収まる大きさに収まっている', () => {
 test('クリスタルは写真を貼るデザインとして組んである', () => {
   const m = materialFor('crystal');
   assert.ok(m.photo, 'クリスタルが写真のデザインになっていない');
-  // 角を 45° で落とす。写真の角の落としと同じでないと、四隅に盤面が覗く
+  /*
+   * 角を 45° で落とす深さは、写真の角の落とし（実測）を**超えてはいけない**。
+   * 超えると角の切子をガラスごと削り、のっぺりした八角形になる。
+   * 浅すぎても写真の角が丸ごと残って四隅に盤面が覗くので、下も押さえておく。
+   */
   assert.ok(m.chamfer > 0, '角の落としが無い');
+  assert.ok(m.chamfer <= PHOTO_CHAMFER,
+    `角の落とし ${m.chamfer} が写真の実測 ${PHOTO_CHAMFER} より深い`);
+  assert.ok(m.chamfer >= PHOTO_CHAMFER * 0.8,
+    `角の落とし ${m.chamfer} が写真の実測 ${PHOTO_CHAMFER} より浅すぎる`);
   assert.match(m.photoTint, /^#[0-9a-f]{6}$/, '灰色ブロックに被せる色が無い');
   // 平らな塗りの経路とは排他。両方立つと、写真の上にベタ塗りが乗る
   assert.ok(!m.flat, '写真を貼るのに平らな塗りにもなっている');
