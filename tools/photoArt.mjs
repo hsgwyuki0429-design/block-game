@@ -289,32 +289,58 @@ function boardGrid(boxes) {
 }
 
 /**
- * 格子線（＝目地の中心）から内へ向かって、ブロックの縁を探す。
- * 目地はいちばん暗く、面取りはいちばん明るい。その中間の高さに達したところが縁。
+ * ブロックの外側にある目地の幅（マスの一辺に対する割合、片側）。
+ *
+ * **辺ごとに画素から測ってはいけない。** 切り取り範囲を示す赤い線は目地とほぼ
+ * 同じ太さで、しかも目地の中に引かれる ―― 赤を避けて縁を探すと、必ず赤 1 本ぶん
+ * 内側に着地し、ガラスのいちばん外側の光をまるごと削ってしまう
+ * （盤面が「縁の無いのっぺりした板」になった）。
+ *
+ * 目地はデザインの定数なので、赤い線の入っていないスクリーンショットから
+ * 1 度だけ測って、ここに置いてある ―― ブロックの外周どうしが 15px、
+ * 1 マスが 182px（実測）。その半分が片側の目地。
  */
-function edgeFrom(img, red, side, line, a0, a1, reach) {
+const GAP = 15 / 182 / 2;
+
+/**
+ * 縁に目地が残っていたら削る。
+ *
+ * 格子の当てはめが数 px ずれたブロックでは、上の比で切っても片側だけ目地を
+ * 拾うことがある。目地はガラスの縁よりはっきり暗いので、外周 1 列の明るさが
+ * すぐ内側より 2 割以上暗ければ、そこは目地とみなして落とす。
+ * ガラスの縁そのものは内側との差が 1 割ほどしかないので、削られない。
+ */
+function trimSeam(img, red, rect) {
   const { width: W, data } = img;
-  const prof = [];
-  for (let k = 0; k < reach; k++) {
-    let sum = 0;
-    let cnt = 0;
-    for (let a = a0; a <= a1; a++) {
-      const x = side === 'left' ? line + k : side === 'right' ? line - k : a;
-      const y = side === 'top' ? line + k : side === 'bottom' ? line - k : a;
+  const line = (side, k) => {
+    const vals = [];
+    const [a0, a1] = side === 'top' || side === 'bottom'
+      ? [rect.x0, rect.x1] : [rect.y0, rect.y1];
+    const q0 = a0 + Math.round((a1 - a0) * 0.25);
+    const q1 = a1 - Math.round((a1 - a0) * 0.25);
+    for (let a = q0; a <= q1; a++) {
+      const x = side === 'left' ? rect.x0 + k : side === 'right' ? rect.x1 - k : a;
+      const y = side === 'top' ? rect.y0 + k : side === 'bottom' ? rect.y1 - k : a;
       const i = y * W + x;
       if (red[i]) continue;
-      sum += LUM(data, i);
-      cnt++;
+      vals.push(LUM(data, i));
     }
-    prof.push(cnt ? sum / cnt : NaN);
+    if (!vals.length) return 0;
+    vals.sort((p, q) => p - q);
+    return vals[vals.length >> 1];
+  };
+  for (const side of ['left', 'right', 'top', 'bottom']) {
+    for (let n = 0; n < 10; n++) {
+      const here = line(side, 0);
+      const inside = line(side, 3);
+      if (!(here < inside * 0.8)) break;
+      if (side === 'left') rect.x0++;
+      else if (side === 'right') rect.x1--;
+      else if (side === 'top') rect.y0++;
+      else rect.y1--;
+    }
   }
-  let low = 0;
-  for (let k = 0; k < Math.min(reach, 10); k++) if (!(prof[k] >= prof[low])) low = k;
-  let high = low;
-  for (let k = low; k < reach; k++) if (prof[k] > prof[high]) high = k;
-  const half = (prof[low] + prof[high]) / 2;
-  for (let k = low; k <= high; k++) if (prof[k] >= half) return k;
-  return Math.round(reach * 0.4);
+  return rect;
 }
 
 const median = (a) => [...a].sort((p, q) => p - q)[a.length >> 1];
@@ -338,52 +364,37 @@ function harvest(file) {
   if (boxes.length < 2) throw new Error(`${basename(file)}: 赤い長方形が見つからない`);
   const { at, fx, fy } = boardGrid(boxes);
 
-  // 目地の幅は 1 辺ずつ測ると外れやすい（角の面取りを掴んでしまう）。
-  // 盤面ぜんぶで測って中央値を採ると、1 枚のなかでは必ず同じ幅になる
-  const reachX = Math.round(fx.step * 0.2);
-  const reachY = Math.round(fy.step * 0.2);
-  const gapsX = [];
-  const gapsY = [];
-  for (const p of at) {
-    const gx0 = Math.round(fx.base + p.c0 * fx.step);
-    const gx1 = Math.round(fx.base + p.c1 * fx.step);
-    const gy0 = Math.round(fy.base + p.r0 * fy.step);
-    const gy1 = Math.round(fy.base + p.r1 * fy.step);
-    const my0 = Math.round(gy0 + (gy1 - gy0) * 0.35);
-    const my1 = Math.round(gy0 + (gy1 - gy0) * 0.65);
-    const mx0 = Math.round(gx0 + (gx1 - gx0) * 0.35);
-    const mx1 = Math.round(gx0 + (gx1 - gx0) * 0.65);
-    gapsX.push(edgeFrom(img, red, 'left', gx0, my0, my1, reachX));
-    gapsX.push(edgeFrom(img, red, 'right', gx1, my0, my1, reachX));
-    gapsY.push(edgeFrom(img, red, 'top', gy0, mx0, mx1, reachY));
-    gapsY.push(edgeFrom(img, red, 'bottom', gy1, mx0, mx1, reachY));
-  }
-  const gapX = median(gapsX);
-  const gapY = median(gapsY);
+  const insetX = Math.round(fx.step * GAP);
+  const insetY = Math.round(fy.step * GAP);
 
   return at.map((p) => {
-    let x0 = Math.round(fx.base + p.c0 * fx.step) + gapX;
-    let x1 = Math.round(fx.base + p.c1 * fx.step) - gapX;
-    let y0 = Math.round(fy.base + p.r0 * fy.step) + gapY;
-    let y1 = Math.round(fy.base + p.r1 * fy.step) - gapY;
+    const rect = {
+      x0: Math.round(fx.base + p.c0 * fx.step) + insetX,
+      x1: Math.round(fx.base + p.c1 * fx.step) - insetX,
+      y0: Math.round(fy.base + p.r0 * fy.step) + insetY,
+      y1: Math.round(fy.base + p.r1 * fy.step) - insetY,
+    };
+    trimSeam(img, red, rect);
     // 注釈の赤が縁に残っていたら、消えるまで削る（隣の枠線を巻き込むことがある）
     const onEdge = (side) => {
-      const [a0, a1] = side === 'top' || side === 'bottom' ? [x0, x1] : [y0, y1];
+      const [a0, a1] = side === 'top' || side === 'bottom'
+        ? [rect.x0, rect.x1] : [rect.y0, rect.y1];
       for (let a = a0; a <= a1; a++) {
-        const x = side === 'left' ? x0 : side === 'right' ? x1 : a;
-        const y = side === 'top' ? y0 : side === 'bottom' ? y1 : a;
+        const x = side === 'left' ? rect.x0 : side === 'right' ? rect.x1 : a;
+        const y = side === 'top' ? rect.y0 : side === 'bottom' ? rect.y1 : a;
         if (red[y * img.width + x]) return true;
       }
       return false;
     };
-    for (let i = 0; i < 24; i++) {
-      let cut = false;
-      if (onEdge('left')) { x0++; cut = true; }
-      if (onEdge('right')) { x1--; cut = true; }
-      if (onEdge('top')) { y0++; cut = true; }
-      if (onEdge('bottom')) { y1--; cut = true; }
-      if (!cut) break;
+    for (let n = 0; n < 24; n++) {
+      let cutAny = false;
+      if (onEdge('left')) { rect.x0++; cutAny = true; }
+      if (onEdge('right')) { rect.x1--; cutAny = true; }
+      if (onEdge('top')) { rect.y0++; cutAny = true; }
+      if (onEdge('bottom')) { rect.y1--; cutAny = true; }
+      if (!cutAny) break;
     }
+    const { x0, y0, x1, y1 } = rect;
     const im = crop(img, x0, y0, x1, y1);
     let dr = 0;
     for (let i = 0; i < im.width * im.height; i++) dr += im.data[i * 4 + 2] - im.data[i * 4];
@@ -405,18 +416,28 @@ function harvest(file) {
  * 四隅に盤面の色が三角形で残る。貼る側は同じ角度で切り抜くので、本当は
  * 残っていても隠れるのだが、切り抜きの角度がわずかにずれただけで
  * 角に灰色の点が出る。**盤面だった画素だけ**をガラスで埋めておけば、
- * どちらにずれても汚れない ―― 面取りの稜線には触らないので、角の切子は残る。
+ * どちらにずれても汚れない。
+ *
+ * **塗り広げる範囲は角の三角形に閉じ込める。** ガラスの縁（面取りの光）は
+ * 盤面と明るさが近いので、閉じ込めないと塗りつぶしが縁づたいに一周し、
+ * いちばん外側の光がまるごとガラスで塗り消される ―― 貼ったときに
+ * 「縁の無いのっぺりした板」になった。角の落としは 1 マスの 2 割ほどなので、
+ * 4 割で頭打ちにしておけば、本物の角は拾えて縁には届かない。
+ *
+ * @returns {number} 角の落としの大きさ（1 マスぶんの画素数に対する割合）
  */
-function fillCorners(im) {
+function fillCorners(im, unit) {
   const { width: w, height: h, data } = im;
+  const limit = unit * 0.4;
   const outside = new Uint8Array(w * h);
   const stack = [];
-  // 四隅から、その角の色に近いところだけを塗り広げる。
-  // ブロックの縁には必ず暗い目地の影が回っているので、そこで止まる
+  let cut = 0;
   for (const [cx, cy] of [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]]) {
     const base = LUM(data, cy * w + cx);
     const push = (x, y) => {
       if (x < 0 || y < 0 || x >= w || y >= h) return;
+      // 角からの三角形の外へは出さない
+      if (Math.min(x, w - 1 - x) + Math.min(y, h - 1 - y) >= limit) return;
       const k = y * w + x;
       if (outside[k]) return;
       if (Math.abs(LUM(data, k) - base) > 10) return;
@@ -428,6 +449,7 @@ function fillCorners(im) {
       const k = stack.pop();
       const x = k % w;
       const y = (k / w) | 0;
+      cut = Math.max(cut, Math.min(x, w - 1 - x) + Math.min(y, h - 1 - y) + 1);
       push(x + 1, y); push(x - 1, y); push(x, y + 1); push(x, y - 1);
     }
   }
@@ -453,6 +475,7 @@ function fillCorners(im) {
     }
     for (const [x, y] of edge) outside[y * w + x] = 0;
   }
+  return cut / unit;
 }
 
 /** 三角フィルタで拡大縮小（縮小は面積平均に近く、拡大は線形補間になる） */
@@ -535,16 +558,21 @@ function buildArt(files) {
   }
 
   mkdirSync(ART, { recursive: true });
+  const chamfers = [];
   for (const key of SHAPES) {
     const block = found.get(key);
     const { cols, rows, img } = block;
-    fillCorners(img);
+    const unit = Math.min(img.width / cols, img.height / rows);
+    chamfers.push(fillCorners(img, unit));
     const px = denoise(resample(img, cols * UNIT, rows * UNIT), cols * UNIT, rows * UNIT);
     const png = encodeGray(cols * UNIT, rows * UNIT, px);
     writeFileSync(resolve(ART, `${key}.png`), png);
     console.log(`art/crystal/${key}.png  ${cols * UNIT}x${rows * UNIT}  `
       + `${(png.length / 1024).toFixed(1)}KB  <- 写真の ${img.width}x${img.height}`);
   }
+  const cut = median(chamfers);
+  writeFileSync(resolve(ART, 'chamfer.txt'), `${cut.toFixed(4)}\n`);
+  console.log(`角の落とし ${(cut * 100).toFixed(1)}%（1 マスぶんの短辺に対する割合）`);
 }
 
 // ---------------------------------------------------------------- モジュールを焼く
@@ -558,7 +586,11 @@ function bake() {
     return { key, cols, rows, b64 };
   });
   const list = entries.map((e) => `  { cols: ${e.cols}, rows: ${e.rows}, src: '${DATA}${e.b64}' },`).join('\n');
+  let cut = '0.095';
+  try { cut = readFileSync(resolve(ART, 'chamfer.txt'), 'utf8').trim(); } catch { /* 既定のまま */ }
   return `${HEAD}\nexport const PHOTO_UNIT = ${UNIT};\n\n`
+    + `/**\n * 写真の角の落とし（1 マスぶんの短辺に対する割合）。切り抜きをこれより\n`
+    + ` * 深くすると、角の切子をガラスごと削ってしまう。\n */\nexport const PHOTO_CHAMFER = ${cut};\n\n`
     + `/** 写真 1 枚ぶん。cols/rows はもとのブロックが何マスだったか */\n`
     + `const PHOTOS = [\n${list}\n];\n${TAIL}`;
 }
