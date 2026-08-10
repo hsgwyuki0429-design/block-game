@@ -503,13 +503,17 @@ svg .fill { fill: currentColor; stroke: none; }
 
 /*
  * 画面の後ろに広がる色。色つきブロックとまったく同じ色で、うんと薄い。
+ * **画面全体**がこの色で、上下で濃さは変えない ―― 変えると、色が違うのか
+ * 濃さが違うのかが読めなくなる。
  *
- * **下から満ちてくる。** 解に近づくほど色が高いところまで上がり、遠ざかれば下がる。
- * 色相と高さの両方が動くので、盤面を見ているだけで進み具合が視野の端に入る ――
- * 「あと何手」と数字で出すより、目を上げずに済む。
+ * 色が変わるときだけ、**下から満ちる**。
+ * ブロックの色は 1 手ぶんまるごと切り替わるが、画面いっぱいの背景まで同時に
+ * 切り替わると、視界の端で照明が点滅したように見える。そこで前の色（--game-prev）を
+ * 上に残したまま、新しい色（--game-tint）を下端から押し上げる。境目は広くぼかして
+ * あるので、横線が横切るのではなく水位が上がるように見える。
  *
- * 値は JS が毎フレーム入れ直す（--game-tint = 色、--game-rise = どこまで満ちたか）。
- * CSS の transition は使わない ―― 表示用の進行度そのものが滑らかに動くので、
+ * 値は JS が入れ直す（--game-tint / --game-prev = 色、--game-rise = 水位）。
+ * CSS の transition は使わない ―― 水位そのものを JS が毎フレーム動かしているので、
  * 二重に補間するとかえって遅れて見える。
  */
 .game-aura {
@@ -518,14 +522,16 @@ svg .fill { fill: currentColor; stroke: none; }
   z-index: 0;
   pointer-events: none;
   background:
-    /* 盤面のまわりのほのかな滲み */
-    radial-gradient(70% 34% at 50% 46%, var(--game-tint, transparent), transparent 76%),
-    /* 下から満ちる本体。止まり位置が進行度で上がっていく */
+    /* 中央（盤面のあたり）だけをほのかに明るく抜く。のっぺりした一枚板にしない。
+       ここは進行度と無関係なので、色が変わっても動かさなくていい */
+    radial-gradient(78% 42% at 50% 42%, rgba(255, 255, 255, 0.5), transparent 74%),
+    /* 色の本体。--game-rise を境に、下が新しい色・上が前の色 */
     linear-gradient(
       to top,
-      var(--game-deep, transparent) 0%,
-      var(--game-tint, transparent) calc(var(--game-rise, 0%) * 0.34),
-      transparent var(--game-rise, 0%)
+      var(--game-tint, transparent) 0%,
+      var(--game-tint, transparent) calc(var(--game-rise, 100%) - 26%),
+      var(--game-prev, transparent) calc(var(--game-rise, 100%) + 26%),
+      var(--game-prev, transparent) 100%
     );
 }
 

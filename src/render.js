@@ -207,6 +207,11 @@ const UI_FONT = 'ui-rounded, -apple-system, "SF Pro Rounded", "Hiragino Maru Got
 
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 
+/** 背景の新しい色が画面の下から上まで満ちるのにかける秒数 */
+const AURA_SWEEP = 1.1;
+/** 新旧の色の境目をぼかす幅（画面の高さに対する %）。硬い線が横切らないように */
+const AURA_FEATHER = 26;
+
 /**
  * 角を 45° で切り落とした矩形を path に足す（エメラルドカット）。
  * 落とすのは**外側の角だけ** ―― 同じブロックの隣と接している角を落とすと、
@@ -261,6 +266,14 @@ export class Renderer {
     this.progress = 0;
     this.progressTarget = 0;
     this._tintAt = -1;
+    /**
+     * 背景の色の渡り方。
+     * auraFrom = 前の段の色 / auraTo = 新しい段の色 / auraWave = 下からどこまで満ちたか。
+     * 色が 1 段動くたびに auraWave が 0 に戻り、下端から上へ塗り替わっていく。
+     */
+    this.auraFrom = 0;
+    this.auraTo = 0;
+    this.auraWave = 1;
     /** 色を何段に分けるか。レベルの最短手数がそのまま段数になる */
     this.steps = 32;
 
@@ -319,7 +332,12 @@ export class Renderer {
    */
   setProgress(t, immediate = false) {
     this.progressTarget = Math.max(0, Math.min(1, t || 0));
-    if (immediate) this.progress = this.progressTarget;
+    if (immediate) {
+      this.progress = this.progressTarget;
+      // 背景も満ちきった状態から始める。レベルを跨いだのに前の色が上に残っていると、
+      // 新しい盤面の色が何を指しているのか読めない
+      this._tintAt = -1;
+    }
   }
 
   /**
@@ -334,6 +352,22 @@ export class Renderer {
   refreshTint() {
     const q = Math.round(this.progress * this.steps) / this.steps;
     if (this._tintAt === q) return;
+    /*
+     * 背景はここで**すぐには**変わらない。
+     *
+     * ブロックの色は 1 手ぶんまるごと切り替わるが、画面いっぱいの背景まで同時に
+     * 切り替わると、視界の端で照明が点滅したように見える。代わりに直前の色を
+     * 覚えておき、新しい色を**下端から上へ満たしていく**（auraWave）。
+     * 一瞬で置き換わるのではなく、水位が上がるように渡っていく。
+     */
+    if (this._tintAt >= 0) {
+      this.auraFrom = this._tintAt;
+      this.auraWave = 0;
+    } else {
+      this.auraFrom = q; // 最初の 1 回（レベルを開いた瞬間）は満ちきった状態から始める
+      this.auraWave = 1;
+    }
+    this.auraTo = q;
     this._tintAt = q;
     this.tint = progressColor(q);
     this.stonePal = paletteFor(this.material, false, null);
@@ -341,16 +375,35 @@ export class Renderer {
     this.trayPal = trayPaletteFor(this.material, this.tint.base);
   }
 
-  /** 背景に敷く色。色つきブロックと同じ色を、うんと薄めて返す */
+  /**
+   * 背景に敷く色。色つきブロックとまったく同じ色を、うんと薄めて返す。
+   * 画面は**全体が**この色で、濃さは上下で変えない ―― 変えると、色の違いなのか
+   * 濃さの違いなのかが読めなくなる。
+   */
   auraColor(alpha = 0.22) {
-    const m = this.material;
-    if (m.rawTint) return auraFor(this.progress, null, 1, alpha);
-    return auraFor(this.progress, m.colors.lit.mid, m.tint, alpha);
+    return this.auraAt(this.auraTo, alpha);
   }
 
-  /** 背景の色がどこまで満ちているか（画面の下からの割合） */
+  /** ひとつ前の段の色。新しい色が満ちきるまで、上のほうに残っている */
+  auraPrevColor(alpha = 0.22) {
+    return this.auraAt(this.auraFrom, alpha);
+  }
+
+  auraAt(t, alpha) {
+    const m = this.material;
+    if (m.rawTint) return auraFor(t, null, 1, alpha);
+    return auraFor(t, m.colors.lit.mid, m.tint, alpha);
+  }
+
+  /**
+   * 新しい色の水位（画面の下からの %）。
+   *
+   * 端は AURA_FEATHER のぶんぼかすので、水位は「画面の下の外」から
+   * 「画面の上の外」まで動かす ―― そうしないと、満ちきったあとも画面の上端に
+   * 前の色が細く残る。
+   */
   auraRise() {
-    return 26 + this.progress * 68;
+    return -AURA_FEATHER + this.auraWave * (100 + AURA_FEATHER * 2);
   }
 
   /** ブロックの色。灰色はデザインそのまま、色つきは進行度の色を混ぜたもの */
@@ -549,6 +602,8 @@ export class Renderer {
       if (Math.abs(this.progressTarget - this.progress) < 0.0008) this.progress = this.progressTarget;
     }
     this.refreshTint();
+    // 背景の色は「下から満ちる」ぶんだけ遅れて追いつく（AURA_SWEEP 秒で画面いっぱい）
+    if (this.auraWave < 1) this.auraWave = Math.min(1, this.auraWave + dt / AURA_SWEEP);
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.viewW, this.viewH);
