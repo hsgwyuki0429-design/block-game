@@ -77,6 +77,15 @@ test('Service Worker は相対パスで、ページ本体をネットワーク�
   assert.match(sw, /app\\\.js\|styles\\\.css/);
 });
 
+test('アプリ本体でないページを index.html として焼き付けない', () => {
+  const sw = read('sw.js');
+  // 同じ場所に置いた別のページ（触覚の検証ページなど）を一度開いただけで
+  // オフライン起動がそのページに差し替わる、という事故を防ぐ
+  assert.match(sw, /function isAppShell/, 'アプリ本体かどうかの判定が要る');
+  assert.match(sw, /if \(appShell[^)]*\) \{[\s\S]*?cache\.put\('\.\/index\.html'/,
+    "index.html への保存は本体のときだけであるべき");
+});
+
 test('ページから Service Worker を登録している（file:// では登録しない）', () => {
   const app = read('app.js');
   assert.match(app, /serviceWorker.*register\('sw\.js'/s);
