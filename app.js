@@ -5011,7 +5011,7 @@ class ClearEffects {
 
   draw(now) {
     if (!this.running || !this.ctx) return;
-    const dt = fxClamp((now - this.lastTime) / 1000 * 2.0, 0.008, 0.05);
+    const dt = fxClamp((now - this.lastTime) / 1000 * 2.0, 0.008, 0.066);
     this.lastTime = now;
 
     const ctx = this.ctx;
