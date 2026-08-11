@@ -346,7 +346,7 @@ export class ClearEffects {
       if (r.life <= 0) continue;
       alive = true;
       const t = 1 - r.life / r.maxLife;
-      const radius = r.radius * easeOutCubic(fxClamp(t, 0, 1));
+      const radius = r.radius * fxEaseOutCubic(fxClamp(t, 0, 1));
       ctx.beginPath();
       ctx.arc(r.x, r.y, radius, 0, TAU);
       ctx.lineWidth = r.width * (0.35 + (1 - t));
@@ -369,7 +369,7 @@ export class ClearEffects {
       if (r.life <= 0) continue;
       alive = true;
       const t = 1 - r.life / r.maxLife;
-      const len = r.length * easeOutCubic(fxClamp(t * 1.12, 0, 1));
+      const len = r.length * fxEaseOutCubic(fxClamp(t * 1.12, 0, 1));
       const x2 = r.x + Math.cos(r.angle) * len;
       const y2 = r.y + Math.sin(r.angle) * len;
       ctx.beginPath();
