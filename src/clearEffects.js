@@ -14,7 +14,7 @@ const PALETTE = [
   '#ffe8b8',
 ];
 
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const fxClamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 const easeOutQuint = (t) => 1 - Math.pow(1 - t, 5);
 const easeInOut = (t) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
@@ -290,7 +290,7 @@ export class ClearEffects {
 
   draw(now) {
     if (!this.running || !this.ctx) return;
-    const dt = clamp((now - this.lastTime) / 1000, 0.008, 0.033);
+    const dt = fxClamp((now - this.lastTime) / 1000, 0.008, 0.033);
     this.lastTime = now;
 
     const ctx = this.ctx;
@@ -303,7 +303,7 @@ export class ClearEffects {
       f.life -= dt;
       if (f.life <= 0) continue;
       alive = true;
-      const t = clamp(f.life / f.maxLife, 0, 1);
+      const t = fxClamp(f.life / f.maxLife, 0, 1);
       const alpha = Math.pow(t, 1.8) * f.alpha;
       const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.radius);
       g.addColorStop(0, `rgba(255,255,255,${alpha})`);
@@ -323,7 +323,7 @@ export class ClearEffects {
       if (s.life <= 0) continue;
       alive = true;
       const t = 1 - s.life / s.maxLife;
-      const r = s.maxRadius * easeOutQuint(clamp(t, 0, 1));
+      const r = s.maxRadius * easeOutQuint(fxClamp(t, 0, 1));
       ctx.beginPath();
       ctx.arc(s.x, s.y, r, 0, TAU);
       ctx.lineWidth = s.width * (1 - t * 0.65);
@@ -346,7 +346,7 @@ export class ClearEffects {
       if (r.life <= 0) continue;
       alive = true;
       const t = 1 - r.life / r.maxLife;
-      const radius = r.radius * easeOutCubic(clamp(t, 0, 1));
+      const radius = r.radius * easeOutCubic(fxClamp(t, 0, 1));
       ctx.beginPath();
       ctx.arc(r.x, r.y, radius, 0, TAU);
       ctx.lineWidth = r.width * (0.35 + (1 - t));
@@ -369,7 +369,7 @@ export class ClearEffects {
       if (r.life <= 0) continue;
       alive = true;
       const t = 1 - r.life / r.maxLife;
-      const len = r.length * easeOutCubic(clamp(t * 1.12, 0, 1));
+      const len = r.length * easeOutCubic(fxClamp(t * 1.12, 0, 1));
       const x2 = r.x + Math.cos(r.angle) * len;
       const y2 = r.y + Math.sin(r.angle) * len;
       ctx.beginPath();
@@ -397,7 +397,7 @@ export class ClearEffects {
       p.y += p.vy * dt * 60;
       p.rot += p.spin * dt * 60;
 
-      const a = Math.pow(clamp(p.life / p.maxLife, 0, 1), 0.72);
+      const a = Math.pow(fxClamp(p.life / p.maxLife, 0, 1), 0.72);
 
       ctx.save();
       ctx.translate(p.x, p.y);
