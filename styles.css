@@ -565,7 +565,7 @@ svg .fill { fill: currentColor; stroke: none; }
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(72px + var(--safe-b));
+  bottom: 150px !important;
   z-index: 20;
   display: flex;
   align-items: center;
