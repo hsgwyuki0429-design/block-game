@@ -21,6 +21,7 @@ import { Renderer, colorFor } from './render.js';
 import { materialList, materialFor, DEFAULT_MATERIAL } from './materials.js';
 import { attachInput } from './input.js';
 import { Sound } from './audio.js';
+import { ClearEffects } from './clearEffects.js';
 import {
   savedName, saveName, forgetName, sanitizeName, clearLocalRanking,
   isGlobalRanking, fetchRanking, submitScore, fetchStarRanking, submitStars, RANK_LIMIT,
