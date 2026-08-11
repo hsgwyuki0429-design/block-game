@@ -109,7 +109,7 @@ export class Game {
     this.store = loadStore();
     this.settings = Object.assign({ ...DEFAULT_SETTINGS }, this.store.settings || {});
     this.sound = new Sound();
-
+    this.clearCelebration = new ClearEffects();
     this.puzzle = null;
     this.history = [];
     this.moves = 0;
@@ -611,9 +611,27 @@ export class Game {
     this.sound.pop(this.combo - 1, pieces.length);
 
     for (const id of group) this.board.removePiece(id);
-    this.selected = null;
-    this.anim = null;
-    this.afterMove();
+this.selected = null;
+this.anim = null;
+
+if (this.board.isCleared && !this.settings.calm) {
+  const stars = starsForMoves(this.moves, this.targets);
+  const rect = this.dom.canvas.getBoundingClientRect();
+  const screenCenter = this.renderer.cellCenter(
+    sx / cells - 0.5,
+    sy / cells - 0.5,
+  );
+
+  this.clearCelebration.play({
+    stars,
+    level: this.level,
+    centerX: rect.left + screenCenter.x,
+    centerY: rect.top + screenCenter.y,
+    calm: this.settings.calm,
+  });
+}
+
+this.afterMove();
   }
 
   /**
