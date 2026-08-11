@@ -165,7 +165,10 @@ export function levelSeed(level) {
  */
 export function targetMoves(par) {
   const gold = Math.max(1, Math.round(par));
-  return { gold, silver: Math.ceil(gold * 1.5) + 2 };
+  return {
+    gold,
+    silver: gold * 2,
+  };
 }
 
 /** 解いた手数 -> 星（3/2/1） */
