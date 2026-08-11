@@ -5,13 +5,13 @@
 const TAU = Math.PI * 2;
 
 const PALETTE = [
-  '#ffffff',
-  '#e8f7ff',
-  '#bfe9ff',
-  '#9ad8ff',
-  '#d8c8ff',
-  '#f8e8ff',
-  '#ffe8b8',
+  '#FFFFFF',
+  '#00E5FF',
+  '#2979FF',
+  '#7C4DFF',
+  '#FF2BD6',
+  '#00FFB3',
+  '#FFD400',
 ];
 
 const fxClamp = (v, a, b) => Math.max(a, Math.min(b, v));
