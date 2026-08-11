@@ -565,7 +565,7 @@ svg .fill { fill: currentColor; stroke: none; }
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(42px + var(--safe-b));
+  bottom: calc(72px + var(--safe-b));
   z-index: 20;
   display: flex;
   align-items: center;
@@ -1320,7 +1320,7 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 
 @media (max-height: 700px) {
-  :root { --dock-h: 112px; }
+  :root { --dock-h: 142px; }
   .title { font-size: 27px; }
   .subtitle { font-size: 12px; }
   .screen { gap: 10px; }
