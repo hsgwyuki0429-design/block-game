@@ -651,7 +651,7 @@ CORS（`Access-Control-Allow-Origin`）を許すことだけ忘れないこと�
 
 **ID が空の枠は、丸ごと出ない。** 枠の DOM は `hidden` のまま場所も取らず、忍者AdMax のスクリプトも読みに行かない。入れ忘れても、空の枠が残ったり、オフライン起動の邪魔になる通信が増えたりしない。
 
-いま入っているのは `game`（盤面とツールバーのあいだ）の 1 枠だけ。忍者AdMax は**審査が無い**ので、増やしたければ広告枠をもう 1 つ作って ID を足すだけでよい。
+いま入っているのは `game`（盤面とツールバーのあいだ）と `clear`（クリアの表示）の 2 枠。忍者AdMax は**審査が無い**ので、増やしたければ広告枠をもう 1 つ作って ID を足すだけでよい。
 
 ### 出す場所は 4 か所
 
@@ -687,7 +687,7 @@ CORS（`Access-Control-Allow-Origin`）を許すことだけ忘れないこと�
        home:   { id: '', type: 'banner', width: 320, height: 50 },   // 空にした枠は出ない
        levels: { id: '', type: 'banner', width: 320, height: 50 },
        game:   { id: '324373f6ac260f664ab65c6869c0ea2d', type: 'banner', width: 320, height: 50 },
-       clear:  { id: '', type: 'banner', width: 320, height: 50 },
+       clear:  { id: '24d60ba6b37c9d6d805ee39b13f5d210', type: 'banner', width: 320, height: 50 },
      },
    };
    ```

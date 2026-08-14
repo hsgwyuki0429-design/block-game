@@ -77,6 +77,6 @@ export const ADMAX = {
     home:   { id: '', type: 'banner', width: 320, height: 50 },
     levels: { id: '', type: 'banner', width: 320, height: 50 },
     game:   { id: '324373f6ac260f664ab65c6869c0ea2d', type: 'banner', width: 320, height: 50 },
-    clear:  { id: '', type: 'banner', width: 320, height: 50 },
+    clear:  { id: '24d60ba6b37c9d6d805ee39b13f5d210', type: 'banner', width: 320, height: 50 },
   },
 };
