@@ -2513,6 +2513,71 @@ function makeCanvas(w, h) {
   return null;
 }
 
+/*
+ * 無色（グレースケール）の写真を、色で染める。
+ *
+ * **合成の混ぜ方（globalCompositeOperation = 'color'）には頼らない。**
+ * あれは仕様にはあるが「分離しない混ぜ方」で、実装によっては効かない ――
+ * 実際、Android のある端末では色つきブロックにだけ色が乗らなかった
+ * （灰色ブロックは無彩色を被せているので、効かなくても見た目が変わらず、
+ * 色つきブロックだけが白いガラスのまま残る、という出方をしていた）。
+ *
+ * そこで画素を自分で解く。やっていることは 'color' の定義そのもの ――
+ * 「色相と彩度は塗った色、明るさは下のまま」（仕様の SetLum）。
+ * どの端末でも同じ絵になり、iOS でのいまの見え方も変わらない。
+ */
+
+/** 合成の仕様が使う明るさ。sRGB の luma とは係数が違うので、別に持つ */
+const blendLum = (r, g, b) => 0.3 * r + 0.59 * g + 0.11 * b;
+
+/** 仕様の ClipColor。範囲から出た成分を、明るさを保ったまま引き戻す */
+function clipColor(c) {
+  const l = blendLum(c[0], c[1], c[2]);
+  const n = Math.min(c[0], c[1], c[2]);
+  const x = Math.max(c[0], c[1], c[2]);
+  if (n < 0) for (let i = 0; i < 3; i++) c[i] = l + ((c[i] - l) * l) / (l - n);
+  if (x > 1) for (let i = 0; i < 3; i++) c[i] = l + ((c[i] - l) * (1 - l)) / (x - l);
+  return c;
+}
+
+/**
+ * 画素をその場で染める（RGBA が並んだ配列を書き換える）。
+ *
+ * 透明度には触らない。触ると、写真の縁の半端な画素まで色が伸びて、
+ * ブロックの外へ色がにじむ。
+ *
+ * @param {Uint8ClampedArray} data getImageData().data
+ * @param {string} tintHex 被せる色
+ * @param {number} strength 0..1。1 まで上げると、ガラスではなく塗った板に見える
+ */
+function colorizePixels(data, tintHex, strength) {
+  const k = Math.max(0, Math.min(1, strength));
+  if (k <= 0) return data;
+  const [tr, tg, tb] = hexRgb(tintHex).map((v) => v / 255);
+  const tl = blendLum(tr, tg, tb);
+  /*
+   * 行き先を明るさ 256 段ぶん先に作っておく。
+   * 下は無彩色なので、行き先は**明るさだけ**で決まる ―― 1 画素ずつ解いても
+   * 同じ答えになるし、こうすると 1 画素あたり足し算 3 回で済む。
+   */
+  const lut = new Uint8ClampedArray(768);
+  for (let i = 0; i < 256; i++) {
+    const d = i / 255 - tl;
+    const c = clipColor([tr + d, tg + d, tb + d]);
+    lut[i * 3] = c[0] * 255;
+    lut[i * 3 + 1] = c[1] * 255;
+    lut[i * 3 + 2] = c[2] * 255;
+  }
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue; // 透明な画素は触らない（色がにじむ）
+    const o = Math.round(blendLum(data[i], data[i + 1], data[i + 2])) * 3;
+    data[i] = mix(data[i], lut[o], k);
+    data[i + 1] = mix(data[i + 1], lut[o + 1], k);
+    data[i + 2] = mix(data[i + 2], lut[o + 2], k);
+  }
+  return data;
+}
+
 /** roundRect は Safari 16.4 未満に無い。無ければ自前で足す */
 function installRoundRect() {
   if (typeof CanvasRenderingContext2D === 'undefined') return;
@@ -3323,29 +3388,73 @@ class Renderer {
    * エメラルドカットの面取りは「一定の幅の帯」なので、これでどの大きさでも
    * 写真と同じ太さのまま収まる。全部のレベルに同じ 4 枚で足りるのはこのため。
    *
-   * 色は貼ってから被せる。'color' は「色相と彩度は塗った色、明るさは下のまま」
-   * という混ぜ方なので、ガラスの陰影を潰さずに色だけが変わる ――
-   * 進行度の色（手数の目盛り）が、写真の上でもそのまま働く。
+   * 色は貼ってから被せる。「色相と彩度は塗った色、明るさは写真のまま」なので、
+   * ガラスの陰影を潰さずに色だけが変わる ―― 進行度の色（手数の目盛り）が、
+   * 写真の上でもそのまま働く。
+   *
+   * 染めるのは**別のキャンバスの上**で、画素を直に書き換えてやる（colorizePixels）。
+   * 合成の混ぜ方に任せると効かない端末があり、そこでは色つきブロックだけが
+   * 白いガラスのまま残った。別のキャンバスを挟むのは、ここに直に描くと
+   * すでに敷いてある接地影まで一緒に染まってしまうため。
    */
   bakePhoto(ctx, outer, box, cols, rows, pal, colored) {
     const mat = this.material;
-    const img = photoFor(cols, rows);
-    ctx.save();
-    ctx.clip(outer);
-    if (img) this.drawNineSlice(ctx, img, box, cols, rows);
-    else {
-      // まだ復号できていない。無地で置いておく（読めたら焼き直される）
-      ctx.fillStyle = pal.mid;
-      ctx.fillRect(box.x0, box.y0, box.w, box.h);
-    }
-    ctx.globalCompositeOperation = 'color';
+    let img = photoFor(cols, rows);
+    // 大きさを持たない写真は、復号に失敗している。そのまま貼ると**何も描かれず**
+    // ブロックが消えるので、無地に落とす（無地なら色は付いている）
+    if (img && !(img.naturalWidth || img.width)) img = null;
     // 色つきは進行度の色、灰色は写真がもともと帯びている青み。
     // 濃さを 1 まで上げると、ガラスではなく**塗った板**に見える ――
     // 少し透かすと、地の無彩色が残って「染めたガラス」になる
-    ctx.globalAlpha = colored ? mat.tint : 1;
-    ctx.fillStyle = colored ? this.tint.base : mat.photoTint;
-    ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+    const tintHex = colored ? this.tint.base : mat.photoTint;
+    const strength = colored ? mat.tint : 1;
+
+    ctx.save();
+    ctx.clip(outer);
+    if (!img) {
+      // まだ復号できていない。無地で置いておく（読めたら焼き直される）。
+      // pal.mid はもう色が乗っているので、被せる必要は無い
+      ctx.fillStyle = pal.mid;
+      ctx.fillRect(box.x0, box.y0, box.w, box.h);
+      ctx.restore();
+      return;
+    }
+    const dyed = this.dyePhoto(img, box, cols, rows, tintHex, strength);
+    if (dyed) {
+      ctx.drawImage(dyed, box.x0, box.y0, box.w, box.h);
+    } else {
+      // 画素を読めない環境。混ぜ方に頼るしかないが、効かなくても無色で残るだけ
+      this.drawNineSlice(ctx, img, box, cols, rows);
+      ctx.globalCompositeOperation = 'color';
+      ctx.globalAlpha = strength;
+      ctx.fillStyle = tintHex;
+      ctx.fillRect(box.x0 - 2, box.y0 - 2, box.w + 4, box.h + 4);
+    }
     ctx.restore();
+  }
+
+  /**
+   * 写真を 1 枚ぶん貼って染めたものを返す。失敗したら null。
+   * 大きさはブロックの箱そのままで、画素密度ぶん大きく作る。
+   */
+  dyePhoto(img, box, cols, rows, tintHex, strength) {
+    const s = this.dpr;
+    const cv = makeCanvas(box.w * s, box.h * s);
+    if (!cv) return null;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.scale(s, s);
+    // 箱を原点へ移した写し。9 分割の割り方は貼る先と同じ
+    const local = { x0: 0, y0: 0, x1: box.w, y1: box.h, w: box.w, h: box.h };
+    this.drawNineSlice(ctx, img, local, cols, rows);
+    try {
+      const px = ctx.getImageData(0, 0, cv.width, cv.height);
+      colorizePixels(px.data, tintHex, strength);
+      ctx.putImageData(px, 0, 0);
+    } catch {
+      return null; // 画素を読めない（あってはならないが、黙って諦める）
+    }
+    return cv;
   }
 
   /**
