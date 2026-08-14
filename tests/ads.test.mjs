@@ -33,12 +33,20 @@ test('設定の枠の名前は、置き場所の id と対応している', () =
   assert.deepEqual(keys, SLOTS.map((id) => id.replace(/^ad-/, '')).sort());
 });
 
-test('既定では広告は切れている（ID を直書きしない）', () => {
+test('広告ユニットの設定は、空か、正しい形の ID のどちらか', () => {
   for (const [name, slot] of Object.entries(ADMAX.slots)) {
-    assert.equal(slot.id, '', `${name} の広告ユニット ID は config.js で入れるもの`);
+    // 空なら「その枠は出さない」。入れるなら忍者AdMax の広告枠 ID（英数字32桁）
+    assert.ok(slot.id === '' || /^[0-9a-zA-Z]{32}$/.test(slot.id), `${name} の ID の形がおかしい`);
     // 大きさは先に場所を取るために使うので、入れ忘れると画面が飛び跳ねる
     assert.ok(slot.width > 0 && slot.height > 0, `${name} に大きさが無い`);
+    assert.ok(['banner', 'switch'].includes(slot.type), `${name} の type がおかしい`);
   }
+});
+
+test('広告の ID は config.js だけに書く', () => {
+  // ここ以外に散らすと、差し替えるときに探し回ることになる
+  assert.ok(!/[0-9a-f]{32}/.test(html), 'index.html に広告タグを貼らない');
+  assert.ok(!/[0-9a-f]{32}/.test(adsSource), 'src/ads.js に ID を書かない');
 });
 
 test('広告のスクリプトは HTML には貼らない（組み立ては src/ads.js の仕事）', () => {

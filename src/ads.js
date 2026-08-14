@@ -108,7 +108,9 @@ export const ads = {
    * 引っ込めるのは表示だけで、広告を呼び直しはしない。
    */
   showClear() {
-    this.hide('game');
+    // 入れ替える相手が居るときだけ引っ込める。clear の枠を作っていないなら、
+    // ゲーム画面の広告はそのまま出しておく（消しても何も入らない）
+    if (admaxSlot('clear')) this.hide('game');
     this.show('clear');
   },
 
