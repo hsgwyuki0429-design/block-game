@@ -27,6 +27,7 @@ import {
   isGlobalRanking, fetchRanking, submitScore, fetchStarRanking, submitStars, RANK_LIMIT,
 } from './ranking.js';
 import { attachSheetSwipe, resetSheet } from './sheet.js';
+import { ads } from './ads.js';
 
 /**
  * 保存領域。
@@ -1022,6 +1023,8 @@ this.afterMove();
     if (d.gameAura) d.gameAura.hidden = name !== 'game';
     // 隠れている間はキャンバスの実寸が 0 なので、見えてから測り直す
     if (name === 'game') requestAnimationFrame(() => this.renderer.resize(this.board.size));
+    // 広告は、開いた画面のぶんだけ呼ぶ（枠の名前は画面名と揃えてある）
+    ads.show(name);
   }
 
   showHome() {
@@ -1364,10 +1367,15 @@ this.afterMove();
       ],
       extra: this.newRecord ? '自己ベスト更新!' : (this.newStars ? '星が増えました!' : ''),
     });
+
+    // クリアのときだけ出す。押し間違いを避けるため、カードの外・ボタンより下に置いてある
+    ads.showClear();
   }
 
   showOverlay(cfg) {
     const d = this.dom;
+    // 広告はクリアのときだけ出す。読み込み中の表示に混ぜない
+    ads.hideClear();
     d.overlayBadge.textContent = cfg.badge || '';
     d.overlayTitle.textContent = cfg.title || '';
     d.overlayTitle.className = cfg.titleClass || '';
@@ -1411,6 +1419,8 @@ this.afterMove();
 
   hideOverlay() {
     this.dom.overlay.hidden = true;
+    // クリアの広告を畳んで、ゲーム画面の広告を戻す
+    ads.hideClear();
   }
 
   // ------------------------------------------------------------ ランキング

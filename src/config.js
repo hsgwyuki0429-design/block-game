@@ -34,3 +34,49 @@
  * CORS を許す（Access-Control-Allow-Origin）ことだけ忘れないこと。
  */
 export const RANKING_ENDPOINT = 'https://slidepop.hsgw-yuki0429.workers.dev/';
+
+/**
+ * 広告（忍者AdMax）の設定。
+ *
+ * どの枠も `id` が空のあいだは**広告まわりを一切動かさない** ―― 枠も出さないし、
+ * 忍者AdMax のスクリプトも読み込まない。ID を入れ忘れたまま配信しても、
+ * 空白が残ったり、オフライン起動の邪魔になる通信が増えたりしない。
+ *
+ * 入れる値は、忍者AdMax の管理画面で「広告を作成」して貰えるタグの中身。
+ * 貰えるタグはこういう形をしている ――
+ *
+ *   <div class="admax-ads" data-admax-id="0123456789abcdef0123456789abcdef"
+ *        style="display:inline-block;width:320px;height:50px;"></div>
+ *   <script>(window.admaxads = window.admaxads || []).push(
+ *     {admax_id:"0123456789abcdef0123456789abcdef", type:"banner"});</script>
+ *   <script src="https://adm.shinobi.jp/st/t.js" async></script>
+ *
+ * このうち **id（data-admax-id の値）と、幅・高さ・type** をここに写す。
+ * タグそのものを貼る必要はない ―― 組み立ては src/ads.js がやる。
+ *
+ *   id     広告ユニットの ID（英数字32桁）。空にした枠は出ない
+ *   type   'banner'（固定サイズ）か 'switch'（PC/スマホ出し分け）。タグに書いてあるほう
+ *   width  タグの style に書いてある幅（px）
+ *   height 同じく高さ（px）。読み込み前に場所を取っておくのに使う
+ *
+ * 置き場所は 4 つ。要らない枠は id を空のままにしておけばよい。
+ *
+ *   home   ホーム画面のいちばん下
+ *   levels レベル一覧のいちばん下
+ *   game   ゲーム画面、盤面とツールバーのあいだ
+ *   clear  レベルクリアの表示（カードの外・ボタンより下）
+ *
+ * **ここを直したら `npm run build` を必ず走らせること。** ブラウザが読むのは
+ * src/ ではなく app.js なので、焼き直さないと設定が一切届かない。
+ *
+ * 忍者AdMax は審査が無いので、ID を入れて焼けばその日から出る（README の
+ * 「広告」の節に、取ってくるところから書いてある）。
+ */
+export const ADMAX = {
+  slots: {
+    home:   { id: '', type: 'banner', width: 320, height: 50 },
+    levels: { id: '', type: 'banner', width: 320, height: 50 },
+    game:   { id: '', type: 'banner', width: 320, height: 50 },
+    clear:  { id: '', type: 'banner', width: 320, height: 50 },
+  },
+};

@@ -681,8 +681,13 @@ svg .fill { fill: currentColor; stroke: none; }
   inset: -10px;
   z-index: 6;
   display: flex;
+  /* カードの下に広告が入ることがあるので、縦に積む（広告が無ければ従来どおり中央） */
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
+  /* 広告が下端にぴったり貼り付かないように、少しだけ余白を残す */
+  padding-bottom: 8px;
   border-radius: var(--r-sheet);
   background: color-mix(in srgb, var(--bg) 45%, transparent);
   -webkit-backdrop-filter: blur(24px) saturate(190%);
@@ -695,6 +700,8 @@ svg .fill { fill: currentColor; stroke: none; }
   width: min(94%, 330px);
   /* 背が低い端末でも下のボタンに届くように。行数はレベルによって変わる */
   max-height: 100%;
+  /* 広告が下に入ったぶんはカードが縮んで、カードの中がスクロールする */
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding: 26px 22px 20px;
@@ -1298,6 +1305,58 @@ svg .fill { fill: currentColor; stroke: none; }
 .sheet-card b.stars-inline { color: var(--gold); letter-spacing: 1px; }
 .sheet-card .btn + .btn { margin-top: 8px; }
 .sheet-card .btn + .muted { margin-top: 14px; }
+
+/* ============================================================ 広告 */
+
+/*
+ * 広告（忍者AdMax）の置き場所。src/config.js に ID を入れるまでは hidden の
+ * ままなので、ここのスタイルは丸ごと効かない ―― 枠も余白も一切生まれない。
+ *
+ * 出るときも「遊びの邪魔をしない」ことを優先している。
+ *   ・--ad-h（設定の高さ）で先に場所を取る。読み込みの前後で画面が飛び跳ねない。
+ *   ・幅がはみ出す端末では、広告ごと縮めて収める（横スクロールを作らない）。
+ *   ・「広告」と小さく添える。ゲームの表示と見分けが付かないのがいちばん悪い。
+ */
+.ad-slot {
+  flex: none;
+  width: 100%;
+  margin: 0 auto;
+  min-height: calc(var(--ad-h, 50px) + 14px);
+  text-align: center;
+  line-height: 0;
+}
+
+.ad-slot::before {
+  content: '広告';
+  display: block;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--label-3);
+  margin-bottom: 4px;
+}
+
+/*
+ * 忍者AdMax の枠は固定サイズ（320×50 など）で入る。画面のほうが狭いときは
+ * 縮めて収める ―― はみ出させると、盤面ごと横に振れてしまう。
+ */
+.ad-slot .admax-ads { max-width: 100%; }
+.ad-slot .admax-ads iframe,
+.ad-slot .admax-ads img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ゲーム画面。盤面（.board-wrap）が伸縮するので、そのぶんだけ盤面が小さくなる */
+.ad-game { margin-top: 2px; }
+
+/* クリアの表示。カードの外・ボタンより下に置いて、押し間違いで踏ませない */
+.ad-clear { margin-top: 2px; }
+
+/* 背の低い端末では、盤面を削ってまで広告を出さない */
+@media (max-height: 620px) {
+  .ad-game { display: none; }
+}
 
 /* ============================================================ 画面サイズ対応 */
 

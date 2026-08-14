@@ -27,7 +27,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SLIDE POP!">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="stylesheet" href="styles.css?v=f29f4cee4d">
+<link rel="stylesheet" href="styles.css?v=8b45f113fe">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
@@ -65,6 +65,9 @@
       <button class="link-btn" id="btn-settings" type="button">設定</button>
     </div>
   </div>
+
+  <!-- 広告。src/config.js に ID を入れるまでは hidden のままで、場所も取らない -->
+  <div class="ad-slot ad-home" id="ad-home" hidden></div>
 </section>
 
 <!-- ============================================================ レベル一覧 -->
@@ -97,6 +100,8 @@
   <p class="muted center levels-note">
     レベルは無限に続きます。鍵はありません ― どのレベルにも、いつでも挑戦できます。
   </p>
+
+  <div class="ad-slot" id="ad-levels" hidden></div>
 </section>
 
 <!-- ============================================================ ゲーム -->
@@ -140,8 +145,17 @@
         <div class="overlay-rank" id="overlay-rank"></div>
         <div class="overlay-actions" id="overlay-actions"></div>
       </div>
+
+      <!--
+        広告はカードの外・ボタンより下。押し間違いで踏ませないための位置であり、
+        カードの中に入れるとボタンの下にはみ出して、スクロールしないと見えない
+      -->
+      <div class="ad-slot ad-clear" id="ad-clear" hidden></div>
     </div>
   </main>
+
+  <!-- 盤面とツールバーのあいだ。盤面はそのぶんだけ小さくなる -->
+  <div class="ad-slot ad-game" id="ad-game" hidden></div>
 
   <!-- 下に浮くツールバー。盤面はこの下を通り、ガラス越しに透けて見える -->
   <nav class="dock">
@@ -400,6 +414,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=f29f4cee4d"></script>
+<script defer src="app.js?v=8b45f113fe"></script>
 </body>
 </html>
