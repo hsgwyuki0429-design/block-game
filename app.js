@@ -5976,6 +5976,37 @@ function runAdmax() {
 const adsBuilt = new Set();
 
 /**
+ * 「画面の下に貼り付く形（帯）で配信されたか」を見張る。
+ *
+ * 忍者AdMax は広告枠の種類によって、置いた枠の中ではなく**画面の下端に固定した
+ * 帯**として広告を出す。そのときこちらの枠には何も入らないので、放っておくと
+ * 「広告」の文字だけが宙に浮き、下の帯がツールバーを覆ってしまう。
+ *
+ * 枠に何も入らなかったら帯とみなして、画面の下に帯のぶんの余白を空ける。
+ * 逆に枠の中に入ったなら、それは並びの中に出る形なので余白は要らない。
+ * どちらで配信されるかは呼んでみるまで分からないので、結果を見て決めている。
+ */
+function watchAnchor(ins) {
+  const root = document.documentElement;
+  const filled = () => ins.firstChild != null;
+
+  if (filled()) { root.classList.remove('ads-anchor'); return; }
+
+  const mo = new MutationObserver(() => {
+    if (!filled()) return;
+    root.classList.remove('ads-anchor');
+    mo.disconnect();
+  });
+  mo.observe(ins, { childList: true });
+
+  // 届かないまま黙っていることもある。少し待って、入っていなければ帯とみなす
+  setTimeout(() => {
+    if (!filled()) root.classList.add('ads-anchor');
+    mo.disconnect();
+  }, 2000);
+}
+
+/**
  * 広告の枠。画面を出す側から `ads.show('home')` のように呼ぶ。
  *
  * 設定が空なら全て空振りする ―― 呼ぶ側に「広告があるかどうか」を持たせない。
@@ -5989,6 +6020,9 @@ const ads = {
 
     box.hidden = false;
     if (adsBuilt.has(name)) return;
+    // すでに画面の下に帯が出ているなら、これ以上は呼ばない。帯はページに 1 本しか
+    // 出ないので、枠を増やしても誰にも見えない広告を呼ぶだけになる
+    if (document.documentElement.classList.contains('ads-anchor')) return;
     adsBuilt.add(name);
 
     // 読み込みの前後で画面が飛び跳ねないよう、先に高さぶんの場所を取る
@@ -6004,6 +6038,7 @@ const ads = {
 
     (window.admaxads = window.admaxads || []).push({ admax_id: slot.id, type: slot.type });
     runAdmax();
+    watchAnchor(ins);
   },
 
   /** その場所の広告を引っ込める（読み込み中のカードなど、出したくない場面用） */

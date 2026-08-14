@@ -58,6 +58,14 @@
   --safe-t: env(safe-area-inset-top, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --dock-h: 92px;
+
+  /*
+   * 画面の下に貼り付く広告（オーバーレイ）の高さ。
+   * 忍者AdMax は広告枠の種類によって、並びの中ではなく画面の下端に固定した
+   * 帯として配信してくる。その帯にツールバーや文字が潜り込まないよう、
+   * 広告を呼んだときだけ（html.ads-anchor）下を空ける。
+   */
+  --ad-anchor-h: 0px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -99,7 +107,7 @@ body {
  */
 @media (display-mode: standalone) {
   .screen { padding-top: calc(20px + var(--safe-t)); }
-  .screen-home { padding-bottom: calc(36px + var(--safe-b)); }
+  .screen-home { padding-bottom: calc(36px + var(--safe-b) + var(--ad-anchor-h)); }
 }
 
 /* 画面は3つ。同時に見えるのは常に1つだけ */
@@ -110,7 +118,7 @@ body {
   width: 100%;
   max-width: 540px;
   min-height: 100%;
-  padding: calc(14px + var(--safe-t)) 20px calc(28px + var(--safe-b));
+  padding: calc(14px + var(--safe-t)) 20px calc(28px + var(--safe-b) + var(--ad-anchor-h));
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -125,7 +133,7 @@ body {
 .screen-game {
   padding-left: 12px;
   padding-right: 12px;
-  padding-bottom: calc(var(--dock-h) + var(--safe-b));
+  padding-bottom: calc(var(--dock-h) + var(--safe-b) + var(--ad-anchor-h));
   gap: 10px;
 }
 .screen-game .nav,
@@ -565,7 +573,7 @@ svg .fill { fill: currentColor; stroke: none; }
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(12px + var(--safe-b));
+  bottom: calc(12px + var(--safe-b) + var(--ad-anchor-h));
   z-index: 20;
   display: flex;
   align-items: center;
@@ -1312,10 +1320,14 @@ svg .fill { fill: currentColor; stroke: none; }
  * 広告（忍者AdMax）の置き場所。src/config.js に ID を入れるまでは hidden の
  * ままなので、ここのスタイルは丸ごと効かない ―― 枠も余白も一切生まれない。
  *
- * 出るときも「遊びの邪魔をしない」ことを優先している。
- *   ・--ad-h（設定の高さ）で先に場所を取る。読み込みの前後で画面が飛び跳ねない。
- *   ・幅がはみ出す端末では、広告ごと縮めて収める（横スクロールを作らない）。
- *   ・「広告」と小さく添える。ゲームの表示と見分けが付かないのがいちばん悪い。
+ * 忍者AdMax の配信のされ方は 2 通りあり、どちらで来ても壊れないようにしてある。
+ *
+ *   並びの中に入る（バナー）    枠の中に広告が入る。盤面がそのぶん縮む
+ *   画面の下に貼り付く（帯）    枠の中は空のまま。画面の下端に固定して出る
+ *
+ * 後者のとき、枠をそのまま残すと「広告」の文字だけが宙に浮き、盤面の場所も
+ * 無駄に取られる。中身が入らなかった枠は畳んで、代わりに画面の下へ帯のぶんの
+ * 余白（--ad-anchor-h）を空ける。
  */
 .ad-slot {
   flex: none;
@@ -1337,8 +1349,15 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 
 /*
- * 忍者AdMax の枠は固定サイズ（320×50 など）で入る。画面のほうが狭いときは
- * 縮めて収める ―― はみ出させると、盤面ごと横に振れてしまう。
+ * 中身が入らなかった枠は、ラベルごと畳む。
+ * 画面の下に貼り付く形で配信されたときは、枠の中は空のままになる。
+ */
+.ad-slot:has(.admax-ads:empty),
+.ad-slot:not(:has(.admax-ads)) { display: none; }
+
+/*
+ * 並びの中に入ったとき。枠は固定サイズ（320×50 など）で入るので、
+ * 画面のほうが狭ければ縮めて収める ―― はみ出させると盤面ごと横に振れる。
  */
 .ad-slot .admax-ads { max-width: 100%; }
 .ad-slot .admax-ads iframe,
@@ -1357,6 +1376,12 @@ svg .fill { fill: currentColor; stroke: none; }
 @media (max-height: 620px) {
   .ad-game { display: none; }
 }
+
+/*
+ * 画面の下に貼り付く帯のぶんを空ける。src/ads.js が広告を呼んだときだけ
+ * html に付ける ―― 広告を出していない端末では 1px も変わらない。
+ */
+.ads-anchor { --ad-anchor-h: 66px; }
 
 /* ============================================================ 画面サイズ対応 */
 
