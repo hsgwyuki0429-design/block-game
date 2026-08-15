@@ -21,7 +21,16 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { RANK_LIMIT } from '../src/ranking.js';
-import { readBoard, readEntry, readLevel, readLimit, readStarEntry } from './rules.mjs';
+import {
+  isAdminKey, readAdminAction, readBoard, readEntry, readLevel, readLimit, readStarEntry,
+} from './rules.mjs';
+
+/**
+ * 管理の合言葉を送るヘッダ。
+ * body ではなくヘッダに載せるのは、投稿の本文と混ざらないようにするため ――
+ * 混ぜると「name の隣に admin がある投稿」をログにそのまま出しかねない。
+ */
+const ADMIN_HEADER = 'X-Admin-Key';
 
 /** 一度に返せる件数の上限。要求がこれを超えても、ここで頭打ちにする */
 const LIMIT_MAX = 200;
@@ -31,7 +40,7 @@ const LIMIT_MAX = 200;
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': `Content-Type, ${ADMIN_HEADER}`,
   'Access-Control-Max-Age': '86400',
 };
 
@@ -126,6 +135,75 @@ export class RankStore extends DurableObject {
   }
 
   /**
+   * 名前を付け替える（管理者のみ。呼ぶ前に合言葉を照らしてある）。
+   *
+   * 付け替え先に行があるときは **良いほうを残して 1 行に潰す** ――
+   * 名前は主キーなので、そのまま UPDATE すると衝突で書けずに終わる。
+   */
+  rename(from, to, limit) {
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec('SELECT moves, time, stars, at FROM scores WHERE name = ?', from)
+      .toArray()[0];
+    if (!row) return { ok: true, changed: false, entries: this.top(limit) };
+
+    const dst = sql.exec('SELECT moves, time FROM scores WHERE name = ?', to).toArray()[0];
+    sql.exec('DELETE FROM scores WHERE name = ?', from);
+
+    const better = !dst
+      || row.moves < dst.moves
+      || (row.moves === dst.moves && row.time < dst.time);
+    if (better) {
+      sql.exec(
+        `INSERT INTO scores (name, moves, time, stars, at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+             moves = excluded.moves, time = excluded.time,
+             stars = excluded.stars, at   = excluded.at`,
+        to, row.moves, row.time, row.stars, row.at,
+      );
+    }
+    return { ok: true, changed: true, entries: this.top(limit) };
+  }
+
+  /** 1 行消す（管理者のみ）。無い名前を指されても errorにはしない */
+  remove(name, limit) {
+    const sql = this.ctx.storage.sql;
+    const had = sql.exec('SELECT name FROM scores WHERE name = ?', name).toArray().length > 0;
+    if (had) sql.exec('DELETE FROM scores WHERE name = ?', name);
+    return { ok: true, changed: had, entries: this.top(limit) };
+  }
+
+  /** 星の表の名前を付け替える。残すのは星の多いほう（同数ならクリア数の少ないほう） */
+  renameStars(from, to, limit) {
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec('SELECT stars, cleared, at FROM stars WHERE name = ?', from).toArray()[0];
+    if (!row) return { ok: true, changed: false, entries: this.topStars(limit) };
+
+    const dst = sql.exec('SELECT stars, cleared FROM stars WHERE name = ?', to).toArray()[0];
+    sql.exec('DELETE FROM stars WHERE name = ?', from);
+
+    const better = !dst
+      || row.stars > dst.stars
+      || (row.stars === dst.stars && row.cleared < dst.cleared);
+    if (better) {
+      sql.exec(
+        `INSERT INTO stars (name, stars, cleared, at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+             stars = excluded.stars, cleared = excluded.cleared, at = excluded.at`,
+        to, row.stars, row.cleared, row.at,
+      );
+    }
+    return { ok: true, changed: true, entries: this.topStars(limit) };
+  }
+
+  /** 星の表から 1 行消す */
+  removeStars(name, limit) {
+    const sql = this.ctx.storage.sql;
+    const had = sql.exec('SELECT name FROM stars WHERE name = ?', name).toArray().length > 0;
+    if (had) sql.exec('DELETE FROM stars WHERE name = ?', name);
+    return { ok: true, changed: had, entries: this.topStars(limit) };
+  }
+
+  /**
    * 星の数の上位 limit 件。
    * 並びは src/ranking.js の starSort と同じ ―― 星の多い順、
    * 同数はクリア数の少ない順、それも同じなら先に出した方が上。
@@ -200,6 +278,39 @@ async function handleGet(url, env) {
   return json({ entries: await storeFor(env, level).top(limit) });
 }
 
+/**
+ * 名前を直す・行を消す ―― **持ち主だけ**の入口。
+ *
+ * 合言葉は環境変数（Cloudflare のシークレット）に置く。
+ *
+ *   npx wrangler secret put ADMIN_KEY
+ *
+ * 置いていないあいだは、この入口は**開かない**（誰が何を送っても 503）――
+ * 「空の合言葉なら通る」を残すと、設定し忘れた瞬間に誰でも消せる表になる。
+ */
+async function handleAdmin(request, env, body) {
+  const secret = env.ADMIN_KEY;
+  if (!secret) return json({ error: 'admin disabled' }, 503);
+  if (!isAdminKey(request.headers.get(ADMIN_HEADER), secret)) {
+    return json({ error: 'forbidden' }, 403);
+  }
+
+  const cmd = readAdminAction(body);
+  if (!cmd) return json({ error: 'invalid body' }, 400);
+
+  if (cmd.board === 'stars') {
+    const store = starStore(env);
+    return json(cmd.action === 'rename'
+      ? await store.renameStars(cmd.name, cmd.to, RANK_LIMIT)
+      : await store.removeStars(cmd.name, RANK_LIMIT));
+  }
+
+  const store = storeFor(env, cmd.level);
+  return json(cmd.action === 'rename'
+    ? await store.rename(cmd.name, cmd.to, RANK_LIMIT)
+    : await store.remove(cmd.name, RANK_LIMIT));
+}
+
 async function handlePost(request, env) {
   let body;
   try {
@@ -207,6 +318,10 @@ async function handlePost(request, env) {
   } catch {
     return json({ error: 'invalid json' }, 400);
   }
+
+  // 合言葉のヘッダが付いているものだけを管理の指示として読む。
+  // 付いていない POST は今までどおりの投稿（古い版のクライアントが素通りする）
+  if (request.headers.has(ADMIN_HEADER)) return handleAdmin(request, env, body);
 
   if (readBoard(body && body.board) === 'stars') {
     const entry = readStarEntry(body);

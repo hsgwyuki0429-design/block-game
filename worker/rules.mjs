@@ -66,6 +66,54 @@ export function readBoard(raw) {
 }
 
 /**
+ * 管理の合言葉を照らす。
+ *
+ * 1 文字ずつ **最後まで** 見て、違いを積むだけにする ―― 途中で return すると
+ * 「何文字目まで合っていたか」が応答の速さに出て、1 文字ずつ当てられてしまう。
+ * 長さの違いも同じ理由で、先に長さで弾かずに結果へ混ぜる。
+ */
+export function isAdminKey(given, expected) {
+  if (typeof expected !== 'string' || expected === '') return false;
+  const a = typeof given === 'string' ? given : '';
+  let diff = a.length ^ expected.length;
+  for (let i = 0; i < expected.length; i += 1) {
+    diff |= a.charCodeAt(i % (a.length || 1)) ^ expected.charCodeAt(i);
+  }
+  return diff === 0 && a.length === expected.length;
+}
+
+/**
+ * 管理の指示を 1 件読む。合言葉の照合はここではやらない（呼ぶ側の仕事）。
+ *
+ *   { action:'rename', board:'level', level:12, name:'まえ', to:'あと' }
+ *   { action:'delete', board:'stars', name:'けす' }
+ *
+ * 名前は投稿と同じ整えかたを通す ―― 一覧に載っているのは整えたあとの名前なので、
+ * 生の文字列で指すと「見えているのに直せない」行ができる。
+ */
+export function readAdminAction(body) {
+  if (!body || typeof body !== 'object') return null;
+
+  const action = body.action === 'rename' || body.action === 'delete' ? body.action : null;
+  if (!action) return null;
+
+  const board = readBoard(body.board);
+  // レベル別はどのレベルの表かが要る。星の表は全員で 1 つなので取らない
+  const level = board === 'stars' ? null : readLevel(body.level);
+  if (board !== 'stars' && level == null) return null;
+
+  const name = sanitizeName(body.name);
+  if (!name) return null;
+
+  if (action === 'delete') return { action, board, level, name, to: null };
+
+  const to = sanitizeName(body.to);
+  // 同じ名前への付け替えは、書く先が自分自身になって行が消える。ここで弾く
+  if (!to || to === name) return null;
+  return { action, board, level, name, to };
+}
+
+/**
  * 星の数の投稿 1 件を読む。
  * cleared（クリアしたレベル数）は同数のときの並べ替えに使うので、星と一緒に必ず要る。
  * 星が 1 レベルあたり 3 個を超えることはないので、クリア数の 3 倍を上限にする ――

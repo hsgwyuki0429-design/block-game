@@ -5,7 +5,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeName, rankSort, rankOf, starSort, starRankOf, NAME_MAX } from '../src/ranking.js';
+import {
+  sanitizeName, rankSort, rankOf, starSort, starRankOf, NAME_MAX,
+  renameEntries, removeEntries,
+} from '../src/ranking.js';
 import { progressColor, auraFor, Renderer } from '../src/render.js';
 
 // ---------------------------------------------------------------- 名前
@@ -215,4 +218,47 @@ test('レベルを跨いだら背景は引きずらない（immediate なら満�
   r.refreshTint();
   assert.equal(r.auraWave, 1, 'レベルを跨いだのに前の色が残っている');
   assert.equal(r.auraColor(0.26), r.auraPrevColor(0.26));
+});
+
+// ---------------------------------------------------------------- 管理（持ち主だけ）
+
+test('名前を付け替えると、その人の行だけが変わる', () => {
+  const after = renameEntries([
+    { name: 'あらし', moves: 12, time: 40 },
+    { name: 'はなこ', moves: 8, time: 90 },
+  ], 'あらし', 'なまえ');
+  assert.deepEqual(after.map((e) => e.name), ['はなこ', 'なまえ']);
+  assert.equal(after.find((e) => e.name === 'なまえ').moves, 12);
+});
+
+test('付け替え先に同じ名前が居たら、良いほうだけが残る（1人2行にしない）', () => {
+  const after = renameEntries([
+    { name: 'あらし', moves: 20, time: 10 },
+    { name: 'たろう', moves: 14, time: 60 },
+  ], 'あらし', 'たろう');
+  assert.equal(after.length, 1);
+  assert.deepEqual([after[0].name, after[0].moves], ['たろう', 14]);
+});
+
+test('星の表の付け替えも、良いほう（星の多いほう）を残す', () => {
+  const after = renameEntries([
+    { name: 'あらし', stars: 30, cleared: 12 },
+    { name: 'たろう', stars: 9, cleared: 4 },
+  ], 'あらし', 'たろう', starSort);
+  assert.equal(after.length, 1);
+  assert.deepEqual([after[0].name, after[0].stars], ['たろう', 30]);
+});
+
+test('付け替えの指定が空なら、一覧は変わらない', () => {
+  const src = [{ name: 'たろう', moves: 12, time: 40 }];
+  assert.deepEqual(renameEntries(src, '  ', 'あと').map((e) => e.name), ['たろう']);
+  assert.deepEqual(renameEntries(src, 'たろう', '  ').map((e) => e.name), ['たろう']);
+});
+
+test('消すと、その名前の行だけが落ちる', () => {
+  const after = removeEntries([
+    { name: 'あらし', moves: 8, time: 10 },
+    { name: 'たろう', moves: 12, time: 40 },
+  ], ' あらし ');
+  assert.deepEqual(after.map((e) => e.name), ['たろう']);
 });

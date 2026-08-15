@@ -86,6 +86,136 @@ export function forgetName() {
   try { localStorage.removeItem(NAME_KEY); } catch { /* 消せなければ諦める */ }
 }
 
+// ---------------------------------------------------------------- 管理（持ち主だけ）
+
+/**
+ * 管理の合言葉の置き場。
+ *
+ * ランキングに載る名前は他人が打った文字列なので、見るに堪えないものが混ざりうる。
+ * それを直せるのは**持ち主ひとり**でなければならない ―― 誰でも直せると、
+ * 今度は 1 位の名前が書き換えられる。
+ *
+ * 判定はサーバでやる（`worker/worker.js` の ADMIN_KEY）。ここに持つのは
+ * 「毎回打たなくていいように覚えておく」ためだけの控えで、**これ自体は鍵ではない**。
+ * 端末を覗かれたら合言葉も見えるので、覗かれる端末では「やめる」で消しておくこと。
+ */
+export const ADMIN_KEY = 'slidepop.admin.v1';
+
+/** 覚えている合言葉。無ければ空 */
+export function adminKey() {
+  try {
+    return String(localStorage.getItem(ADMIN_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/** 合言葉を覚える。空を渡したら忘れる（＝管理モードを降りる） */
+export function saveAdminKey(key) {
+  const clean = String(key == null ? '' : key).trim();
+  try {
+    if (clean) localStorage.setItem(ADMIN_KEY, clean);
+    else localStorage.removeItem(ADMIN_KEY);
+  } catch { /* 保存できない環境では今回だけ有効 */ }
+  return clean;
+}
+
+/** いま管理モードか（合言葉を持っているか）。合っているかはサーバが決める */
+export function isAdminMode() {
+  return adminKey() !== '';
+}
+
+/**
+ * 一覧の中の名前を付け替える。
+ * 付け替え先に同じ名前があれば、並べ替え（rankSort / starSort）が
+ * **良いほうだけを残して 1 行に潰す** ―― サーバ側の付け替えと同じ結果になる。
+ */
+export function renameEntries(entries, from, to, sort = rankSort) {
+  const a = sanitizeName(from);
+  const b = sanitizeName(to);
+  if (!a || !b) return sort(entries);
+  return sort(entries.map((e) => (sanitizeName(e.name) === a ? { ...e, name: b } : e)));
+}
+
+/** 一覧からその名前の行を落とす */
+export function removeEntries(entries, name, sort = rankSort) {
+  const clean = sanitizeName(name);
+  return sort(entries.filter((e) => sanitizeName(e.name) !== clean));
+}
+
+/** 端末内の記録に、付け替え・削除を当てる（世界共通に繋いでいないときの受け皿） */
+function editLocal(board, level, edit) {
+  if (board === 'stars') {
+    const list = edit(localStarEntries(), starSort).slice(0, RANK_LIMIT);
+    try { localStorage.setItem(STAR_KEY, JSON.stringify(list)); } catch { /* 諦める */ }
+    return list;
+  }
+  const data = loadLocal();
+  const key = String(level);
+  data[key] = edit(localEntries(level), rankSort).slice(0, RANK_LIMIT);
+  saveLocal(data);
+  return data[key];
+}
+
+/**
+ * 名前を直す／行を消す。**合言葉を持っているときだけ**通る。
+ *
+ * @param {{action:'rename'|'delete', board:'level'|'stars', level?:number,
+ *          name:string, to?:string}} cmd
+ * @returns {Promise<{ok:boolean, entries:Object[], error:string|null}>}
+ *   error は画面にそのまま出せる日本語。ok が false のときだけ入る
+ */
+export async function adminEdit(cmd) {
+  const board = cmd.board === 'stars' ? 'stars' : 'level';
+  const name = sanitizeName(cmd.name);
+  const to = sanitizeName(cmd.to);
+  const rename = cmd.action === 'rename';
+
+  if (!name) return { ok: false, entries: [], error: '直す相手の名前が読めません。' };
+  if (rename && !to) return { ok: false, entries: [], error: '新しい名前を入れてください。' };
+  if (rename && to === name) return { ok: false, entries: [], error: '同じ名前です。' };
+
+  const apply = rename
+    ? (entries, sort) => renameEntries(entries, name, to, sort)
+    : (entries, sort) => removeEntries(entries, name, sort);
+
+  const base = endpoint();
+  // 端末の中だけで遊んでいるときは、その控えを直す（画面の見え方は世界共通と同じ）
+  if (!base) return { ok: true, entries: editLocal(board, cmd.level, apply), error: null };
+
+  const key = adminKey();
+  if (!key) return { ok: false, entries: [], error: '管理の合言葉がありません。' };
+
+  try {
+    const payload = await request(base, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Admin-Key': key,
+      },
+      body: JSON.stringify({
+        action: rename ? 'rename' : 'delete',
+        board,
+        level: cmd.level,
+        name,
+        ...(rename ? { to } : {}),
+      }),
+    });
+    const entries = entriesOf(payload, board === 'stars' ? starSort : rankSort);
+    if (entries) return { ok: true, entries, error: null };
+    // 一覧が返ってこなかったら取り直す（直したこと自体は成功している）
+    const got = board === 'stars' ? await fetchStarRanking() : await fetchRanking(cmd.level);
+    return { ok: true, entries: got.entries, error: null };
+  } catch (err) {
+    const status = String(err && err.message);
+    let error = 'サーバーに届きませんでした。時間をおいて試してください。';
+    if (/HTTP 40[13]/.test(status)) error = '合言葉が違います（サーバーに断られました）。';
+    else if (/HTTP 503/.test(status)) error = 'サーバーに合言葉が設定されていません。';
+    return { ok: false, entries: [], error };
+  }
+}
+
 // ---------------------------------------------------------------- 端末内の記録
 
 function loadLocal() {

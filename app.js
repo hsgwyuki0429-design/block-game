@@ -5447,6 +5447,136 @@ function forgetName() {
   try { localStorage.removeItem(NAME_KEY); } catch { /* 消せなければ諦める */ }
 }
 
+// ---------------------------------------------------------------- 管理（持ち主だけ）
+
+/**
+ * 管理の合言葉の置き場。
+ *
+ * ランキングに載る名前は他人が打った文字列なので、見るに堪えないものが混ざりうる。
+ * それを直せるのは**持ち主ひとり**でなければならない ―― 誰でも直せると、
+ * 今度は 1 位の名前が書き換えられる。
+ *
+ * 判定はサーバでやる（`worker/worker.js` の ADMIN_KEY）。ここに持つのは
+ * 「毎回打たなくていいように覚えておく」ためだけの控えで、**これ自体は鍵ではない**。
+ * 端末を覗かれたら合言葉も見えるので、覗かれる端末では「やめる」で消しておくこと。
+ */
+const ADMIN_KEY = 'slidepop.admin.v1';
+
+/** 覚えている合言葉。無ければ空 */
+function adminKey() {
+  try {
+    return String(localStorage.getItem(ADMIN_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/** 合言葉を覚える。空を渡したら忘れる（＝管理モードを降りる） */
+function saveAdminKey(key) {
+  const clean = String(key == null ? '' : key).trim();
+  try {
+    if (clean) localStorage.setItem(ADMIN_KEY, clean);
+    else localStorage.removeItem(ADMIN_KEY);
+  } catch { /* 保存できない環境では今回だけ有効 */ }
+  return clean;
+}
+
+/** いま管理モードか（合言葉を持っているか）。合っているかはサーバが決める */
+function isAdminMode() {
+  return adminKey() !== '';
+}
+
+/**
+ * 一覧の中の名前を付け替える。
+ * 付け替え先に同じ名前があれば、並べ替え（rankSort / starSort）が
+ * **良いほうだけを残して 1 行に潰す** ―― サーバ側の付け替えと同じ結果になる。
+ */
+function renameEntries(entries, from, to, sort = rankSort) {
+  const a = sanitizeName(from);
+  const b = sanitizeName(to);
+  if (!a || !b) return sort(entries);
+  return sort(entries.map((e) => (sanitizeName(e.name) === a ? { ...e, name: b } : e)));
+}
+
+/** 一覧からその名前の行を落とす */
+function removeEntries(entries, name, sort = rankSort) {
+  const clean = sanitizeName(name);
+  return sort(entries.filter((e) => sanitizeName(e.name) !== clean));
+}
+
+/** 端末内の記録に、付け替え・削除を当てる（世界共通に繋いでいないときの受け皿） */
+function editLocal(board, level, edit) {
+  if (board === 'stars') {
+    const list = edit(localStarEntries(), starSort).slice(0, RANK_LIMIT);
+    try { localStorage.setItem(STAR_KEY, JSON.stringify(list)); } catch { /* 諦める */ }
+    return list;
+  }
+  const data = loadLocal();
+  const key = String(level);
+  data[key] = edit(localEntries(level), rankSort).slice(0, RANK_LIMIT);
+  saveLocal(data);
+  return data[key];
+}
+
+/**
+ * 名前を直す／行を消す。**合言葉を持っているときだけ**通る。
+ *
+ * @param {{action:'rename'|'delete', board:'level'|'stars', level?:number,
+ *          name:string, to?:string}} cmd
+ * @returns {Promise<{ok:boolean, entries:Object[], error:string|null}>}
+ *   error は画面にそのまま出せる日本語。ok が false のときだけ入る
+ */
+async function adminEdit(cmd) {
+  const board = cmd.board === 'stars' ? 'stars' : 'level';
+  const name = sanitizeName(cmd.name);
+  const to = sanitizeName(cmd.to);
+  const rename = cmd.action === 'rename';
+
+  if (!name) return { ok: false, entries: [], error: '直す相手の名前が読めません。' };
+  if (rename && !to) return { ok: false, entries: [], error: '新しい名前を入れてください。' };
+  if (rename && to === name) return { ok: false, entries: [], error: '同じ名前です。' };
+
+  const apply = rename
+    ? (entries, sort) => renameEntries(entries, name, to, sort)
+    : (entries, sort) => removeEntries(entries, name, sort);
+
+  const base = endpoint();
+  // 端末の中だけで遊んでいるときは、その控えを直す（画面の見え方は世界共通と同じ）
+  if (!base) return { ok: true, entries: editLocal(board, cmd.level, apply), error: null };
+
+  const key = adminKey();
+  if (!key) return { ok: false, entries: [], error: '管理の合言葉がありません。' };
+
+  try {
+    const payload = await request(base, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Admin-Key': key,
+      },
+      body: JSON.stringify({
+        action: rename ? 'rename' : 'delete',
+        board,
+        level: cmd.level,
+        name,
+        ...(rename ? { to } : {}),
+      }),
+    });
+    const entries = entriesOf(payload, board === 'stars' ? starSort : rankSort);
+    if (entries) return { ok: true, entries, error: null };
+    // 一覧が返ってこなかったら取り直す（直したこと自体は成功している）
+    const got = board === 'stars' ? await fetchStarRanking() : await fetchRanking(cmd.level);
+    return { ok: true, entries: got.entries, error: null };
+  } catch (err) {
+    const status = String(err && err.message);
+    let error = 'サーバーに届きませんでした。時間をおいて試してください。';
+    if (/HTTP 40[13]/.test(status)) error = '合言葉が違います（サーバーに断られました）。';
+    else if (/HTTP 503/.test(status)) error = 'サーバーに合言葉が設定されていません。';
+    return { ok: false, entries: [], error };
+  }
+}
+
 // ---------------------------------------------------------------- 端末内の記録
 
 function loadLocal() {
@@ -6883,6 +7013,27 @@ this.afterMove();
         }
       });
     }
+    /*
+     * 管理モードの入口（持ち主だけ）。
+     * ボタンは置かない ―― 置くと全員に見えて「何だろう」と押される。
+     * ランキングの**表題を長押し**したときだけ、合言葉を訊く。
+     */
+    if (d.rankTitle) this.bindAdminGesture(d.rankTitle);
+    if (d.btnAdminOff) {
+      d.btnAdminOff.addEventListener('click', () => {
+        saveAdminKey('');
+        this.updateAdminBar();
+        this.loadRanking();
+        this.toast('管理モードをやめました');
+      });
+    }
+    if (d.rankList) {
+      d.rankList.addEventListener('click', (e) => {
+        const btn = e.target.closest && e.target.closest('[data-admin]');
+        if (btn) this.adminAct(btn.dataset.admin, btn.dataset.name);
+      });
+    }
+
     if (d.btnNameSave) d.btnNameSave.addEventListener('click', () => this.commitName());
     if (d.nameInput) {
       d.nameInput.addEventListener('keydown', (e) => {
@@ -7628,6 +7779,86 @@ this.afterMove();
     this.setRankBoard(board);
   }
 
+  // ------------------------------------------------------------ 管理（持ち主だけ）
+
+  /**
+   * 長押しで管理モードの入口を開く。
+   *
+   * 押しっぱなしにしている**あいだに指が動いたら取り消す** ―― シートを
+   * 払って閉じようとしただけのときに、合言葉を訊かれてしまわないように。
+   */
+  bindAdminGesture(el) {
+    let timer = 0;
+    let from = null;
+    const cancel = () => {
+      if (timer) clearTimeout(timer);
+      timer = 0;
+      from = null;
+    };
+    el.addEventListener('pointerdown', (e) => {
+      cancel();
+      from = { x: e.clientX, y: e.clientY };
+      timer = setTimeout(() => { cancel(); this.askAdminKey(); }, 900);
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (!from) return;
+      if (Math.abs(e.clientX - from.x) > 10 || Math.abs(e.clientY - from.y) > 10) cancel();
+    });
+    for (const type of ['pointerup', 'pointercancel', 'pointerleave']) {
+      el.addEventListener(type, cancel);
+    }
+  }
+
+  /** 合言葉を訊く。空で決定すると管理モードを降りる */
+  askAdminKey() {
+    let raw = null;
+    try {
+      raw = window.prompt('管理の合言葉（空のままにすると、やめます）', adminKey());
+    } catch { /* prompt が使えない環境では何も起きない */ }
+    if (raw === null) return;
+
+    const clean = saveAdminKey(raw);
+    this.updateAdminBar();
+    this.loadRanking();
+    this.toast(clean ? '管理モードにしました' : '管理モードをやめました');
+  }
+
+  /** 管理モードの帯を出し入れする */
+  updateAdminBar() {
+    const bar = this.dom.rankAdmin;
+    if (bar) bar.hidden = !isAdminMode();
+  }
+
+  /**
+   * 一覧の行を直す・消す。
+   * 消すのは戻せないので必ず訊く。直すのは打ち直しで済むので訊かない。
+   */
+  async adminAct(action, name) {
+    const board = this.rankBoard;
+    const level = this.rankLevel;
+    let to = null;
+
+    try {
+      if (action === 'delete') {
+        if (!window.confirm(`「${name}」の記録を消します。元には戻せません。`)) return;
+      } else {
+        to = window.prompt(`「${name}」を、どんな名前に直しますか？`, name);
+        if (to === null) return;
+      }
+    } catch { return; /* 訊けない環境では何もしない */ }
+
+    const res = await adminEdit({ action, board, level, name, to });
+    if (!res.ok) {
+      this.toast(res.error || '直せませんでした');
+      return;
+    }
+    // 待っているあいだに別の表へ移られていたら、出す場所が無い
+    if (board !== this.rankBoard || (board === 'level' && level !== this.rankLevel)) return;
+
+    this.renderRanking({ entries: res.entries, global: isGlobalRanking(), offline: false }, board);
+    this.toast(action === 'delete' ? `「${name}」を消しました` : `「${name}」を「${sanitizeName(to)}」にしました`);
+  }
+
   /** 表を切り替える（タブ）。切り替えたらその場で取りに行く */
   setRankBoard(board) {
     const d = this.dom;
@@ -7693,7 +7924,9 @@ this.afterMove();
     const d = this.dom;
     const me = savedName();
     const stars = board === 'stars';
+    const admin = isAdminMode();
     d.rankList.innerHTML = '';
+    this.updateAdminBar();
 
     if (!res.entries.length) {
       const empty = document.createElement('div');
@@ -7727,6 +7960,23 @@ this.afterMove();
           note.textContent = formatTime(e.time);
         }
         row.append(pos, name, value, note);
+
+        // 管理モードのときだけ、行の末尾に「直す・消す」を足す。
+        // 名前は data 属性で持たせる ―― 押されたときに一覧を数え直さずに済む
+        if (admin) {
+          for (const a of [
+            { key: 'rename', label: '直す', danger: false },
+            { key: 'delete', label: '消す', danger: true },
+          ]) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'rank-act' + (a.danger ? ' danger' : '');
+            btn.textContent = a.label;
+            btn.dataset.admin = a.key;
+            btn.dataset.name = e.name;
+            row.appendChild(btn);
+          }
+        }
         d.rankList.appendChild(row);
       });
     }
@@ -7971,6 +8221,9 @@ const dom = {
   rankScope: $('rank-scope'),
   rankList: $('rank-list'),
   rankNote: $('rank-note'),
+  // 管理モード（持ち主だけ。ランキングの表題を長押しすると入口が出る）
+  rankAdmin: $('rank-admin'),
+  btnAdminOff: $('btn-admin-off'),
 
   // 名前（初回だけ訊いて、以後は自動で使う）
   modalName: $('modal-name'),
