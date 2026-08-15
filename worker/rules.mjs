@@ -114,6 +114,29 @@ export function readAdminAction(body) {
 }
 
 /**
+ * 名前の付け替えで、実際にどのレベルの器まで直しに行くか。
+ *
+ *   ・**索引（played 表）にあるレベル**       ―― この機能を入れて以降に投稿した分
+ *   ・**いま管理者が見ている、レベル別の表**  ―― 索引に無くても必ず含める
+ *
+ * 後者が要るのは、索引が**この機能を入れる前の投稿までは遡れない**から。
+ * 何も足さないと、機能追加より前からある記録は「いま目の前に見えている行」すら
+ * 直せない ―― 直したのに変わらない、という事故になる。
+ *
+ * 多すぎる索引は安全弁で頭打ちにする（cap）。それでも、いま見ている表は
+ * **必ず**残す ―― 頭打ちで真っ先に落ちるのが「押した本人が見ている行」では
+ * 意味がない。
+ */
+export function renameTargetLevels(indexedLevels, cmd, cap) {
+  const set = new Set(indexedLevels || []);
+  const here = cmd.board === 'level' && cmd.level != null ? cmd.level : null;
+  if (here != null) set.delete(here);
+
+  const rest = [...set].slice(0, here != null ? Math.max(0, cap - 1) : cap);
+  return here != null ? [here, ...rest] : rest;
+}
+
+/**
  * 星の数の投稿 1 件を読む。
  * cleared（クリアしたレベル数）は同数のときの並べ替えに使うので、星と一緒に必ず要る。
  * 星が 1 レベルあたり 3 個を超えることはないので、クリア数の 3 倍を上限にする ――
