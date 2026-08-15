@@ -5486,6 +5486,12 @@ function isAdminMode() {
   return adminKey() !== '';
 }
 
+/** その名前の行が一覧にあるか */
+function hasName(entries, name) {
+  const clean = sanitizeName(name);
+  return !clean ? false : entries.some((e) => sanitizeName(e.name) === clean);
+}
+
 /**
  * 一覧の中の名前を付け替える。
  * 付け替え先に同じ名前があれば、並べ替え（rankSort / starSort）が
@@ -5504,27 +5510,62 @@ function removeEntries(entries, name, sort = rankSort) {
   return sort(entries.filter((e) => sanitizeName(e.name) !== clean));
 }
 
-/** 端末内の記録に、付け替え・削除を当てる（世界共通に繋いでいないときの受け皿） */
-function editLocal(board, level, edit) {
+/**
+ * 削除は端末内でも**いま見ている 1 つの表だけ**を消す（サーバ側と同じ方針 ――
+ * 1 件の悪い記録を消したつもりが、全レベルの記録ごと消える事故を避ける）。
+ */
+function removeLocal(board, level, name) {
   if (board === 'stars') {
-    const list = edit(localStarEntries(), starSort).slice(0, RANK_LIMIT);
+    const before = localStarEntries();
+    const list = removeEntries(before, name, starSort).slice(0, RANK_LIMIT);
     try { localStorage.setItem(STAR_KEY, JSON.stringify(list)); } catch { /* 諦める */ }
-    return list;
+    return { changed: hasName(before, name), entries: list };
   }
   const data = loadLocal();
   const key = String(level);
-  data[key] = edit(localEntries(level), rankSort).slice(0, RANK_LIMIT);
+  const before = localEntries(level);
+  data[key] = removeEntries(before, name, rankSort).slice(0, RANK_LIMIT);
   saveLocal(data);
-  return data[key];
+  return { changed: hasName(before, name), entries: data[key] };
+}
+
+/**
+ * 付け替えは、端末に貯めている**すべてのレベル＋星の表**へ効かせる
+ * （サーバ側の renameEverywhere と同じ考えかた。端末内は全データを直接
+ * 持っているので、索引を作らずそのまま全部の鍵を回すだけで済む）。
+ */
+function renameLocalEverywhere(board, level, name, to) {
+  const data = loadLocal();
+  let changed = false;
+  for (const key of Object.keys(data)) {
+    const before = data[key] || [];
+    changed = changed || hasName(before, name);
+    data[key] = renameEntries(before, name, to, rankSort).slice(0, RANK_LIMIT);
+  }
+  saveLocal(data);
+
+  const starsBefore = loadStars();
+  changed = changed || hasName(starsBefore, name);
+  const starsAfter = renameEntries(starsBefore, name, to, starSort).slice(0, RANK_LIMIT);
+  try { localStorage.setItem(STAR_KEY, JSON.stringify(starsAfter)); } catch { /* 諦める */ }
+
+  // 応答は、いま見ている表だけを返す（他の表は裏で直っている）
+  const entries = board === 'stars' ? starsAfter : (data[String(level)] || []);
+  return { changed, entries };
 }
 
 /**
  * 名前を直す／行を消す。**合言葉を持っているときだけ**通る。
  *
+ * 直すほうは**その人の記録があるすべての表**（星の表とレベル別の全レベル）に
+ * 効かせる。1 つの表だけ直すと、他の表に古い名前が残って「直したのに変わって
+ * いない」ことになるため。消すほうは、いま見ている 1 つの表だけを消す。
+ *
  * @param {{action:'rename'|'delete', board:'level'|'stars', level?:number,
  *          name:string, to?:string}} cmd
- * @returns {Promise<{ok:boolean, entries:Object[], error:string|null}>}
- *   error は画面にそのまま出せる日本語。ok が false のときだけ入る
+ * @returns {Promise<{ok:boolean, entries:Object[], changed:boolean, error:string|null}>}
+ *   error は画面にそのまま出せる日本語。ok が false のときだけ入る。
+ *   changed は false でも ok は true になりうる（＝直す相手が見つからなかった）
  */
 async function adminEdit(cmd) {
   const board = cmd.board === 'stars' ? 'stars' : 'level';
@@ -5532,20 +5573,21 @@ async function adminEdit(cmd) {
   const to = sanitizeName(cmd.to);
   const rename = cmd.action === 'rename';
 
-  if (!name) return { ok: false, entries: [], error: '直す相手の名前が読めません。' };
-  if (rename && !to) return { ok: false, entries: [], error: '新しい名前を入れてください。' };
-  if (rename && to === name) return { ok: false, entries: [], error: '同じ名前です。' };
-
-  const apply = rename
-    ? (entries, sort) => renameEntries(entries, name, to, sort)
-    : (entries, sort) => removeEntries(entries, name, sort);
+  if (!name) return { ok: false, entries: [], changed: false, error: '直す相手の名前が読めません。' };
+  if (rename && !to) return { ok: false, entries: [], changed: false, error: '新しい名前を入れてください。' };
+  if (rename && to === name) return { ok: false, entries: [], changed: false, error: '同じ名前です。' };
 
   const base = endpoint();
   // 端末の中だけで遊んでいるときは、その控えを直す（画面の見え方は世界共通と同じ）
-  if (!base) return { ok: true, entries: editLocal(board, cmd.level, apply), error: null };
+  if (!base) {
+    const res = rename
+      ? renameLocalEverywhere(board, cmd.level, name, to)
+      : removeLocal(board, cmd.level, name);
+    return { ok: true, ...res, error: null };
+  }
 
   const key = adminKey();
-  if (!key) return { ok: false, entries: [], error: '管理の合言葉がありません。' };
+  if (!key) return { ok: false, entries: [], changed: false, error: '管理の合言葉がありません。' };
 
   try {
     const payload = await request(base, {
@@ -5563,17 +5605,20 @@ async function adminEdit(cmd) {
         ...(rename ? { to } : {}),
       }),
     });
-    const entries = entriesOf(payload, board === 'stars' ? starSort : rankSort);
-    if (entries) return { ok: true, entries, error: null };
-    // 一覧が返ってこなかったら取り直す（直したこと自体は成功している）
-    const got = board === 'stars' ? await fetchStarRanking() : await fetchRanking(cmd.level);
-    return { ok: true, entries: got.entries, error: null };
+    const changed = !!(payload && payload.changed);
+    let entries = entriesOf(payload, board === 'stars' ? starSort : rankSort);
+    if (!entries) {
+      // 一覧が返ってこなかったら取り直す（直したこと自体は成功している）
+      const got = board === 'stars' ? await fetchStarRanking() : await fetchRanking(cmd.level);
+      entries = got.entries;
+    }
+    return { ok: true, entries, changed, error: null };
   } catch (err) {
     const status = String(err && err.message);
     let error = 'サーバーに届きませんでした。時間をおいて試してください。';
     if (/HTTP 40[13]/.test(status)) error = '合言葉が違います（サーバーに断られました）。';
     else if (/HTTP 503/.test(status)) error = 'サーバーに合言葉が設定されていません。';
-    return { ok: false, entries: [], error };
+    return { ok: false, entries: [], changed: false, error };
   }
 }
 
@@ -7856,7 +7901,15 @@ this.afterMove();
     if (board !== this.rankBoard || (board === 'level' && level !== this.rankLevel)) return;
 
     this.renderRanking({ entries: res.entries, global: isGlobalRanking(), offline: false }, board);
-    this.toast(action === 'delete' ? `「${name}」を消しました` : `「${name}」を「${sanitizeName(to)}」にしました`);
+
+    if (!res.changed) {
+      // ok なのに何も変わっていない ―― 直す相手がもう居なかった。成功したふりはしない
+      this.toast(`「${name}」の記録が見つかりませんでした`);
+      return;
+    }
+    this.toast(action === 'delete'
+      ? `「${name}」を消しました`
+      : `「${name}」を「${sanitizeName(to)}」にしました（この人のすべての表で）`);
   }
 
   /** 表を切り替える（タブ）。切り替えたらその場で取りに行く */

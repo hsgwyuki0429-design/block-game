@@ -1676,7 +1676,15 @@ this.afterMove();
     if (board !== this.rankBoard || (board === 'level' && level !== this.rankLevel)) return;
 
     this.renderRanking({ entries: res.entries, global: isGlobalRanking(), offline: false }, board);
-    this.toast(action === 'delete' ? `「${name}」を消しました` : `「${name}」を「${sanitizeName(to)}」にしました`);
+
+    if (!res.changed) {
+      // ok なのに何も変わっていない ―― 直す相手がもう居なかった。成功したふりはしない
+      this.toast(`「${name}」の記録が見つかりませんでした`);
+      return;
+    }
+    this.toast(action === 'delete'
+      ? `「${name}」を消しました`
+      : `「${name}」を「${sanitizeName(to)}」にしました（この人のすべての表で）`);
   }
 
   /** 表を切り替える（タブ）。切り替えたらその場で取りに行く */

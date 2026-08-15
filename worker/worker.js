@@ -22,7 +22,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { RANK_LIMIT } from '../src/ranking.js';
 import {
-  isAdminKey, readAdminAction, readBoard, readEntry, readLevel, readLimit, readStarEntry,
+  isAdminKey, readAdminAction, readBoard, readEntry, readLevel, readLimit,
+  readStarEntry, renameTargetLevels,
 } from './rules.mjs';
 
 /**
@@ -34,6 +35,13 @@ const ADMIN_HEADER = 'X-Admin-Key';
 
 /** 一度に返せる件数の上限。要求がこれを超えても、ここで頭打ちにする */
 const LIMIT_MAX = 200;
+
+/**
+ * 名前を1回付け替えるときに、直しに行くレベル数の上限。
+ * ここまで遊び込む人はまず居ない想定の、念のための安全弁 ―― 無いと、
+ * 極端な索引を持つ名前を付け替えたときに応答がいつまでも返らない。
+ */
+const RENAME_LEVEL_CAP = 500;
 
 // 誰でも読めて誰でも投稿できる公開ランキングなので、配信元を問わない。
 // Cookie も認証も使わないため、'*' を許しても持ち出されて困るものが無い。
@@ -85,6 +93,20 @@ export class RankStore extends DurableObject {
        )`,
     );
     ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS stars_rank ON stars (stars DESC, cleared, at)');
+
+    /*
+     * その名前が、どのレベルへ投稿したことがあるか。使うのは 'board:stars' の器だけ
+     * （他の器では作るだけで空のまま）。名前を付け替えるとき、**その人の記録がある
+     * すべてのレベル**を辿るのに要る ―― レベルごとに器が分かれているので、
+     * 索引を持たないと「他のレベルにも同じ名前がいないか」を探しようがない。
+     */
+    ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS played (
+         name  TEXT    NOT NULL,
+         level INTEGER NOT NULL,
+         PRIMARY KEY (name, level)
+       )`,
+    );
   }
 
   /**
@@ -203,6 +225,30 @@ export class RankStore extends DurableObject {
     return { ok: true, changed: had, entries: this.topStars(limit) };
   }
 
+  /** この名前がそのレベルへ投稿したことを覚える（board:stars の器にだけ意味がある） */
+  recordPlayed(name, level) {
+    this.ctx.storage.sql.exec(
+      'INSERT INTO played (name, level) VALUES (?, ?) ON CONFLICT DO NOTHING',
+      name, level,
+    );
+  }
+
+  /** その名前が投稿したことのあるレベルの一覧 */
+  playedLevels(name) {
+    return this.ctx.storage.sql.exec('SELECT level FROM played WHERE name = ?', name)
+      .toArray().map((r) => r.level);
+  }
+
+  /** 索引側の付け替え。from の行を to へ寄せる（同じレベルの重複は落とす） */
+  transferPlayed(from, to) {
+    const sql = this.ctx.storage.sql;
+    sql.exec(
+      'INSERT INTO played (name, level) SELECT ?, level FROM played WHERE name = ? ON CONFLICT DO NOTHING',
+      to, from,
+    );
+    sql.exec('DELETE FROM played WHERE name = ?', from);
+  }
+
   /**
    * 星の数の上位 limit 件。
    * 並びは src/ranking.js の starSort と同じ ―― 星の多い順、
@@ -279,6 +325,39 @@ async function handleGet(url, env) {
 }
 
 /**
+ * 名前の付け替えは、その人の記録がある**すべての表**に効かせる。
+ *
+ * レベル別は 1 レベル 1 器に分かれているので、いま見ている 1 つの表だけ直しても
+ * 「他のレベルでは古い名前のまま」になる ―― 直したのに変わっていないように見える
+ * 事故はここから起きる。索引（played 表）で辿れる分と、いま見ている表を合わせて
+ * 全部に同じ付け替えを効かせ、索引そのものも寄せておく。
+ */
+async function renameEverywhere(env, cmd) {
+  const stars = starStore(env);
+  const indexed = await stars.playedLevels(cmd.name);
+  const levels = renameTargetLevels(indexed, cmd, RENAME_LEVEL_CAP);
+
+  let changed = false;
+  // 1 レベルずつ順に直す。相手は器（Durable Object）が違うだけで同じ処理なので、
+  // 並べても速くはならない ―― むしろ束ねて投げると失敗時にどこまで直ったか分かりにくくなる
+  for (const level of levels) {
+    const res = await storeFor(env, level).rename(cmd.name, cmd.to, RANK_LIMIT);
+    changed = changed || res.changed;
+  }
+
+  const starsRes = await stars.renameStars(cmd.name, cmd.to, RANK_LIMIT);
+  changed = changed || starsRes.changed;
+  await stars.transferPlayed(cmd.name, cmd.to);
+
+  // 応答には、いま管理者が見ている表の一覧だけを載せる（他の表は裏で直っている）
+  const entries = cmd.board === 'stars'
+    ? starsRes.entries
+    : await storeFor(env, cmd.level).top(RANK_LIMIT);
+
+  return { ok: true, changed, entries };
+}
+
+/**
  * 名前を直す・行を消す ―― **持ち主だけ**の入口。
  *
  * 合言葉は環境変数（Cloudflare のシークレット）に置く。
@@ -287,6 +366,9 @@ async function handleGet(url, env) {
  *
  * 置いていないあいだは、この入口は**開かない**（誰が何を送っても 503）――
  * 「空の合言葉なら通る」を残すと、設定し忘れた瞬間に誰でも消せる表になる。
+ *
+ * 削除は付け替えと違い、**いま見ている 1 つの表だけ**を消す ―― 1 件の悪い記録を
+ * 消したつもりが、その人の全レベルの記録ごと消えてしまう事故を避けるため。
  */
 async function handleAdmin(request, env, body) {
   const secret = env.ADMIN_KEY;
@@ -298,20 +380,15 @@ async function handleAdmin(request, env, body) {
   const cmd = readAdminAction(body);
   if (!cmd) return json({ error: 'invalid body' }, 400);
 
-  if (cmd.board === 'stars') {
-    const store = starStore(env);
-    return json(cmd.action === 'rename'
-      ? await store.renameStars(cmd.name, cmd.to, RANK_LIMIT)
-      : await store.removeStars(cmd.name, RANK_LIMIT));
+  if (cmd.action === 'delete') {
+    if (cmd.board === 'stars') return json(await starStore(env).removeStars(cmd.name, RANK_LIMIT));
+    return json(await storeFor(env, cmd.level).remove(cmd.name, RANK_LIMIT));
   }
 
-  const store = storeFor(env, cmd.level);
-  return json(cmd.action === 'rename'
-    ? await store.rename(cmd.name, cmd.to, RANK_LIMIT)
-    : await store.remove(cmd.name, RANK_LIMIT));
+  return json(await renameEverywhere(env, cmd));
 }
 
-async function handlePost(request, env) {
+async function handlePost(request, env, ctx) {
   let body;
   try {
     body = await request.json();
@@ -333,16 +410,20 @@ async function handlePost(request, env) {
   if (!entry) return json({ error: 'invalid body' }, 400);
 
   const { level, ...row } = entry;
-  return json(await storeFor(env, level).submit(row, RANK_LIMIT));
+  const result = await storeFor(env, level).submit(row, RANK_LIMIT);
+  // この名前がこのレベルに投稿したことを索引へ残す。名前の付け替えで全レベルを
+  // 辿るのに要る ―― 応答は待たせない（遅れて書き込まれても実害は無い）
+  ctx.waitUntil(starStore(env).recordPlayed(row.name, level).catch(() => {}));
+  return json(result);
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
     try {
       if (request.method === 'GET') return await handleGet(new URL(request.url), env);
-      if (request.method === 'POST') return await handlePost(request, env);
+      if (request.method === 'POST') return await handlePost(request, env, ctx);
       return json({ error: 'method not allowed' }, 405);
     } catch (err) {
       // 中身は漏らさない。クライアントは失敗したら端末内の記録に切り替える

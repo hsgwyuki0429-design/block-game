@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sanitizeName, rankSort, rankOf, starSort, starRankOf, NAME_MAX,
-  renameEntries, removeEntries,
+  renameEntries, removeEntries, hasName,
 } from '../src/ranking.js';
 import { progressColor, auraFor, Renderer } from '../src/render.js';
 
@@ -261,4 +261,13 @@ test('消すと、その名前の行だけが落ちる', () => {
     { name: 'たろう', moves: 12, time: 40 },
   ], ' あらし ');
   assert.deepEqual(after.map((e) => e.name), ['たろう']);
+});
+
+test('hasName は、名前を整えたうえで探す', () => {
+  const list = [{ name: 'た    ろう', moves: 1, time: 1 }];
+  assert.equal(hasName(list, 'た ろう'), true);
+  assert.equal(hasName(list, '  た ろう  '), true);
+  assert.equal(hasName(list, 'いない'), false);
+  assert.equal(hasName(list, ''), false);
+  assert.equal(hasName(list, '   '), false);
 });
