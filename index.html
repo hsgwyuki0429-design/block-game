@@ -27,7 +27,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SLIDE POP!">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="stylesheet" href="styles.css?v=ffdd7b01f5">
+<link rel="stylesheet" href="styles.css?v=fd32f9be76">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
@@ -358,7 +358,14 @@
 
     <!-- 管理モード（持ち主だけ）。表題を長押しして合言葉を入れたときだけ出る -->
     <div class="rank-admin" id="rank-admin" hidden>
-      <span><b>管理モード</b>　名前を直したり、行を消したりできます</span>
+      <!--
+        いまの状態を出す場所。直している最中もここに出す ―― 全レベルを探しに行くので
+        数秒かかることがあり、黙って待たせると「効いていない」と読めてしまう。
+        名前は他人が打った文字列なので、ここへは必ず textContent で入れること
+      -->
+      <span class="rank-admin-note" id="rank-admin-note">
+        <b>管理モード</b>　名前を直したり、記録を消したりできます
+      </span>
       <button class="link-btn" id="btn-admin-off" type="button">やめる</button>
     </div>
 
@@ -420,6 +427,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=ffdd7b01f5"></script>
+<script defer src="app.js?v=fd32f9be76"></script>
 </body>
 </html>

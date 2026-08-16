@@ -89,6 +89,7 @@ const dom = {
   rankNote: $('rank-note'),
   // 管理モード（持ち主だけ。ランキングの表題を長押しすると入口が出る）
   rankAdmin: $('rank-admin'),
+  rankAdminNote: $('rank-admin-note'),
   btnAdminOff: $('btn-admin-off'),
 
   // 名前（初回だけ訊いて、以後は自動で使う）

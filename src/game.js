@@ -175,6 +175,8 @@ export class Game {
     /* --- ランキング --- */
     /** 名前を決めきるまで閉じられないシート（クリア直後） */
     this.nameLocked = false;
+    // 管理の直す・消すは全レベルを探しに行くので、返事まで数秒かかる。そのあいだ立てる旗
+    this.adminBusy = false;
     /** 投稿・取得の世代。レベルを跨いだ古い応答を捨てるために使う */
     this.rankToken = 0;
     this.rankViewToken = 0;
@@ -1643,33 +1645,77 @@ this.afterMove();
     this.toast(clean ? '管理モードにしました' : '管理モードをやめました');
   }
 
-  /** 管理モードの帯を出し入れする */
+  /** 管理モードの帯を出し入れする。作業中はその報せを消さない */
   updateAdminBar() {
-    const bar = this.dom.rankAdmin;
-    if (bar) bar.hidden = !isAdminMode();
+    const d = this.dom;
+    if (d.rankAdmin) d.rankAdmin.hidden = !isAdminMode();
+    if (this.adminBusy || !d.rankAdminNote) return;
+    d.rankAdminNote.innerHTML = '<b>管理モード</b>　名前を直したり、記録を消したりできます';
   }
 
   /**
-   * 一覧の行を直す・消す。
+   * 「いま作業しています」を出す。
+   *
+   * 直すも消すも**その人の記録があるレベルを全部探しに行く**ので、返事まで数秒かかる。
+   * そのあいだ画面が何も言わないと、効いていないと読めて何度も押されてしまう ――
+   * 押せないようにしたうえで、何をしているところなのかを帯に出す。
+   *
+   * @param {string} message 空なら作業おわり（帯をふだんの案内に戻す）
+   */
+  setAdminBusy(message) {
+    const d = this.dom;
+    this.adminBusy = !!message;
+
+    if (d.rankAdmin) d.rankAdmin.classList.toggle('busy', this.adminBusy);
+    if (d.rankAdminNote && this.adminBusy) {
+      // 名前が混ざる文字列なので textContent で入れる（innerHTML は使わない）
+      d.rankAdminNote.textContent = message;
+    }
+    // 二重に押させない。一覧は作業のあとに組み直すので、ここでは今ある行だけ止める
+    if (d.rankList) {
+      for (const btn of d.rankList.querySelectorAll('.rank-act')) btn.disabled = this.adminBusy;
+    }
+    if (!this.adminBusy) this.updateAdminBar();
+  }
+
+  /**
+   * 一覧の行を直す・消す。どちらも**その人の記録すべて**が相手。
    * 消すのは戻せないので必ず訊く。直すのは打ち直しで済むので訊かない。
    */
   async adminAct(action, name) {
+    // 作業中の二度押しは受けない（同じ人を二重に直しに行かせない）
+    if (this.adminBusy) return;
+
     const board = this.rankBoard;
     const level = this.rankLevel;
+    const remove = action === 'delete';
     let to = null;
 
     try {
-      if (action === 'delete') {
-        if (!window.confirm(`「${name}」の記録を消します。元には戻せません。`)) return;
+      if (remove) {
+        if (!window.confirm(
+          `「${name}」の記録を、すべて消します。\n`
+          + '（星の数と、この人が遊んだ全レベル）\n\n元には戻せません。',
+        )) return;
       } else {
         to = window.prompt(`「${name}」を、どんな名前に直しますか？`, name);
         if (to === null) return;
       }
     } catch { return; /* 訊けない環境では何もしない */ }
 
-    const res = await adminEdit({ action, board, level, name, to });
+    this.setAdminBusy(remove
+      ? `「${name}」の記録を消しています… 全レベルを探すので少しかかります`
+      : `「${name}」の名前を直しています… 全レベルを探すので少しかかります`);
+
+    let res;
+    try {
+      res = await adminEdit({ action, board, level, name, to });
+    } finally {
+      this.setAdminBusy('');
+    }
+
     if (!res.ok) {
-      this.toast(res.error || '直せませんでした');
+      this.toast(res.error || (remove ? '消せませんでした' : '直せませんでした'));
       return;
     }
     // 待っているあいだに別の表へ移られていたら、出す場所が無い
@@ -1678,12 +1724,12 @@ this.afterMove();
     this.renderRanking({ entries: res.entries, global: isGlobalRanking(), offline: false }, board);
 
     if (!res.changed) {
-      // ok なのに何も変わっていない ―― 直す相手がもう居なかった。成功したふりはしない
+      // ok なのに何も変わっていない ―― 相手がもう居なかった。成功したふりはしない
       this.toast(`「${name}」の記録が見つかりませんでした`);
       return;
     }
-    this.toast(action === 'delete'
-      ? `「${name}」を消しました`
+    this.toast(remove
+      ? `「${name}」の記録をすべて消しました`
       : `「${name}」を「${sanitizeName(to)}」にしました（この人のすべての表で）`);
   }
 
@@ -1802,6 +1848,8 @@ this.afterMove();
             btn.textContent = a.label;
             btn.dataset.admin = a.key;
             btn.dataset.name = e.name;
+            // 作業中に一覧が組み直されても、押せない状態は引き継ぐ
+            btn.disabled = !!this.adminBusy;
             row.appendChild(btn);
           }
         }

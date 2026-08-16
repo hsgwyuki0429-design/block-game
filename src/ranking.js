@@ -158,42 +158,28 @@ export function removeEntries(entries, name, sort = rankSort) {
 }
 
 /**
- * 削除は端末内でも**いま見ている 1 つの表だけ**を消す（サーバ側と同じ方針 ――
- * 1 件の悪い記録を消したつもりが、全レベルの記録ごと消える事故を避ける）。
- */
-function removeLocal(board, level, name) {
-  if (board === 'stars') {
-    const before = localStarEntries();
-    const list = removeEntries(before, name, starSort).slice(0, RANK_LIMIT);
-    try { localStorage.setItem(STAR_KEY, JSON.stringify(list)); } catch { /* 諦める */ }
-    return { changed: hasName(before, name), entries: list };
-  }
-  const data = loadLocal();
-  const key = String(level);
-  const before = localEntries(level);
-  data[key] = removeEntries(before, name, rankSort).slice(0, RANK_LIMIT);
-  saveLocal(data);
-  return { changed: hasName(before, name), entries: data[key] };
-}
-
-/**
- * 付け替えは、端末に貯めている**すべてのレベル＋星の表**へ効かせる
- * （サーバ側の renameEverywhere と同じ考えかた。端末内は全データを直接
+ * 直すも消すも、端末に貯めている**すべてのレベル＋星の表**へ効かせる
+ * （サーバ側の editEverywhere と同じ考えかた。端末内は全データを直接
  * 持っているので、索引を作らずそのまま全部の鍵を回すだけで済む）。
  */
-function renameLocalEverywhere(board, level, name, to) {
+function editLocalEverywhere(board, level, name, to) {
+  const rename = !!to;
+  const apply = (entries, sort) => (rename
+    ? renameEntries(entries, name, to, sort)
+    : removeEntries(entries, name, sort));
+
   const data = loadLocal();
   let changed = false;
   for (const key of Object.keys(data)) {
     const before = data[key] || [];
     changed = changed || hasName(before, name);
-    data[key] = renameEntries(before, name, to, rankSort).slice(0, RANK_LIMIT);
+    data[key] = apply(before, rankSort).slice(0, RANK_LIMIT);
   }
   saveLocal(data);
 
   const starsBefore = loadStars();
   changed = changed || hasName(starsBefore, name);
-  const starsAfter = renameEntries(starsBefore, name, to, starSort).slice(0, RANK_LIMIT);
+  const starsAfter = apply(starsBefore, starSort).slice(0, RANK_LIMIT);
   try { localStorage.setItem(STAR_KEY, JSON.stringify(starsAfter)); } catch { /* 諦める */ }
 
   // 応答は、いま見ている表だけを返す（他の表は裏で直っている）
@@ -202,11 +188,11 @@ function renameLocalEverywhere(board, level, name, to) {
 }
 
 /**
- * 名前を直す／行を消す。**合言葉を持っているときだけ**通る。
+ * 名前を直す／記録を消す。**合言葉を持っているときだけ**通る。
  *
- * 直すほうは**その人の記録があるすべての表**（星の表とレベル別の全レベル）に
- * 効かせる。1 つの表だけ直すと、他の表に古い名前が残って「直したのに変わって
- * いない」ことになるため。消すほうは、いま見ている 1 つの表だけを消す。
+ * どちらも**その人の記録があるすべての表**（星の表とレベル別の全レベル）に
+ * 効かせる。1 つの表だけ相手にすると、他の表に古い名前が残って「直したのに
+ * 変わっていない」「消したのにまだ居る」ことになるため。
  *
  * @param {{action:'rename'|'delete', board:'level'|'stars', level?:number,
  *          name:string, to?:string}} cmd
@@ -227,10 +213,7 @@ export async function adminEdit(cmd) {
   const base = endpoint();
   // 端末の中だけで遊んでいるときは、その控えを直す（画面の見え方は世界共通と同じ）
   if (!base) {
-    const res = rename
-      ? renameLocalEverywhere(board, cmd.level, name, to)
-      : removeLocal(board, cmd.level, name);
-    return { ok: true, ...res, error: null };
+    return { ok: true, ...editLocalEverywhere(board, cmd.level, name, rename ? to : ''), error: null };
   }
 
   const key = adminKey();

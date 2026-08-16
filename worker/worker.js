@@ -22,8 +22,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { RANK_LIMIT } from '../src/ranking.js';
 import {
-  isAdminKey, readAdminAction, readBoard, readEntry, readLevel, readLimit,
-  readStarEntry, renameTargetLevels,
+  isAdminKey, readAdminAction, adminTargetLevels, readBoard, readEntry, readLevel, readLimit,
+  readStarEntry,
 } from './rules.mjs';
 
 /**
@@ -37,25 +37,25 @@ const ADMIN_HEADER = 'X-Admin-Key';
 const LIMIT_MAX = 200;
 
 /**
- * 名前を1回付け替えるときに、直しに行くレベル数の上限。
+ * 管理の 1 操作で、直し（消し）に行くレベル数の上限。
  * 総当たりの範囲（SWEEP_MAX）に、索引で拾える高いレベルのぶんを足した数 ――
- * 無いと、極端な索引を持つ名前を付け替えたときに応答がいつまでも返らない。
+ * 無いと、極端な索引を持つ名前を相手にしたときに応答がいつまでも返らない。
  */
-const RENAME_LEVEL_CAP = 400;
+const ADMIN_LEVEL_CAP = 400;
 
 /**
- * 付け替えを何レベルずつ同時に投げるか。
+ * 何レベルずつ同時に投げるか。
  * レベルごとに器（Durable Object）が違うので、束ねて投げれば待ち時間は重ならない。
  * 1 つずつ順に投げると、総当たりの 300 レベルで何十秒もかかってしまう。
  */
-const RENAME_BATCH = 30;
+const ADMIN_BATCH = 30;
 
 /**
  * いま何が動いているかの目印。**deploy が本当に届いたかを、URL を開くだけで確かめられる。**
  * 「直したのに変わらない」が、コードの問題なのか deploy が届いていないだけなのかを
  * 見分けるのに、これが無いと手も足も出ない。中身を変えたらここも上げること。
  */
-const VERSION = 'admin-rename-sweep-1';
+const VERSION = 'admin-everywhere-2';
 
 // 誰でも読めて誰でも投稿できる公開ランキングなので、配信元を問わない。
 // Cookie も認証も使わないため、'*' を許しても持ち出されて困るものが無い。
@@ -253,6 +253,11 @@ export class RankStore extends DurableObject {
       .toArray().map((r) => r.level);
   }
 
+  /** 索引からその名前を落とす（消したあとに残しておく意味が無い） */
+  forgetPlayed(name) {
+    this.ctx.storage.sql.exec('DELETE FROM played WHERE name = ?', name);
+  }
+
   /** 索引側の付け替え。from の行を to へ寄せる（同じレベルの重複は落とす） */
   transferPlayed(from, to) {
     const sql = this.ctx.storage.sql;
@@ -340,32 +345,44 @@ async function handleGet(url, env) {
 }
 
 /**
- * 名前の付け替えは、その人の記録がある**すべての表**に効かせる。
+ * 直すも消すも、**その人の記録があるすべての表**に効かせる。
  *
  * レベル別は 1 レベル 1 器に分かれているので、いま見ている 1 つの表だけ直しても
- * 「他のレベルでは古い名前のまま」になる ―― 直したのに変わっていないように見える
- * 事故はここから起きる。索引（played 表）で辿れる分と、いま見ている表を合わせて
- * 全部に同じ付け替えを効かせ、索引そのものも寄せておく。
+ * 「他のレベルでは古い名前のまま」「他のレベルにはまだ居る」になる ―― 直した・
+ * 消したのに変わっていないように見える事故は、すべてここから起きる。
+ *
+ * 消すほうを 1 つの表だけに留めていたのは「消しすぎ」を避けるためだったが、
+ * 実際に困るのは逆で、**消したはずの人が別の表に残っている**ほうだった。
+ * 消す前には必ず訊く（画面側）ので、範囲は直すと揃える。
  */
-async function renameEverywhere(env, cmd) {
+async function editEverywhere(env, cmd) {
+  const rename = cmd.action === 'rename';
   const stars = starStore(env);
   const indexed = await stars.playedLevels(cmd.name);
-  const levels = renameTargetLevels(indexed, cmd, RENAME_LEVEL_CAP);
+  const levels = adminTargetLevels(indexed, cmd, ADMIN_LEVEL_CAP);
 
   let changed = false;
   // レベルごとに器が違うので、束ねて投げれば待ち時間は重ならない。
   // 記録の無いレベルは空振りで返ってくるだけなので、投げ得
-  for (let i = 0; i < levels.length; i += RENAME_BATCH) {
-    const batch = levels.slice(i, i + RENAME_BATCH);
-    const done = await Promise.all(
-      batch.map((level) => storeFor(env, level).rename(cmd.name, cmd.to, RANK_LIMIT)),
-    );
+  for (let i = 0; i < levels.length; i += ADMIN_BATCH) {
+    const batch = levels.slice(i, i + ADMIN_BATCH);
+    const done = await Promise.all(batch.map((level) => {
+      const store = storeFor(env, level);
+      return rename
+        ? store.rename(cmd.name, cmd.to, RANK_LIMIT)
+        : store.remove(cmd.name, RANK_LIMIT);
+    }));
     changed = changed || done.some((r) => r.changed);
   }
 
-  const starsRes = await stars.renameStars(cmd.name, cmd.to, RANK_LIMIT);
+  const starsRes = rename
+    ? await stars.renameStars(cmd.name, cmd.to, RANK_LIMIT)
+    : await stars.removeStars(cmd.name, RANK_LIMIT);
   changed = changed || starsRes.changed;
-  await stars.transferPlayed(cmd.name, cmd.to);
+
+  // 索引も一緒に始末する。置き去りにすると、次の付け替えで居ない名前を探しに行く
+  if (rename) await stars.transferPlayed(cmd.name, cmd.to);
+  else await stars.forgetPlayed(cmd.name);
 
   // 応答には、いま管理者が見ている表の一覧だけを載せる（他の表は裏で直っている）
   const entries = cmd.board === 'stars'
@@ -384,9 +401,6 @@ async function renameEverywhere(env, cmd) {
  *
  * 置いていないあいだは、この入口は**開かない**（誰が何を送っても 503）――
  * 「空の合言葉なら通る」を残すと、設定し忘れた瞬間に誰でも消せる表になる。
- *
- * 削除は付け替えと違い、**いま見ている 1 つの表だけ**を消す ―― 1 件の悪い記録を
- * 消したつもりが、その人の全レベルの記録ごと消えてしまう事故を避けるため。
  */
 async function handleAdmin(request, env, body) {
   const secret = env.ADMIN_KEY;
@@ -398,12 +412,7 @@ async function handleAdmin(request, env, body) {
   const cmd = readAdminAction(body);
   if (!cmd) return json({ error: 'invalid body' }, 400);
 
-  if (cmd.action === 'delete') {
-    if (cmd.board === 'stars') return json(await starStore(env).removeStars(cmd.name, RANK_LIMIT));
-    return json(await storeFor(env, cmd.level).remove(cmd.name, RANK_LIMIT));
-  }
-
-  return json(await renameEverywhere(env, cmd));
+  return json(await editEverywhere(env, cmd));
 }
 
 async function handlePost(request, env, ctx) {

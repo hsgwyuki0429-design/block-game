@@ -1001,6 +1001,21 @@ svg .fill { fill: currentColor; stroke: none; }
 .rank-admin span { flex: 1 1 auto; min-width: 0; }
 .rank-admin b { color: var(--accent); }
 
+/*
+ * 直している・消している最中。
+ * 帯そのものを脈打たせる ―― 全レベルを探しに行くあいだ画面が黙っていると、
+ * 効いていないと読めて何度も押されてしまう。動いていることが見えれば待てる。
+ */
+.rank-admin.busy { animation: admin-working 1.1s ease-in-out infinite; }
+@keyframes admin-working {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+/* 端末側で動きを減らす設定にしている人には点滅させない */
+@media (prefers-reduced-motion: reduce) {
+  .rank-admin.busy { animation: none; }
+}
+
 /* 行に足す小さなボタン。数字より弱く見せて、順位の読みやすさを壊さない */
 .rank-act {
   flex: none;
