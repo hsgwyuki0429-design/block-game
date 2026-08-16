@@ -91,6 +91,7 @@ const dom = {
   rankAdmin: $('rank-admin'),
   rankAdminNote: $('rank-admin-note'),
   btnAdminOff: $('btn-admin-off'),
+  btnAdminCheck: $('btn-admin-check'),
 
   // 訊くシート。ブラウザの prompt / confirm の代わりに使う
   modalAsk: $('modal-ask'),

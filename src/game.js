@@ -25,7 +25,7 @@ import { ClearEffects } from './clearEffects.js';
 import {
   savedName, saveName, forgetName, sanitizeName, clearLocalRanking,
   isGlobalRanking, fetchRanking, submitScore, fetchStarRanking, submitStars, RANK_LIMIT,
-  adminKey, saveAdminKey, isAdminMode, adminEdit, NAME_MAX,
+  adminKey, saveAdminKey, isAdminMode, adminEdit, diagnose, NAME_MAX,
 } from './ranking.js';
 import { attachSheetSwipe, resetSheet } from './sheet.js';
 import { ads } from './ads.js';
@@ -857,6 +857,7 @@ this.afterMove();
         this.toast('管理モードをやめました');
       });
     }
+    if (d.btnAdminCheck) d.btnAdminCheck.addEventListener('click', () => this.runDiagnose());
     if (d.rankList) {
       d.rankList.addEventListener('click', (e) => {
         const btn = e.target.closest && e.target.closest('[data-admin]');
@@ -1730,6 +1731,31 @@ this.afterMove();
   /** 訊くシートの「やめる」。背景タップと下払いもここへ来る */
   cancelAsk() {
     if (this.askResolve) this.askResolve(null);
+  }
+
+  /**
+   * 接続をしらべて、結果をそのまま画面に出す。
+   *
+   * この不調は**持ち主の端末でしか起きない** ―― こちらからは相手のサーバに触れない。
+   * 「つながりません」の一行だけでは、届いていないのか・断られたのか・古い版が
+   * 動いているのかが分からず、何度も往復することになる。手元で切り分けられるようにする。
+   */
+  async runDiagnose() {
+    if (this.adminBusy) return;
+    this.setAdminBusy('接続をしらべています…');
+    let res;
+    try {
+      res = await diagnose();
+    } catch (err) {
+      res = { lines: [`しらべられませんでした（${err}）`], version: '' };
+    } finally {
+      this.setAdminBusy('');
+    }
+    await this.ask({
+      title: '接続のようす',
+      lead: res.lines.join('\n'),
+      ok: '閉じる',
+    });
   }
 
   /** 合言葉を訊く。空で決定すると管理モードを降りる */

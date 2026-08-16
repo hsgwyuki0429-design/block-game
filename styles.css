@@ -1216,6 +1216,14 @@ svg .fill { fill: currentColor; stroke: none; }
 
 /* 訊くシートは、ランキングのシートの上に重ねて出す（下は開いたまま残す） */
 #modal-ask { z-index: 60; }
+/*
+ * 改行をそのまま活かす（接続をしらべた結果を、行ごとに読ませる）。
+ * 中身は textContent で入れるので、ここで改行を効かせないと 1 行に潰れる。
+ */
+#ask-lead {
+  white-space: pre-line;
+  word-break: break-word;
+}
 
 .sheet-card {
   position: relative;
