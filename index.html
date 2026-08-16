@@ -27,7 +27,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SLIDE POP!">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="stylesheet" href="styles.css?v=fd32f9be76">
+<link rel="stylesheet" href="styles.css?v=6c5ef25a36">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23eef1f8'/><rect x='4' y='5' width='11' height='11' rx='3' fill='%233f8ede'/><rect x='17' y='5' width='11' height='11' rx='3' fill='%23d94a41'/><rect x='4' y='18' width='24' height='9' rx='3' fill='%23a259c6'/></svg>">
 </head>
 <body>
@@ -306,6 +306,28 @@
 <!-- ============================================================ 名前を決める
      クリアの記録は必ず残るので、名前が無いまま先へは進めない。
      閉じるボタンも背景タップも用意しない（設定から開いたときだけ閉じられる）。 -->
+<!-- ============================================================ 訊く（管理モード）
+  ブラウザの prompt / confirm は使わない。Chrome は同じページで何度もダイアログを
+  出すと「このページでこれ以上ダイアログを表示しない」を出し、一度これが入ると
+  **以降は何も表示されないまま即キャンセル**になる ―― 押しても無反応になり、
+  「消せない」という形で表に出る。管理は繰り返し押す操作なので、必ずここを通す。
+-->
+<div class="sheet" id="modal-ask" hidden>
+  <div class="sheet-card sheet-narrow">
+    <div class="grabber"></div>
+    <h2 id="ask-title">確認</h2>
+    <p id="ask-lead"></p>
+
+    <div class="name-field" id="ask-field" hidden>
+      <input type="text" id="ask-input" maxlength="12" enterkeyhint="done" autocomplete="off">
+      <p class="name-error" id="ask-error" hidden>入れてください</p>
+    </div>
+
+    <button class="btn btn-primary" id="btn-ask-ok" type="button">OK</button>
+    <button class="btn btn-plain" id="btn-ask-cancel" type="button">やめる</button>
+  </div>
+</div>
+
 <div class="sheet" id="modal-name" hidden>
   <div class="sheet-card sheet-narrow">
     <div class="grabber"></div>
@@ -427,6 +449,6 @@
   </div>
 </div>
 
-<script defer src="app.js?v=fd32f9be76"></script>
+<script defer src="app.js?v=6c5ef25a36"></script>
 </body>
 </html>

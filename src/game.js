@@ -25,7 +25,7 @@ import { ClearEffects } from './clearEffects.js';
 import {
   savedName, saveName, forgetName, sanitizeName, clearLocalRanking,
   isGlobalRanking, fetchRanking, submitScore, fetchStarRanking, submitStars, RANK_LIMIT,
-  adminKey, saveAdminKey, isAdminMode, adminEdit,
+  adminKey, saveAdminKey, isAdminMode, adminEdit, NAME_MAX,
 } from './ranking.js';
 import { attachSheetSwipe, resetSheet } from './sheet.js';
 import { ads } from './ads.js';
@@ -804,6 +804,8 @@ this.afterMove();
         if (modal === d.modalName && this.nameLocked) return;
         // 閉じるボタンの中身（SVG）が押されることもあるので closest で辿る
         if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) {
+          // 訊くシートは、閉じられたら「やめた」として返す（返事を待つ人が居る）
+          if (modal === d.modalAsk) this.cancelAsk();
           this.closeModals();
         }
       });
@@ -811,7 +813,11 @@ this.afterMove();
       // 無いので、盤面を見ながら片手で持っているときほど遠い
       attachSheetSwipe(modal, {
         canClose: () => !(modal === d.modalName && this.nameLocked),
-        onClose: () => { modal.hidden = true; this.disarmReset(); },
+        onClose: () => {
+          modal.hidden = true;
+          if (modal === d.modalAsk) this.cancelAsk();
+          this.disarmReset();
+        },
       });
     }
 
@@ -853,6 +859,20 @@ this.afterMove();
       d.rankList.addEventListener('click', (e) => {
         const btn = e.target.closest && e.target.closest('[data-admin]');
         if (btn) this.adminAct(btn.dataset.admin, btn.dataset.name);
+      });
+    }
+
+    // 訊くシート（prompt / confirm の代わり）
+    if (d.btnAskOk) d.btnAskOk.addEventListener('click', () => this.commitAsk());
+    if (d.btnAskCancel) d.btnAskCancel.addEventListener('click', () => this.cancelAsk());
+    if (d.askInput) {
+      d.askInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); this.commitAsk(); }
+      });
+      // 打ち始めたらエラーは引っ込める（打っている最中に赤いのは邪魔）
+      d.askInput.addEventListener('input', () => {
+        d.askInput.classList.remove('bad');
+        if (d.askError) d.askError.hidden = true;
       });
     }
 
@@ -1242,7 +1262,8 @@ this.afterMove();
   /** 開け閉めの対象になるシート一覧（HTML に無いものは飛ばす） */
   modals() {
     const d = this.dom;
-    return [d.modalRules, d.modalSettings, d.modalInstall, d.modalRank, d.modalName].filter(Boolean);
+    return [d.modalRules, d.modalSettings, d.modalInstall, d.modalRank, d.modalName, d.modalAsk]
+      .filter(Boolean);
   }
 
   anyModalOpen() {
@@ -1631,12 +1652,96 @@ this.afterMove();
     }
   }
 
+  /**
+   * 訊く。ブラウザの prompt / confirm の代わりに、アプリの中のシートで訊く。
+   *
+   * ブラウザのダイアログは**繰り返し出すと Chrome に止められる**（「このページで
+   * これ以上ダイアログを表示しない」）。一度そうなると、押しても何も出ないまま
+   * 即キャンセルになり、機能そのものが壊れたように見える ―― 管理は同じボタンを
+   * 何度も押す操作なので、そこに乗ってはいけない。
+   *
+   * @param {{title:string, lead?:string, ok?:string, input?:boolean,
+   *          value?:string, placeholder?:string, danger?:boolean, allowEmpty?:boolean}} cfg
+   * @returns {Promise<string|null>} やめたら null。入力なしの確認なら '' を返す
+   */
+  ask(cfg) {
+    const d = this.dom;
+    if (!d.modalAsk) return Promise.resolve(null);
+
+    d.askTitle.textContent = cfg.title || '確認';
+    // 名前が混ざる文字列なので textContent で入れる（innerHTML は使わない）
+    d.askLead.textContent = cfg.lead || '';
+    d.askLead.hidden = !cfg.lead;
+
+    const wantsInput = !!cfg.input;
+    d.askField.hidden = !wantsInput;
+    d.askInput.value = wantsInput ? (cfg.value || '') : '';
+    d.askInput.placeholder = cfg.placeholder || '';
+    // 名前と合言葉では上限が違う。名前の 12 文字で合言葉を切ってしまわない
+    d.askInput.maxLength = cfg.maxLength || NAME_MAX;
+    // 空のままの決定を許すか（合言葉は空＝管理モードをやめる、という意味を持つ）
+    this.askAllowEmpty = !!cfg.allowEmpty;
+    d.askInput.classList.remove('bad');
+    d.askError.hidden = true;
+
+    d.btnAskOk.textContent = cfg.ok || 'OK';
+    d.btnAskOk.classList.toggle('btn-danger', !!cfg.danger);
+
+    this.openModal(d.modalAsk);
+    if (wantsInput) {
+      // シートが上がりきってから当てる。上がっている最中だと iOS で外れることがある
+      setTimeout(() => { try { d.askInput.focus(); } catch { /* 当てられなければそのまま */ } }, 280);
+    }
+
+    return new Promise((resolve) => {
+      const done = (value) => {
+        d.modalAsk.hidden = true;
+        d.btnAskOk.classList.remove('btn-danger');
+        this.askResolve = null;
+        resolve(value);
+      };
+      // 開きっぱなしのまま次を開かれたら、前の約束は「やめた」で閉じる
+      if (this.askResolve) this.askResolve(null);
+      this.askResolve = done;
+    });
+  }
+
+  /** 訊くシートの「OK」。入力が要るのに空なら閉じない */
+  commitAsk() {
+    const d = this.dom;
+    if (!this.askResolve) return;
+
+    if (!d.askField.hidden) {
+      const value = d.askInput.value.trim();
+      if (!value && !this.askAllowEmpty) {
+        d.askError.hidden = false;
+        d.askInput.classList.add('bad');
+        try { d.askInput.focus(); } catch { /* 当てられなければそのまま */ }
+        return;
+      }
+      this.askResolve(value);
+      return;
+    }
+    this.askResolve('');
+  }
+
+  /** 訊くシートの「やめる」。背景タップと下払いもここへ来る */
+  cancelAsk() {
+    if (this.askResolve) this.askResolve(null);
+  }
+
   /** 合言葉を訊く。空で決定すると管理モードを降りる */
-  askAdminKey() {
-    let raw = null;
-    try {
-      raw = window.prompt('管理の合言葉（空のままにすると、やめます）', adminKey());
-    } catch { /* prompt が使えない環境では何も起きない */ }
+  async askAdminKey() {
+    const raw = await this.ask({
+      title: '管理の合言葉',
+      lead: '合言葉を入れると、名前を直したり記録を消したりできます。空のままにすると、管理モードをやめます。',
+      ok: '決定',
+      input: true,
+      value: adminKey(),
+      placeholder: 'あいことば',
+      maxLength: 64,
+      allowEmpty: true,
+    });
     if (raw === null) return;
 
     const clean = saveAdminKey(raw);
@@ -1689,19 +1794,29 @@ this.afterMove();
     const board = this.rankBoard;
     const level = this.rankLevel;
     const remove = action === 'delete';
-    let to = null;
 
-    try {
-      if (remove) {
-        if (!window.confirm(
-          `「${name}」の記録を、すべて消します。\n`
-          + '（星の数と、この人が遊んだ全レベル）\n\n元には戻せません。',
-        )) return;
-      } else {
-        to = window.prompt(`「${name}」を、どんな名前に直しますか？`, name);
-        if (to === null) return;
-      }
-    } catch { return; /* 訊けない環境では何もしない */ }
+    const answer = remove
+      ? await this.ask({
+        title: '記録を消す',
+        lead: `「${name}」の記録をすべて消します。星の数と、この人が遊んだ全レベルから消えます。`
+          + '元には戻せません。',
+        ok: '消す',
+        danger: true,
+      })
+      : await this.ask({
+        title: '名前を直す',
+        lead: `「${name}」を、どんな名前に直しますか？`
+          + 'この人の記録すべて（星の数と全レベル）で、この名前になります。',
+        ok: 'この名前にする',
+        input: true,
+        value: name,
+        placeholder: `なまえ（${NAME_MAX}文字まで）`,
+      });
+    if (answer === null) return;
+    const to = remove ? null : answer;
+
+    // 待っているあいだに管理モードを降りていたら、もう手を出さない
+    if (!isAdminMode() && isGlobalRanking()) return;
 
     this.setAdminBusy(remove
       ? `「${name}」の記録を消しています… 全レベルを探すので少しかかります`

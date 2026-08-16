@@ -92,6 +92,16 @@ const dom = {
   rankAdminNote: $('rank-admin-note'),
   btnAdminOff: $('btn-admin-off'),
 
+  // 訊くシート。ブラウザの prompt / confirm の代わりに使う
+  modalAsk: $('modal-ask'),
+  askTitle: $('ask-title'),
+  askLead: $('ask-lead'),
+  askField: $('ask-field'),
+  askInput: $('ask-input'),
+  askError: $('ask-error'),
+  btnAskOk: $('btn-ask-ok'),
+  btnAskCancel: $('btn-ask-cancel'),
+
   // 名前（初回だけ訊いて、以後は自動で使う）
   modalName: $('modal-name'),
   nameTitle: $('name-title'),

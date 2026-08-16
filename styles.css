@@ -1029,7 +1029,7 @@ svg .fill { fill: currentColor; stroke: none; }
   cursor: pointer;
 }
 .rank-act:hover { color: var(--label); }
-.rank-act.danger { color: var(--danger, #ff3b30); }
+.rank-act.danger { color: var(--warn); }
 
 /* ============================================================ 素材ピッカー */
 
@@ -1195,6 +1195,9 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 /* 畳み終わりに合わせて暗幕も消す。引いている最中は指に即応させたいので付けない */
 .sheet.closing { transition: background 0.24s var(--ease); }
+
+/* 訊くシートは、ランキングのシートの上に重ねて出す（下は開いたまま残す） */
+#modal-ask { z-index: 60; }
 
 .sheet-card {
   position: relative;
