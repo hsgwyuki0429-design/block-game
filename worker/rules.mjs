@@ -151,6 +151,23 @@ export function adminTargetLevels(indexedLevels, cmd, cap, sweepMax = SWEEP_MAX)
 }
 
 /**
+ * どこまで進んだか（何レベルぶん済んだか）。
+ *
+ * **1 回のリクエストで全部は回れない。** Cloudflare Workers には
+ * 「1 リクエストあたりのサブリクエスト数」の上限があり（無料プランで 50）、
+ * Durable Object の呼び出しもここに数えられる ―― 300 レベルを一息に回ると
+ * 上限を越えて落ち、画面には「サーバーに届きませんでした」としか出ない。
+ * しかも **`wrangler dev --local` では上限が課されない**ので、手元では通ってしまう。
+ *
+ * そこで、続きの位置をクライアントに返し、何回かに分けて回る。
+ */
+export function readCursor(raw, max) {
+  if (raw == null || raw === '') return 0;
+  const n = readInt(raw, 0, max);
+  return n == null ? 0 : n;
+}
+
+/**
  * 星の数の投稿 1 件を読む。
  * cleared（クリアしたレベル数）は同数のときの並べ替えに使うので、星と一緒に必ず要る。
  * 星が 1 レベルあたり 3 個を超えることはないので、クリア数の 3 倍を上限にする ――
