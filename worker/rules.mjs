@@ -118,13 +118,13 @@ export function readAdminAction(body) {
  *
  * 索引（played 表）は**この機能を入れて以降の投稿しか載っていない**ので、
  * それだけを辿ると昔からある記録が丸ごと取り残される ―― 星の数の表から
- * 直したときに、レベル別がひとつも変わらない、という形で表に出る。
- * 記録の無いレベルを見に行くのは空振りで済むので、低いレベルは全部見に行く。
+ * 直したときに、レベル別がひとつも変わらない（消したのに残っている）という形で
+ * 表に出る。記録の無いレベルを見に行くのは空振りで済むので、低いレベルは全部見に行く。
  */
 export const SWEEP_MAX = 300;
 
 /**
- * 名前の付け替えで、実際にどのレベルの器まで直しに行くか。**この順に**直す。
+ * 管理の操作（直す・消す）で、実際にどのレベルの器まで手を出すか。**この順に**回る。
  *
  *   1. **いま管理者が見ている、レベル別の表** ―― 何があっても必ず直す
  *   2. **索引（played 表）にあるレベル**      ―― 総当たりの範囲より上も拾える
@@ -134,7 +134,7 @@ export const SWEEP_MAX = 300;
  * いま見ている行」では意味がないから。2 を 3 より先に置くのも同じ理由で、
  * 索引にあるレベルは**記録があると分かっている**ぶん、空振りの総当たりより優先する。
  */
-export function renameTargetLevels(indexedLevels, cmd, cap, sweepMax = SWEEP_MAX) {
+export function adminTargetLevels(indexedLevels, cmd, cap, sweepMax = SWEEP_MAX) {
   const order = [];
   const seen = new Set();
   const add = (level) => {
