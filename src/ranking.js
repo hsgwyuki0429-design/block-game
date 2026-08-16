@@ -140,6 +140,93 @@ export function isAdminMode() {
   return adminKey() !== '';
 }
 
+/**
+ * 合言葉をヘッダに載せられる形にする。
+ *
+ * **HTTP のヘッダは ISO-8859-1 しか運べない。** 日本語の合言葉をそのまま載せると、
+ * ブラウザは送信する前に例外を投げる ―― サーバには何も届かないのに、画面には
+ * 「通信できません」としか出ないので、サーバが落ちているようにしか見えない
+ * （実際にこれで長く詰まった。ランキングの読み込みはヘッダを使わないので成功し、
+ * 管理のときだけ落ちる、といういちばん紛らわしい形になる）。
+ *
+ * パーセント符号化して ASCII に均す。サーバ側は元に戻してから照らす（worker/rules.mjs）。
+ */
+export function encodeAdminKey(key) {
+  return encodeURIComponent(String(key == null ? '' : key));
+}
+
+/**
+ * 接続をしらべる。**持ち主の端末でしか再現しない不調を、持ち主の手元で切り分ける。**
+ *
+ * 「つながりません」だけでは、届いていないのか・断られたのか・そもそも別の版が
+ * 動いているのかが分からない。ここで 3 つを順に確かめる ――
+ *
+ *   1. サーバは生きているか（版も分かる）
+ *   2. ランキングは読めるか（ふつうの GET）
+ *   3. 管理の入口まで届くか（合言葉のヘッダ付き＝ブラウザが事前確認を投げる経路）
+ *
+ * 3 だけが落ちるなら、事前確認（CORS）か管理の処理。1 から落ちるなら、
+ * 端末からサーバへ届いていない（遮断・圏外・別の URL）。
+ *
+ * @returns {Promise<{lines:string[], version:string}>} 画面にそのまま出せる行
+ */
+export async function diagnose() {
+  const base = endpoint();
+  if (!base) return { lines: ['接続先が設定されていません（この端末の中だけで動いています）。'], version: '' };
+
+  const lines = [`接続先: ${base}`];
+  let version = '';
+
+  // 1. 生きているか
+  try {
+    const health = await request(base, { headers: { Accept: 'application/json' } }, 10000);
+    version = (health && health.version) || '（版の表示なし＝古い版）';
+    lines.push(`1. サーバの応答: OK　版: ${version}`);
+  } catch (err) {
+    lines.push(`1. サーバの応答: ダメ　${failureText(err)}`);
+    lines.push('→ 端末からサーバへ届いていません。通信環境・広告ブロック・URL を疑ってください。');
+    return { lines, version };
+  }
+
+  // 2. ランキングは読めるか
+  try {
+    await request(starUrl(base), { headers: { Accept: 'application/json' } }, 10000);
+    lines.push('2. ランキングの読み込み: OK');
+  } catch (err) {
+    lines.push(`2. ランキングの読み込み: ダメ　${failureText(err)}`);
+  }
+
+  /*
+   * 3. 管理の入口。合言葉のヘッダを付けると、ブラウザが先に事前確認（OPTIONS）を投げる ――
+   * ここだけ落ちるなら、その事前確認かサーバ側の管理処理が原因。
+   * わざと中身の無い指示を送るので、**記録は 1 件も変わらない**（400 が返るのが正しい）。
+   */
+  try {
+    await request(base, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Admin-Key': encodeAdminKey(adminKey() || 'test'),
+      },
+      body: JSON.stringify({ action: 'rename', board: 'level' }),
+    }, 10000);
+    lines.push('3. 管理の入口: OK（応答あり）');
+  } catch (err) {
+    const status = err && err.status;
+    if (status === 400) lines.push('3. 管理の入口: OK（届いています）');
+    else if (status === 403) lines.push('3. 管理の入口: 届いているが、合言葉が違います');
+    else if (status === 503) lines.push('3. 管理の入口: 届いているが、サーバに合言葉が設定されていません');
+    else {
+      lines.push(`3. 管理の入口: ダメ　${failureText(err)}`);
+      if (!status) lines.push('→ 事前確認（CORS）で止められたか、サーバが落ちています。');
+      else lines.push('→ サーバ側で処理が失敗しています。');
+    }
+  }
+
+  return { lines, version };
+}
+
 /** その名前の行が一覧にあるか */
 export function hasName(entries, name) {
   const clean = sanitizeName(name);
@@ -242,7 +329,7 @@ export async function adminEdit(cmd) {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'X-Admin-Key': key,
+          'X-Admin-Key': encodeAdminKey(key),
         },
         body: JSON.stringify({
           action: rename ? 'rename' : 'delete',

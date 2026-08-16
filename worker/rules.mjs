@@ -66,6 +66,25 @@ export function readBoard(raw) {
 }
 
 /**
+ * ヘッダで届いた合言葉を、元の文字列に戻す。
+ *
+ * **HTTP のヘッダは ISO-8859-1 しか運べない。** 日本語の合言葉はブラウザが
+ * 送る前に例外を投げるので、クライアントはパーセント符号化して送ってくる
+ * （src/ranking.js の encodeAdminKey）。ここで戻してから照らす。
+ *
+ * 符号化していない古いクライアント（英数字だけの合言葉なら通っていた）も
+ * そのまま通す ―― 戻せない文字列は、戻さずにそのまま使う。
+ */
+export function decodeAdminKey(raw) {
+  if (typeof raw !== 'string') return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * 管理の合言葉を照らす。
  *
  * 1 文字ずつ **最後まで** 見て、違いを積むだけにする ―― 途中で return すると
@@ -74,7 +93,7 @@ export function readBoard(raw) {
  */
 export function isAdminKey(given, expected) {
   if (typeof expected !== 'string' || expected === '') return false;
-  const a = typeof given === 'string' ? given : '';
+  const a = decodeAdminKey(given);
   let diff = a.length ^ expected.length;
   for (let i = 0; i < expected.length; i += 1) {
     diff |= a.charCodeAt(i % (a.length || 1)) ^ expected.charCodeAt(i);
