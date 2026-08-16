@@ -114,26 +114,40 @@ export function readAdminAction(body) {
 }
 
 /**
- * 名前の付け替えで、実際にどのレベルの器まで直しに行くか。
+ * 索引に載っていない古い記録を拾うために、総当たりで見に行くレベルの上限。
  *
- *   ・**索引（played 表）にあるレベル**       ―― この機能を入れて以降に投稿した分
- *   ・**いま管理者が見ている、レベル別の表**  ―― 索引に無くても必ず含める
- *
- * 後者が要るのは、索引が**この機能を入れる前の投稿までは遡れない**から。
- * 何も足さないと、機能追加より前からある記録は「いま目の前に見えている行」すら
- * 直せない ―― 直したのに変わらない、という事故になる。
- *
- * 多すぎる索引は安全弁で頭打ちにする（cap）。それでも、いま見ている表は
- * **必ず**残す ―― 頭打ちで真っ先に落ちるのが「押した本人が見ている行」では
- * 意味がない。
+ * 索引（played 表）は**この機能を入れて以降の投稿しか載っていない**ので、
+ * それだけを辿ると昔からある記録が丸ごと取り残される ―― 星の数の表から
+ * 直したときに、レベル別がひとつも変わらない、という形で表に出る。
+ * 記録の無いレベルを見に行くのは空振りで済むので、低いレベルは全部見に行く。
  */
-export function renameTargetLevels(indexedLevels, cmd, cap) {
-  const set = new Set(indexedLevels || []);
-  const here = cmd.board === 'level' && cmd.level != null ? cmd.level : null;
-  if (here != null) set.delete(here);
+export const SWEEP_MAX = 300;
 
-  const rest = [...set].slice(0, here != null ? Math.max(0, cap - 1) : cap);
-  return here != null ? [here, ...rest] : rest;
+/**
+ * 名前の付け替えで、実際にどのレベルの器まで直しに行くか。**この順に**直す。
+ *
+ *   1. **いま管理者が見ている、レベル別の表** ―― 何があっても必ず直す
+ *   2. **索引（played 表）にあるレベル**      ―― 総当たりの範囲より上も拾える
+ *   3. **1 から SWEEP_MAX までの総当たり**    ―― 索引に無い、昔からある記録
+ *
+ * 1 を先頭に置くのは、頭打ち（cap）で真っ先に落ちるのが「押した本人が
+ * いま見ている行」では意味がないから。2 を 3 より先に置くのも同じ理由で、
+ * 索引にあるレベルは**記録があると分かっている**ぶん、空振りの総当たりより優先する。
+ */
+export function renameTargetLevels(indexedLevels, cmd, cap, sweepMax = SWEEP_MAX) {
+  const order = [];
+  const seen = new Set();
+  const add = (level) => {
+    if (level == null || seen.has(level)) return;
+    seen.add(level);
+    order.push(level);
+  };
+
+  if (cmd.board === 'level') add(cmd.level);
+  for (const level of indexedLevels || []) add(level);
+  for (let level = 1; level <= sweepMax; level += 1) add(level);
+
+  return order.slice(0, cap);
 }
 
 /**
