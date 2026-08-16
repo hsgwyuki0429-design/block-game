@@ -43,6 +43,14 @@ export const RANK_LIMIT = 50;
 /** 通信を諦めるまで。待たせるくらいなら端末内の記録を出す */
 const TIMEOUT_MS = 7000;
 
+/**
+ * 管理の付け替えだけは長く待つ。
+ * 名前 1 つの付け替えでも**その人の記録がある全レベルを直しに行く**ので、
+ * ふつうの読み込みより時間がかかる ―― ここで先に諦めると、サーバでは直り
+ * きっているのに画面には「届きませんでした」と出て、直っていないように見える。
+ */
+const ADMIN_TIMEOUT_MS = 25000;
+
 /** 接続先。末尾のスラッシュは落として揃える */
 function endpoint() {
   const url = (RANKING_ENDPOINT || '').trim();
@@ -243,7 +251,7 @@ export async function adminEdit(cmd) {
         name,
         ...(rename ? { to } : {}),
       }),
-    });
+    }, ADMIN_TIMEOUT_MS);
     const changed = !!(payload && payload.changed);
     let entries = entriesOf(payload, board === 'stars' ? starSort : rankSort);
     if (!entries) {
@@ -383,9 +391,9 @@ function entriesOf(payload, sort = rankSort) {
   return null;
 }
 
-async function request(url, init = {}) {
+async function request(url, init = {}, timeout = TIMEOUT_MS) {
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = ctrl ? setTimeout(() => ctrl.abort(), TIMEOUT_MS) : 0;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeout) : 0;
   try {
     const res = await fetch(url, { ...init, signal: ctrl ? ctrl.signal : undefined });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -38,10 +38,24 @@ const LIMIT_MAX = 200;
 
 /**
  * 名前を1回付け替えるときに、直しに行くレベル数の上限。
- * ここまで遊び込む人はまず居ない想定の、念のための安全弁 ―― 無いと、
- * 極端な索引を持つ名前を付け替えたときに応答がいつまでも返らない。
+ * 総当たりの範囲（SWEEP_MAX）に、索引で拾える高いレベルのぶんを足した数 ――
+ * 無いと、極端な索引を持つ名前を付け替えたときに応答がいつまでも返らない。
  */
-const RENAME_LEVEL_CAP = 500;
+const RENAME_LEVEL_CAP = 400;
+
+/**
+ * 付け替えを何レベルずつ同時に投げるか。
+ * レベルごとに器（Durable Object）が違うので、束ねて投げれば待ち時間は重ならない。
+ * 1 つずつ順に投げると、総当たりの 300 レベルで何十秒もかかってしまう。
+ */
+const RENAME_BATCH = 30;
+
+/**
+ * いま何が動いているかの目印。**deploy が本当に届いたかを、URL を開くだけで確かめられる。**
+ * 「直したのに変わらない」が、コードの問題なのか deploy が届いていないだけなのかを
+ * 見分けるのに、これが無いと手も足も出ない。中身を変えたらここも上げること。
+ */
+const VERSION = 'admin-rename-sweep-1';
 
 // 誰でも読めて誰でも投稿できる公開ランキングなので、配信元を問わない。
 // Cookie も認証も使わないため、'*' を許しても持ち出されて困るものが無い。
@@ -315,8 +329,9 @@ async function handleGet(url, env) {
   }
 
   const raw = url.searchParams.get('level');
-  // level なしで叩かれたら生存確認とみなす（deploy 直後の疎通確認に使える）
-  if (raw == null) return json({ ok: true, service: 'slidepop-rank' });
+  // level なしで叩かれたら生存確認とみなす。version は **URL を開くだけで
+  // 「新しい版が本当に上がっているか」を確かめる**ための目印
+  if (raw == null) return json({ ok: true, service: 'slidepop-rank', version: VERSION });
 
   const level = readLevel(raw);
   if (level == null) return json({ error: 'invalid level' }, 400);
@@ -338,11 +353,14 @@ async function renameEverywhere(env, cmd) {
   const levels = renameTargetLevels(indexed, cmd, RENAME_LEVEL_CAP);
 
   let changed = false;
-  // 1 レベルずつ順に直す。相手は器（Durable Object）が違うだけで同じ処理なので、
-  // 並べても速くはならない ―― むしろ束ねて投げると失敗時にどこまで直ったか分かりにくくなる
-  for (const level of levels) {
-    const res = await storeFor(env, level).rename(cmd.name, cmd.to, RANK_LIMIT);
-    changed = changed || res.changed;
+  // レベルごとに器が違うので、束ねて投げれば待ち時間は重ならない。
+  // 記録の無いレベルは空振りで返ってくるだけなので、投げ得
+  for (let i = 0; i < levels.length; i += RENAME_BATCH) {
+    const batch = levels.slice(i, i + RENAME_BATCH);
+    const done = await Promise.all(
+      batch.map((level) => storeFor(env, level).rename(cmd.name, cmd.to, RANK_LIMIT)),
+    );
+    changed = changed || done.some((r) => r.changed);
   }
 
   const starsRes = await stars.renameStars(cmd.name, cmd.to, RANK_LIMIT);
