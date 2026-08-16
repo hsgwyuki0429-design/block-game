@@ -22,8 +22,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { RANK_LIMIT } from '../src/ranking.js';
 import {
-  isAdminKey, readAdminAction, adminTargetLevels, readBoard, readEntry, readLevel, readLimit,
-  readStarEntry,
+  isAdminKey, readAdminAction, adminTargetLevels, readCursor, readBoard, readEntry,
+  readLevel, readLimit, readStarEntry,
 } from './rules.mjs';
 
 /**
@@ -44,18 +44,25 @@ const LIMIT_MAX = 200;
 const ADMIN_LEVEL_CAP = 400;
 
 /**
- * 何レベルずつ同時に投げるか。
- * レベルごとに器（Durable Object）が違うので、束ねて投げれば待ち時間は重ならない。
- * 1 つずつ順に投げると、総当たりの 300 レベルで何十秒もかかってしまう。
+ * 1 回のリクエストで手を出すレベル数。
+ *
+ * **ここを大きくすると動かなくなる。** Cloudflare Workers には「1 リクエストあたりの
+ * サブリクエスト数」の上限があり（無料プランで 50）、Durable Object の呼び出しも
+ * ここに数えられる。300 レベルを一息に回ると上限を越えて落ち、画面には
+ * 「サーバーに届きませんでした」としか出ない ―― しかも `wrangler dev --local` では
+ * 上限が課されないので、手元の検証はすべて通ってしまう。
+ *
+ * 星の表と索引のぶん（数回）を足しても上限に余裕がある数にしてある。
+ * 残りは続きの位置（next）を返して、クライアントが次のリクエストで続ける。
  */
-const ADMIN_BATCH = 30;
+const ADMIN_CHUNK = 20;
 
 /**
  * いま何が動いているかの目印。**deploy が本当に届いたかを、URL を開くだけで確かめられる。**
  * 「直したのに変わらない」が、コードの問題なのか deploy が届いていないだけなのかを
  * 見分けるのに、これが無いと手も足も出ない。中身を変えたらここも上げること。
  */
-const VERSION = 'admin-everywhere-2';
+const VERSION = 'admin-chunked-3';
 
 // 誰でも読めて誰でも投稿できる公開ランキングなので、配信元を問わない。
 // Cookie も認証も使わないため、'*' を許しても持ち出されて困るものが無い。
@@ -355,41 +362,51 @@ async function handleGet(url, env) {
  * 実際に困るのは逆で、**消したはずの人が別の表に残っている**ほうだった。
  * 消す前には必ず訊く（画面側）ので、範囲は直すと揃える。
  */
-async function editEverywhere(env, cmd) {
+async function editEverywhere(env, cmd, cursor) {
   const rename = cmd.action === 'rename';
   const stars = starStore(env);
   const indexed = await stars.playedLevels(cmd.name);
   const levels = adminTargetLevels(indexed, cmd, ADMIN_LEVEL_CAP);
 
-  let changed = false;
-  // レベルごとに器が違うので、束ねて投げれば待ち時間は重ならない。
-  // 記録の無いレベルは空振りで返ってくるだけなので、投げ得
-  for (let i = 0; i < levels.length; i += ADMIN_BATCH) {
-    const batch = levels.slice(i, i + ADMIN_BATCH);
-    const done = await Promise.all(batch.map((level) => {
-      const store = storeFor(env, level);
-      return rename
-        ? store.rename(cmd.name, cmd.to, RANK_LIMIT)
-        : store.remove(cmd.name, RANK_LIMIT);
-    }));
-    changed = changed || done.some((r) => r.changed);
+  // この 1 回で回るぶんだけ切り出す。残りは next を返して次のリクエストに継ぐ
+  const slice = levels.slice(cursor, cursor + ADMIN_CHUNK);
+  const done = await Promise.all(slice.map((level) => {
+    const store = storeFor(env, level);
+    return rename
+      ? store.rename(cmd.name, cmd.to, RANK_LIMIT)
+      : store.remove(cmd.name, RANK_LIMIT);
+  }));
+  let changed = done.some((r) => r.changed);
+
+  const next = cursor + slice.length;
+  const finished = next >= levels.length;
+
+  // 星の表と索引は**最後の 1 回**でだけ触る。毎回やるとサブリクエストを無駄に使い、
+  // 途中で名前が変わって、残りのレベルで探す相手が居なくなる
+  let starsRes = null;
+  if (finished) {
+    starsRes = rename
+      ? await stars.renameStars(cmd.name, cmd.to, RANK_LIMIT)
+      : await stars.removeStars(cmd.name, RANK_LIMIT);
+    changed = changed || starsRes.changed;
+
+    // 索引も一緒に始末する。置き去りにすると、次の付け替えで居ない名前を探しに行く
+    if (rename) await stars.transferPlayed(cmd.name, cmd.to);
+    else await stars.forgetPlayed(cmd.name);
   }
 
-  const starsRes = rename
-    ? await stars.renameStars(cmd.name, cmd.to, RANK_LIMIT)
-    : await stars.removeStars(cmd.name, RANK_LIMIT);
-  changed = changed || starsRes.changed;
+  // 応答には、いま管理者が見ている表の一覧だけを載せる（他の表は裏で直っている）。
+  // まだ途中なら一覧は要らない ―― 画面は最後の応答で組み直す
+  let entries = null;
+  if (finished) {
+    entries = cmd.board === 'stars'
+      ? starsRes.entries
+      : await storeFor(env, cmd.level).top(RANK_LIMIT);
+  }
 
-  // 索引も一緒に始末する。置き去りにすると、次の付け替えで居ない名前を探しに行く
-  if (rename) await stars.transferPlayed(cmd.name, cmd.to);
-  else await stars.forgetPlayed(cmd.name);
-
-  // 応答には、いま管理者が見ている表の一覧だけを載せる（他の表は裏で直っている）
-  const entries = cmd.board === 'stars'
-    ? starsRes.entries
-    : await storeFor(env, cmd.level).top(RANK_LIMIT);
-
-  return { ok: true, changed, entries };
+  return {
+    ok: true, changed, entries, done: finished, next, total: levels.length,
+  };
 }
 
 /**
@@ -412,7 +429,9 @@ async function handleAdmin(request, env, body) {
   const cmd = readAdminAction(body);
   if (!cmd) return json({ error: 'invalid body' }, 400);
 
-  return json(await editEverywhere(env, cmd));
+  // 続きの位置。前の応答の next をそのまま返してもらう（無ければ頭から）
+  const cursor = readCursor(body.cursor, ADMIN_LEVEL_CAP);
+  return json(await editEverywhere(env, cmd, cursor));
 }
 
 async function handlePost(request, env, ctx) {

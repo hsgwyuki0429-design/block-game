@@ -5412,6 +5412,13 @@ const TIMEOUT_MS = 7000;
  */
 const ADMIN_TIMEOUT_MS = 25000;
 
+/**
+ * 分けて頼むときの、頼み直しの上限。
+ * サーバが「終わった」と言い忘れても、ここで必ず止まる ―― 終わらない輪に入って
+ * 画面が固まるくらいなら、諦めて理由を出したほうがいい。
+ */
+const ADMIN_ROUNDS_MAX = 40;
+
 /** 接続先。末尾のスラッシュは落として揃える */
 function endpoint() {
   const url = (RANKING_ENDPOINT || '').trim();
@@ -5580,36 +5587,56 @@ async function adminEdit(cmd) {
   const key = adminKey();
   if (!key) return { ok: false, entries: [], changed: false, error: '管理の合言葉がありません。' };
 
+  /*
+   * **何回かに分けて頼む。**
+   * サーバは 1 回のリクエストで決まった数のレベルまでしか回れない
+   * （Cloudflare のサブリクエスト上限。worker/worker.js の ADMIN_CHUNK に理由を書いた）。
+   * 続きの位置（next）を受け取って、終わりと言われるまで頼み直す。
+   */
+  let cursor = 0;
+  let changed = false;
+
   try {
-    const payload = await request(base, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'X-Admin-Key': key,
-      },
-      body: JSON.stringify({
-        action: rename ? 'rename' : 'delete',
-        board,
-        level: cmd.level,
-        name,
-        ...(rename ? { to } : {}),
-      }),
-    }, ADMIN_TIMEOUT_MS);
-    const changed = !!(payload && payload.changed);
-    let entries = entriesOf(payload, board === 'stars' ? starSort : rankSort);
-    if (!entries) {
-      // 一覧が返ってこなかったら取り直す（直したこと自体は成功している）
-      const got = board === 'stars' ? await fetchStarRanking() : await fetchRanking(cmd.level);
-      entries = got.entries;
+    for (let round = 0; round < ADMIN_ROUNDS_MAX; round += 1) {
+      const payload = await request(base, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'X-Admin-Key': key,
+        },
+        body: JSON.stringify({
+          action: rename ? 'rename' : 'delete',
+          board,
+          level: cmd.level,
+          name,
+          cursor,
+          ...(rename ? { to } : {}),
+        }),
+      }, ADMIN_TIMEOUT_MS);
+
+      changed = changed || !!(payload && payload.changed);
+
+      // done を知らない古いサーバなら、1 回で終わったものとして扱う
+      const finished = !payload || payload.done !== false;
+      const total = payload && Number(payload.total) > 0 ? Number(payload.total) : 0;
+      cursor = payload && Number.isFinite(payload.next) ? Number(payload.next) : cursor;
+      if (typeof cmd.onProgress === 'function') cmd.onProgress(cursor, total);
+
+      if (!finished) continue;
+
+      let entries = entriesOf(payload, board === 'stars' ? starSort : rankSort);
+      if (!entries) {
+        // 一覧が返ってこなかったら取り直す（直したこと自体は成功している）
+        const got = board === 'stars' ? await fetchStarRanking() : await fetchRanking(cmd.level);
+        entries = got.entries;
+      }
+      return { ok: true, entries, changed, error: null };
     }
-    return { ok: true, entries, changed, error: null };
+    // ここに来るのは、終わりと言われないまま回りすぎたとき
+    return { ok: false, entries: [], changed, error: 'サーバーの処理が終わりませんでした。' };
   } catch (err) {
-    const status = String(err && err.message);
-    let error = 'サーバーに届きませんでした。時間をおいて試してください。';
-    if (/HTTP 40[13]/.test(status)) error = '合言葉が違います（サーバーに断られました）。';
-    else if (/HTTP 503/.test(status)) error = 'サーバーに合言葉が設定されていません。';
-    return { ok: false, entries: [], changed: false, error };
+    return { ok: false, entries: [], changed, error: failureText(err) };
   }
 }
 
@@ -5740,11 +5767,32 @@ async function request(url, init = {}, timeout = TIMEOUT_MS) {
   const timer = ctrl ? setTimeout(() => ctrl.abort(), timeout) : 0;
   try {
     const res = await fetch(url, { ...init, signal: ctrl ? ctrl.signal : undefined });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      // 番号を持たせる。「届かなかった」のか「断られた」のかで、次の手がまるで違う
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
     return await res.json();
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * しくじりの理由を、画面にそのまま出せる日本語にする。
+ * **番号を必ず添える** ―― 「サーバーに届きませんでした」だけでは、こちらも
+ * 見ている人も、次にどこを見ればいいのか分からない。
+ */
+function failureText(err) {
+  const status = err && err.status;
+  if (status === 401 || status === 403) return '合言葉が違います（サーバーに断られました）。';
+  if (status === 503) return 'サーバーに合言葉が設定されていません。';
+  if (status === 400) return 'サーバーが指示を受け付けませんでした（400）。';
+  if (status === 429) return 'サーバーが混んでいます（429）。少し待って試してください。';
+  if (status) return `サーバーがエラーを返しました（${status}）。`;
+  if (err && err.name === 'AbortError') return 'サーバーの返事が遅くて諦めました（時間切れ）。';
+  return 'サーバーに届きませんでした（通信できません）。';
 }
 
 /**
@@ -5759,9 +5807,11 @@ async function fetchRanking(level) {
     const url = `${base}${base.includes('?') ? '&' : '?'}level=${encodeURIComponent(level)}&limit=${RANK_LIMIT}`;
     const entries = entriesOf(await request(url, { headers: { Accept: 'application/json' } }));
     if (!entries) throw new Error('形式が違う応答');
-    return { entries, global: true, offline: false };
-  } catch {
-    return { entries: localEntries(level), global: true, offline: true };
+    return { entries, global: true, offline: false, reason: null };
+  } catch (err) {
+    // なぜ繋がらなかったのかを持ち帰る。画面に出さないと、こちらも見ている人も
+    // 「つながらない」以上のことが分からず、手の打ちようがない
+    return { entries: localEntries(level), global: true, offline: true, reason: failureText(err) };
   }
 }
 
@@ -5842,9 +5892,11 @@ async function fetchStarRanking() {
     const payload = await request(starUrl(base), { headers: { Accept: 'application/json' } });
     const entries = entriesOf(payload, starSort);
     if (!entries) throw new Error('形式が違う応答');
-    return { entries, global: true, offline: false };
-  } catch {
-    return { entries: localStarEntries(), global: true, offline: true };
+    return { entries, global: true, offline: false, reason: null };
+  } catch (err) {
+    return {
+      entries: localStarEntries(), global: true, offline: true, reason: failureText(err),
+    };
   }
 }
 
@@ -8059,13 +8111,26 @@ this.afterMove();
     // 待っているあいだに管理モードを降りていたら、もう手を出さない
     if (!isAdminMode() && isGlobalRanking()) return;
 
-    this.setAdminBusy(remove
-      ? `「${name}」の記録を消しています… 全レベルを探すので少しかかります`
-      : `「${name}」の名前を直しています… 全レベルを探すので少しかかります`);
+    const doing = remove ? '記録を消しています' : '名前を直しています';
+    this.setAdminBusy(`「${name}」の${doing}… 全レベルを探すので少しかかります`);
 
     let res;
     try {
-      res = await adminEdit({ action, board, level, name, to });
+      res = await adminEdit({
+        action,
+        board,
+        level,
+        name,
+        to,
+        // どこまで進んだかを出す。何回かに分けて頼むので、止まって見える時間が長い
+        onProgress: (at, total) => {
+          if (!total) return;
+          this.setAdminBusy(`「${name}」の${doing}… ${Math.min(at, total)} / ${total} レベル`);
+        },
+      });
+    } catch (err) {
+      // ここに来るのは思わぬしくじり。黙って終わらない
+      res = { ok: false, entries: [], changed: false, error: `うまくいきませんでした（${err}）` };
     } finally {
       this.setAdminBusy('');
     }
@@ -8224,7 +8289,10 @@ this.afterMove();
     }
 
     if (res.offline) {
-      d.rankNote.textContent = 'サーバーにつながらないので、この端末の記録を出しています。';
+      // 理由まで出す。「つながらない」だけでは、次にどこを見ればいいのか分からない
+      d.rankNote.textContent = res.reason
+        ? `サーバーにつながらないので、この端末の記録を出しています。（${res.reason}）`
+        : 'サーバーにつながらないので、この端末の記録を出しています。';
     } else if (!res.global) {
       d.rankNote.textContent = 'いまはこの端末の記録だけです。';
     } else {

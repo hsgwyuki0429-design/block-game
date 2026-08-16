@@ -1843,13 +1843,26 @@ this.afterMove();
     // 待っているあいだに管理モードを降りていたら、もう手を出さない
     if (!isAdminMode() && isGlobalRanking()) return;
 
-    this.setAdminBusy(remove
-      ? `「${name}」の記録を消しています… 全レベルを探すので少しかかります`
-      : `「${name}」の名前を直しています… 全レベルを探すので少しかかります`);
+    const doing = remove ? '記録を消しています' : '名前を直しています';
+    this.setAdminBusy(`「${name}」の${doing}… 全レベルを探すので少しかかります`);
 
     let res;
     try {
-      res = await adminEdit({ action, board, level, name, to });
+      res = await adminEdit({
+        action,
+        board,
+        level,
+        name,
+        to,
+        // どこまで進んだかを出す。何回かに分けて頼むので、止まって見える時間が長い
+        onProgress: (at, total) => {
+          if (!total) return;
+          this.setAdminBusy(`「${name}」の${doing}… ${Math.min(at, total)} / ${total} レベル`);
+        },
+      });
+    } catch (err) {
+      // ここに来るのは思わぬしくじり。黙って終わらない
+      res = { ok: false, entries: [], changed: false, error: `うまくいきませんでした（${err}）` };
     } finally {
       this.setAdminBusy('');
     }
@@ -2008,7 +2021,10 @@ this.afterMove();
     }
 
     if (res.offline) {
-      d.rankNote.textContent = 'サーバーにつながらないので、この端末の記録を出しています。';
+      // 理由まで出す。「つながらない」だけでは、次にどこを見ればいいのか分からない
+      d.rankNote.textContent = res.reason
+        ? `サーバーにつながらないので、この端末の記録を出しています。（${res.reason}）`
+        : 'サーバーにつながらないので、この端末の記録を出しています。';
     } else if (!res.global) {
       d.rankNote.textContent = 'いまはこの端末の記録だけです。';
     } else {
