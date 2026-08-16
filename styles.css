@@ -563,7 +563,13 @@ svg .fill { fill: currentColor; stroke: none; }
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.26s var(--ease), transform 0.4s var(--spring);
-  z-index: 30;
+  /*
+   * シート（40）と、その上に重ねる訊くシート（60）より前に出す。
+   * ここが 30 だったせいで、**シートを開いているあいだ お知らせが完全に隠れていた** ――
+   * 管理の「合言葉が違います」が一度も見えず、押しても無反応にしか見えなかった。
+   * お知らせは指を邪魔しない（pointer-events: none）ので、前に出して困らない。
+   */
+  z-index: 70;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
 
@@ -1000,6 +1006,8 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 .rank-admin span { flex: 1 1 auto; min-width: 0; }
 .rank-admin b { color: var(--accent); }
+/* 報せが長いと、これが縦一列に潰される（「や／め／る」になった） */
+.rank-admin .link-btn { flex: none; white-space: nowrap; }
 
 /*
  * 直している・消している最中。
@@ -1015,6 +1023,16 @@ svg .fill { fill: currentColor; stroke: none; }
 @media (prefers-reduced-motion: reduce) {
   .rank-admin.busy { animation: none; }
 }
+
+/*
+ * しくじったときの報せ。お知らせは数秒で消えてしまうので、次の手が変わる話
+ * （合言葉が違う、など）はここに置いたまま残す。
+ */
+.rank-admin.bad {
+  background: rgba(255, 59, 48, 0.12);
+  color: var(--warn);
+}
+.rank-admin.bad b { color: var(--warn); }
 
 /* 行に足す小さなボタン。数字より弱く見せて、順位の読みやすさを壊さない */
 .rank-act {

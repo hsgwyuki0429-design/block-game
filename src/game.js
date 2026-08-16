@@ -177,6 +177,8 @@ export class Game {
     this.nameLocked = false;
     // 管理の直す・消すは全レベルを探しに行くので、返事まで数秒かかる。そのあいだ立てる旗
     this.adminBusy = false;
+    /** 直前の管理操作の結果。お知らせが流れても読めるよう、帯に残しておく */
+    this.adminReport = '';
     /** 投稿・取得の世代。レベルを跨いだ古い応答を捨てるために使う */
     this.rankToken = 0;
     this.rankViewToken = 0;
@@ -1745,17 +1747,38 @@ this.afterMove();
     if (raw === null) return;
 
     const clean = saveAdminKey(raw);
+    this.setAdminReport('');
     this.updateAdminBar();
     this.loadRanking();
     this.toast(clean ? '管理モードにしました' : '管理モードをやめました');
   }
 
-  /** 管理モードの帯を出し入れする。作業中はその報せを消さない */
+  /** 管理モードの帯を出し入れする。作業中と、直前の結果は消さない */
   updateAdminBar() {
     const d = this.dom;
     if (d.rankAdmin) d.rankAdmin.hidden = !isAdminMode();
-    if (this.adminBusy || !d.rankAdminNote) return;
+    if (this.adminBusy || this.adminReport || !d.rankAdminNote) return;
     d.rankAdminNote.innerHTML = '<b>管理モード</b>　名前を直したり、記録を消したりできます';
+  }
+
+  /**
+   * 直前の管理操作の結果を、帯に**残す**。
+   *
+   * お知らせ（トースト）は数秒で消えるうえ、指が画面を見ていない隙に流れてしまう。
+   * 合言葉が違うといった、次の手が変わる報せは消えては困る ―― 次の操作をするか、
+   * 管理モードを降りるまで、ここに置いておく。
+   *
+   * @param {string} message 空なら、ふつうの案内に戻す
+   * @param {boolean} bad しくじりなら true（赤くする）
+   */
+  setAdminReport(message, bad = false) {
+    const d = this.dom;
+    this.adminReport = message || '';
+
+    if (d.rankAdmin) d.rankAdmin.classList.toggle('bad', !!message && bad);
+    if (!d.rankAdminNote) return;
+    if (message) d.rankAdminNote.textContent = message; // 名前が混ざるので textContent
+    else this.updateAdminBar();
   }
 
   /**
@@ -1770,6 +1793,8 @@ this.afterMove();
   setAdminBusy(message) {
     const d = this.dom;
     this.adminBusy = !!message;
+    // 新しい作業を始めるときは、前の結果の報せを片付ける
+    if (this.adminBusy) this.setAdminReport('');
 
     if (d.rankAdmin) d.rankAdmin.classList.toggle('busy', this.adminBusy);
     if (d.rankAdminNote && this.adminBusy) {
@@ -1830,7 +1855,13 @@ this.afterMove();
     }
 
     if (!res.ok) {
-      this.toast(res.error || (remove ? '消せませんでした' : '直せませんでした'));
+      const why = res.error || (remove ? '消せませんでした' : '直せませんでした');
+      this.toast(why);
+      // 帯にも残す。合言葉が違うなら、入れ直しかたまで書く
+      this.setAdminReport(
+        /合言葉/.test(why) ? `${why} ランキングの見出しを長押しすると入れ直せます。` : why,
+        true,
+      );
       return;
     }
     // 待っているあいだに別の表へ移られていたら、出す場所が無い
@@ -1840,12 +1871,16 @@ this.afterMove();
 
     if (!res.changed) {
       // ok なのに何も変わっていない ―― 相手がもう居なかった。成功したふりはしない
-      this.toast(`「${name}」の記録が見つかりませんでした`);
+      const why = `「${name}」の記録が見つかりませんでした`;
+      this.toast(why);
+      this.setAdminReport(why, true);
       return;
     }
-    this.toast(remove
+    const done = remove
       ? `「${name}」の記録をすべて消しました`
-      : `「${name}」を「${sanitizeName(to)}」にしました（この人のすべての表で）`);
+      : `「${name}」を「${sanitizeName(to)}」にしました（この人のすべての表で）`;
+    this.toast(done);
+    this.setAdminReport(done, false);
   }
 
   /** 表を切り替える（タブ）。切り替えたらその場で取りに行く */
